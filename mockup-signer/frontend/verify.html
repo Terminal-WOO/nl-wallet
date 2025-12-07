@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL Wallet Document Verificatie</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+            animation: fadeInDown 0.8s ease;
+        }
+        
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            margin-bottom: 30px;
+            animation: fadeInUp 0.8s ease 0.2s both;
+        }
+        
+        .card h2 {
+            color: #333;
+            margin-bottom: 25px;
+            font-size: 1.8rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .verification-icon {
+            font-size: 5rem;
+            text-align: center;
+            margin: 30px 0;
+            animation: scaleIn 0.5s ease 0.5s both;
+        }
+        
+        .verification-icon.verified {
+            color: #4caf50;
+        }
+        
+        .verification-icon.not-verified {
+            color: #f44336;
+        }
+        
+        .verification-result {
+            text-align: center;
+            margin: 30px 0;
+        }
+        
+        .verification-title {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 15px;
+        }
+        
+        .verification-title.verified {
+            color: #2e7d32;
+        }
+        
+        .verification-title.not-verified {
+            color: #c62828;
+        }
+        
+        .verification-message {
+            font-size: 1.1rem;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        
+        .document-info {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 12px;
+            margin-top: 30px;
+            text-align: left;
+        }
+        
+        .info-item {
+            padding: 12px 0;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        
+        .info-item:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            font-weight: 600;
+            color: #495057;
+            min-width: 150px;
+        }
+        
+        .info-value {
+            color: #212529;
+            text-align: right;
+            flex: 1;
+            word-break: break-word;
+        }
+        
+        .document-id {
+            font-family: monospace;
+            font-size: 0.9rem;
+            background: #e9ecef;
+            padding: 8px 12px;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        
+        .signer-badge {
+            display: inline-block;
+            background: #e8f5e9;
+            color: #2e7d32;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            margin-top: 10px;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 50px;
+            height: 50px;
+            border: 5px solid rgba(102, 126, 234, 0.2);
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 1s linear infinite;
+            margin: 30px auto;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes scaleIn {
+            from {
+                transform: scale(0);
+            }
+            to {
+                transform: scale(1);
+            }
+        }
+        
+        .link-button {
+            display: inline-block;
+            margin-top: 30px;
+            padding: 15px 30px;
+            background: white;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 12px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .link-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        }
+        
+        .auto-verify-notice {
+            background: #e3f2fd;
+            color: #1565c0;
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2196f3;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Document Verificatie</h1>
+            <p>Verifieer de authenticiteit van een ondertekend document</p>
+        </div>
+        
+        <div class="card">
+            <div id="loadingState">
+                <div class="loading"></div>
+                <div style="text-align: center; color: #666; margin-top: 20px;">
+                    Document wordt geverifieerd...
+                </div>
+            </div>
+            
+            <div id="verificationResult" style="display: none;">
+                <div class="verification-icon" id="verificationIcon">✓</div>
+                <div class="verification-result">
+                    <div class="verification-title" id="verificationTitle">Document Geverifieerd</div>
+                    <div class="verification-message" id="verificationMessage">
+                        Dit document is authentiek en digitaal ondertekend met NL Wallet
+                    </div>
+                </div>
+                
+                <div class="document-info" id="documentInfo"></div>
+            </div>
+        </div>
+        
+        <div style="text-align: center;">
+            <a href="demo.html" class="link-button">← Terug naar Demo</a>
+        </div>
+    </div>
+    
+    <script>
+        // Haal document ID uit URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const documentId = urlParams.get('id');
+        
+        if (documentId) {
+            // Auto-verifieer na 1 seconde
+            setTimeout(() => {
+                verifyDocument(documentId);
+            }, 1000);
+        } else {
+            // Geen document ID, toon foutmelding
+            setTimeout(() => {
+                showError('Geen document ID opgegeven');
+            }, 1000);
+        }
+        
+        function verifyDocument(docId) {
+            // Check localStorage (van demo)
+            const stored = localStorage.getItem(`doc_${docId}`);
+            
+            if (stored) {
+                const doc = JSON.parse(stored);
+                showVerificationResult(doc, true);
+            } else {
+                // Probeer backend
+                fetch(`http://localhost:3002/api/documents/verify/${docId}`)
+                    .then(res => {
+                        if (!res.ok) {
+                            throw new Error('Document niet gevonden');
+                        }
+                        return res.json();
+                    })
+                    .then(data => {
+                        if (data.verified) {
+                            showVerificationResult(data, true);
+                        } else {
+                            showVerificationResult(data, false);
+                        }
+                    })
+                    .catch(err => {
+                        // Als backend niet beschikbaar is, toon een vriendelijke melding
+                        showError('Document niet gevonden. Zorg dat je de juiste verificatielink gebruikt die is gegenereerd na ondertekening.');
+                    });
+            }
+        }
+        
+        function showVerificationResult(data, verified) {
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('verificationResult').style.display = 'block';
+            
+            const icon = document.getElementById('verificationIcon');
+            const title = document.getElementById('verificationTitle');
+            const message = document.getElementById('verificationMessage');
+            const info = document.getElementById('documentInfo');
+            
+            if (verified) {
+                icon.textContent = '✓';
+                icon.className = 'verification-icon verified';
+                title.textContent = 'Document Geverifieerd';
+                title.className = 'verification-title verified';
+                message.textContent = 'Dit document is authentiek en digitaal ondertekend met NL Wallet';
+                message.style.color = '#2e7d32';
+                
+                const signer = data.signer || {};
+                const signerName = signer.name || 'Onbekend';
+                const signedAt = data.signedAt ? new Date(data.signedAt).toLocaleString('nl-NL') : '-';
+                const docId = data.documentId || documentId;
+                
+                info.innerHTML = `
+                    <div class="info-item">
+                        <span class="info-label">Document ID:</span>
+                        <span class="info-value"><span class="document-id">${docId}</span></span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Ondertekend door:</span>
+                        <span class="info-value"><span class="signer-badge">${signerName}</span></span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Ondertekend op:</span>
+                        <span class="info-value">${signedAt}</span>
+                    </div>
+                    ${signer.credentials ? `
+                    <div class="info-item">
+                        <span class="info-label">Geboortedatum:</span>
+                        <span class="info-value">${signer.credentials.birth_date || '-'}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Documentnummer:</span>
+                        <span class="info-value">${signer.credentials.document_number || '-'}</span>
+                    </div>
+                    ` : ''}
+                    <div class="info-item">
+                        <span class="info-label">Verificatie status:</span>
+                        <span class="info-value" style="color: #4caf50; font-weight: bold;">✓ Cryptografisch geverifieerd</span>
+                    </div>
+                `;
+            } else {
+                icon.textContent = '✗';
+                icon.className = 'verification-icon not-verified';
+                title.textContent = 'Verificatie Mislukt';
+                title.className = 'verification-title not-verified';
+                message.textContent = data.error || 'Dit document kon niet worden geverifieerd';
+                message.style.color = '#c62828';
+                
+                info.innerHTML = `
+                    <div class="info-item">
+                        <span class="info-label">Fout:</span>
+                        <span class="info-value" style="color: #c62828;">${data.error || 'Onbekende fout'}</span>
+                    </div>
+                `;
+            }
+        }
+        
+        function showError(message) {
+            document.getElementById('loadingState').style.display = 'none';
+            document.getElementById('verificationResult').style.display = 'block';
+            
+            const icon = document.getElementById('verificationIcon');
+            const title = document.getElementById('verificationTitle');
+            const messageDiv = document.getElementById('verificationMessage');
+            const info = document.getElementById('documentInfo');
+            
+            icon.textContent = '✗';
+            icon.className = 'verification-icon not-verified';
+            title.textContent = 'Fout';
+            title.className = 'verification-title not-verified';
+            messageDiv.textContent = message;
+            messageDiv.style.color = '#c62828';
+            
+            info.innerHTML = `
+                <div class="info-item">
+                    <span class="info-label">Fout:</span>
+                    <span class="info-value" style="color: #c62828;">${message}</span>
+                </div>
+            `;
+        }
+    </script>
+</body>
+</html>

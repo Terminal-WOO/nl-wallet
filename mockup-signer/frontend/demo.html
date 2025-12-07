@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL Wallet Document Signing Demo</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+        
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 10px;
+            animation: fadeInDown 0.8s ease;
+        }
+        
+        .header p {
+            font-size: 1.2rem;
+            opacity: 0.9;
+            animation: fadeInUp 0.8s ease 0.2s both;
+        }
+        
+        .demo-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        @media (max-width: 968px) {
+            .demo-container {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 5px;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+        }
+        
+        .card h2 {
+            color: #333;
+            margin-bottom: 25px;
+            font-size: 1.8rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .step-indicator {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-radius: 50%;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+        
+        .step-indicator.active {
+            animation: pulse 2s infinite;
+        }
+        
+        .step-indicator.completed {
+            background: #4caf50;
+        }
+        
+        /* Document Preview */
+        .document-preview {
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            padding: 30px;
+            background: #fafafa;
+            min-height: 400px;
+            position: relative;
+            transition: all 0.5s ease;
+        }
+        
+        .document-preview.signed {
+            border-color: #4caf50;
+            background: #f1f8f4;
+        }
+        
+        .document-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        .document-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .document-text {
+            line-height: 1.8;
+            color: #555;
+            margin-bottom: 15px;
+        }
+        
+        .signature-block {
+            margin-top: 30px;
+            padding: 20px;
+            background: #e8f5e9;
+            border: 2px dashed #4caf50;
+            border-radius: 8px;
+            display: none;
+            animation: slideInUp 0.5s ease;
+        }
+        
+        .signature-block.show {
+            display: block;
+        }
+        
+        .signature-title {
+            font-weight: bold;
+            color: #2e7d32;
+            margin-bottom: 15px;
+            font-size: 1.1rem;
+        }
+        
+        .signature-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 0.9rem;
+        }
+        
+        .signature-label {
+            font-weight: 600;
+            color: #555;
+        }
+        
+        .signature-value {
+            color: #333;
+        }
+        
+        /* QR Code Section */
+        .qr-section {
+            text-align: center;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 12px;
+            margin-top: 20px;
+        }
+        
+        .qr-container {
+            display: inline-block;
+            padding: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            position: relative;
+            margin: 20px 0;
+        }
+        
+        .qr-logo {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px;
+            height: 60px;
+            background: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            z-index: 10;
+        }
+        
+        .qr-instructions {
+            margin-top: 20px;
+            color: #666;
+            font-size: 0.95rem;
+        }
+        
+        /* Wallet Simulation */
+        .wallet-sim {
+            position: fixed;
+            bottom: -500px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 400px;
+            background: white;
+            border-radius: 30px 30px 0 0;
+            box-shadow: 0 -10px 40px rgba(0,0,0,0.3);
+            transition: bottom 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 1000;
+            overflow: hidden;
+        }
+        
+        .wallet-sim.show {
+            bottom: 0;
+        }
+        
+        .wallet-header {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+        
+        .wallet-header::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 40px;
+            height: 4px;
+            background: rgba(255,255,255,0.5);
+            border-radius: 2px;
+        }
+        
+        .wallet-content {
+            padding: 30px 20px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .wallet-step {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        .wallet-step.active {
+            display: block;
+        }
+        
+        .wallet-icon {
+            font-size: 4rem;
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        .wallet-message {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 1.1rem;
+        }
+        
+        .wallet-button {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 10px;
+        }
+        
+        .wallet-button.primary {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+        
+        .wallet-button.primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .wallet-button.secondary {
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .pin-input {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin: 20px 0;
+        }
+        
+        .pin-digit {
+            width: 100%;
+            aspect-ratio: 1;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 1.5rem;
+            text-align: center;
+            font-weight: bold;
+            background: white;
+            transition: all 0.2s ease;
+        }
+        
+        .pin-digit.filled {
+            border-color: #667eea;
+            background: #f0f2ff;
+        }
+        
+        /* Action Buttons */
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        /* Status Messages */
+        .status {
+            padding: 15px;
+            border-radius: 12px;
+            margin-top: 20px;
+            display: none;
+            animation: slideInDown 0.3s ease;
+        }
+        
+        .status.show {
+            display: block;
+        }
+        
+        .status.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            border-left: 4px solid #4caf50;
+        }
+        
+        .status.info {
+            background: #e3f2fd;
+            color: #1565c0;
+            border-left: 4px solid #2196f3;
+        }
+        
+        /* Share Link */
+        .share-section {
+            margin-top: 30px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 12px;
+            display: none;
+        }
+        
+        .share-section.show {
+            display: block;
+            animation: slideInUp 0.5s ease;
+        }
+        
+        .share-link {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .share-link input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 0.95rem;
+        }
+        
+        .share-link button {
+            padding: 12px 24px;
+            background: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .share-link button:hover {
+            background: #45a049;
+        }
+        
+        .share-link button.copied {
+            background: #4caf50;
+        }
+        
+        #verifyLinkBtn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        
+        #verifyLinkBtn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes slideInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes slideInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.7);
+            }
+            50% {
+                transform: scale(1.05);
+                box-shadow: 0 0 0 10px rgba(102, 126, 234, 0);
+            }
+        }
+        
+        .progress-bar {
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.5s ease;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 NL Wallet Document Signing Demo</h1>
+            <p>Interactieve simulatie van digitaal ondertekenen met NL Wallet</p>
+        </div>
+        
+        <div class="demo-container">
+            <!-- Document Side -->
+            <div class="card">
+                <h2>
+                    <span class="step-indicator" id="step1">1</span>
+                    Document
+                </h2>
+                <div class="document-preview" id="documentPreview">
+                    <div class="document-content">
+                        <div class="document-title">Beleidsstuk: Privacy en Gegevensbescherming</div>
+                        <div class="document-text">
+                            <strong>1. Inleiding</strong><br>
+                            Dit beleidsstuk beschrijft hoe wij omgaan met persoonsgegevens in overeenstemming met de Algemene Verordening Gegevensbescherming (AVG) en de Nederlandse privacywetgeving.
+                        </div>
+                        <div class="document-text">
+                            <strong>2. Verantwoordelijke</strong><br>
+                            De verantwoordelijke voor de verwerking van persoonsgegevens is de organisatie zoals vermeld in de registratie bij de Autoriteit Persoonsgegevens.
+                        </div>
+                        <div class="document-text">
+                            <strong>3. Doeleinden van verwerking</strong><br>
+                            Persoonsgegevens worden uitsluitend verwerkt voor de volgende doeleinden: het uitvoeren van overeenkomsten, het voldoen aan wettelijke verplichtingen, en het verbeteren van onze dienstverlening.
+                        </div>
+                        <div class="document-text">
+                            <strong>4. Bewaartermijnen</strong><br>
+                            Persoonsgegevens worden niet langer bewaard dan noodzakelijk voor de doeleinden waarvoor zij zijn verzameld, met een maximum bewaartermijn van 7 jaar na beëindiging van de overeenkomst.
+                        </div>
+                        <div class="document-text">
+                            <strong>5. Rechten van betrokkenen</strong><br>
+                            Betrokkenen hebben het recht op inzage, rectificatie, verwijdering, beperking van verwerking, bezwaar en dataportabiliteit van hun persoonsgegevens.
+                        </div>
+                    </div>
+                    <div class="signature-block" id="signatureBlock">
+                        <div class="signature-title">✓ Digitaal Ondertekend met NL Wallet</div>
+                        <div class="signature-info">
+                            <div>
+                                <div class="signature-label">Naam:</div>
+                                <div class="signature-value" id="signerName">-</div>
+                            </div>
+                            <div>
+                                <div class="signature-label">Datum:</div>
+                                <div class="signature-value" id="signDate">-</div>
+                            </div>
+                            <div>
+                                <div class="signature-label">Document ID:</div>
+                                <div class="signature-value" id="documentId" style="font-family: monospace; font-size: 0.8rem;">-</div>
+                            </div>
+                            <div>
+                                <div class="signature-label">Status:</div>
+                                <div class="signature-value" style="color: #4caf50; font-weight: bold;">✓ Geverifieerd</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="action-buttons">
+                    <button class="btn btn-primary" id="startSignBtn" onclick="startSigning()">
+                        Start Ondertekening
+                    </button>
+                </div>
+                
+                <div class="status" id="status"></div>
+            </div>
+            
+            <!-- Process Side -->
+            <div class="card">
+                <h2>
+                    <span class="step-indicator" id="step2">2</span>
+                    Proces
+                </h2>
+                
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressBar"></div>
+                </div>
+                
+                <div id="processSteps">
+                    <div class="qr-section" id="qrSection" style="display: none;">
+                        <h3 style="margin-bottom: 15px; color: #333;">Scan QR code met NL Wallet</h3>
+                        <div class="qr-container">
+                            <div id="qrcode"></div>
+                            <div class="qr-logo">🔐</div>
+                        </div>
+                        <div class="qr-instructions">
+                            Open de NL Wallet app op je telefoon<br>
+                            en scan deze QR code
+                        </div>
+                    </div>
+                    
+                    <div id="processStatus" style="text-align: center; padding: 40px; color: #666;">
+                        Klik op "Start Ondertekening" om te beginnen
+                    </div>
+                </div>
+                
+                <div class="share-section" id="shareSection">
+                    <h3 style="margin-bottom: 15px; color: #333;">🔗 Verificatie Link</h3>
+                    <p style="color: #666; margin-bottom: 15px;">
+                        Deze link kan door anderen gebruikt worden om te verifiëren dat jij dit document hebt ondertekend:
+                    </p>
+                    <div class="share-link">
+                        <input type="text" id="verifyLink" readonly>
+                        <button onclick="copyLink()">Kopieer</button>
+                    </div>
+                    <div style="margin-top: 15px; display: flex; gap: 10px;">
+                        <a href="#" id="verifyLinkBtn" target="_blank" class="btn btn-primary" style="flex: 1; text-decoration: none; text-align: center; display: none;">
+                            🔍 Open Verificatie Pagina
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Wallet Simulation -->
+    <div class="wallet-sim" id="walletSim">
+        <div class="wallet-header">
+            <h3>NL Wallet</h3>
+        </div>
+        <div class="wallet-content">
+            <!-- Step 1: Request -->
+            <div class="wallet-step active" id="walletStep1">
+                <div class="wallet-icon">📱</div>
+                <div class="wallet-message">
+                    Je wordt gevraagd om een document te ondertekenen
+                </div>
+                <div style="background: #f5f5f5; padding: 15px; border-radius: 12px; margin-bottom: 20px;">
+                    <div style="font-weight: 600; margin-bottom: 10px;">Document:</div>
+                    <div style="color: #666;">Beleidsstuk: Privacy en Gegevensbescherming</div>
+                </div>
+                <button class="wallet-button primary" onclick="walletApprove()">
+                    Akkoord & Doorgaan
+                </button>
+                <button class="wallet-button secondary" onclick="walletCancel()">
+                    Annuleren
+                </button>
+            </div>
+            
+            <!-- Step 2: PIN -->
+            <div class="wallet-step" id="walletStep2">
+                <div class="wallet-icon">🔒</div>
+                <div class="wallet-message">
+                    Voer je PIN in om te bevestigen
+                </div>
+                <div class="pin-input" id="pinInput">
+                    <div class="pin-digit" data-index="0"></div>
+                    <div class="pin-digit" data-index="1"></div>
+                    <div class="pin-digit" data-index="2"></div>
+                    <div class="pin-digit" data-index="3"></div>
+                </div>
+                <button class="wallet-button secondary" onclick="walletCancel()">
+                    Annuleren
+                </button>
+            </div>
+            
+            <!-- Step 3: Success -->
+            <div class="wallet-step" id="walletStep3">
+                <div class="wallet-icon" style="color: #4caf50; font-size: 5rem;">✓</div>
+                <div class="wallet-message" style="color: #4caf50; font-weight: 600;">
+                    Document succesvol ondertekend!
+                </div>
+                <div style="text-align: center; color: #666; margin-top: 20px;">
+                    Je kunt deze app nu sluiten
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = 'http://localhost:3002/api';
+        let currentStep = 0;
+        let documentId = null;
+        let sessionToken = null;
+        let pinDigits = ['', '', '', ''];
+        let currentPinIndex = 0;
+        
+        // Simuleer PIN input
+        document.addEventListener('keydown', (e) => {
+            if (document.getElementById('walletStep2').classList.contains('active')) {
+                if (e.key >= '0' && e.key <= '9' && currentPinIndex < 4) {
+                    pinDigits[currentPinIndex] = e.key;
+                    document.querySelectorAll('.pin-digit')[currentPinIndex].textContent = '•';
+                    document.querySelectorAll('.pin-digit')[currentPinIndex].classList.add('filled');
+                    currentPinIndex++;
+                    
+                    if (currentPinIndex === 4) {
+                        setTimeout(() => {
+                            walletConfirmPin();
+                        }, 500);
+                    }
+                } else if (e.key === 'Backspace' && currentPinIndex > 0) {
+                    currentPinIndex--;
+                    pinDigits[currentPinIndex] = '';
+                    document.querySelectorAll('.pin-digit')[currentPinIndex].textContent = '';
+                    document.querySelectorAll('.pin-digit')[currentPinIndex].classList.remove('filled');
+                }
+            }
+        });
+        
+        function startSigning() {
+            currentStep = 1;
+            updateProgress(25);
+            document.getElementById('startSignBtn').disabled = true;
+            document.getElementById('step1').classList.add('active');
+            document.getElementById('step2').classList.add('active');
+            
+            showStatus('Sessie starten met NL Wallet...', 'info');
+            
+            // Start sessie
+            fetch(`${API_BASE}/sessions/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ usecase: 'document_signing' })
+            })
+            .then(res => res.json())
+            .then(data => {
+                sessionToken = data.session_token;
+                showQRCode();
+            })
+            .catch(err => {
+                showStatus('Fout: ' + err.message, 'error');
+            });
+        }
+        
+        function showQRCode() {
+            document.getElementById('qrSection').style.display = 'block';
+            document.getElementById('processStatus').style.display = 'none';
+            
+            // Genereer QR code
+            const qrUrl = `walletdebuginteraction://sign?session=${sessionToken}`;
+            document.getElementById('qrcode').innerHTML = '';
+            new QRCode(document.getElementById('qrcode'), {
+                text: qrUrl,
+                width: 256,
+                height: 256,
+                correctLevel: QRCode.CorrectLevel.H
+            });
+            
+            // Simuleer QR scan na 2 seconden
+            setTimeout(() => {
+                showWalletSim();
+            }, 2000);
+        }
+        
+        function showWalletSim() {
+            document.getElementById('walletSim').classList.add('show');
+            updateProgress(50);
+            showStatus('NL Wallet app geopend', 'info');
+        }
+        
+        function walletApprove() {
+            document.getElementById('walletStep1').classList.remove('active');
+            document.getElementById('walletStep2').classList.add('active');
+            updateProgress(75);
+        }
+        
+        function walletCancel() {
+            document.getElementById('walletSim').classList.remove('show');
+            showStatus('Ondertekening geannuleerd', 'error');
+            resetDemo();
+        }
+        
+        function walletConfirmPin() {
+            document.getElementById('walletStep2').classList.remove('active');
+            document.getElementById('walletStep3').classList.add('active');
+            updateProgress(90);
+            
+            // Haal credentials op
+            setTimeout(() => {
+                fetch(`${API_BASE}/sessions/${sessionToken}/credentials`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.credentials) {
+                            completeSigning(data.credentials);
+                        }
+                    });
+            }, 1000);
+        }
+        
+        function completeSigning(credentials) {
+            updateProgress(100);
+            
+            // Genereer document ID
+            documentId = generateDocumentId();
+            
+            // Update document preview
+            document.getElementById('signerName').textContent = 
+                `${credentials.given_name || ''} ${credentials.family_name || ''}`;
+            document.getElementById('signDate').textContent = 
+                new Date().toLocaleString('nl-NL');
+            document.getElementById('documentId').textContent = documentId;
+            
+            document.getElementById('signatureBlock').classList.add('show');
+            document.getElementById('documentPreview').classList.add('signed');
+            
+            // Update steps
+            document.getElementById('step1').classList.remove('active');
+            document.getElementById('step1').classList.add('completed');
+            document.getElementById('step2').classList.remove('active');
+            document.getElementById('step2').classList.add('completed');
+            
+            // Sluit wallet sim na 2 seconden
+            setTimeout(() => {
+                document.getElementById('walletSim').classList.remove('show');
+            }, 2000);
+            
+            // Toon verificatie link
+            const verifyUrl = `${window.location.origin}${window.location.pathname.replace('demo.html', '')}verify.html?id=${documentId}`;
+            document.getElementById('verifyLink').value = verifyUrl;
+            const verifyLinkBtn = document.getElementById('verifyLinkBtn');
+            verifyLinkBtn.href = verifyUrl;
+            verifyLinkBtn.style.display = 'block';
+            document.getElementById('shareSection').classList.add('show');
+            
+            showStatus('✓ Document succesvol ondertekend!', 'success');
+            
+            // Store in backend (mock)
+            storeSignedDocument(documentId, credentials);
+        }
+        
+        function storeSignedDocument(docId, credentials) {
+            // In een echte app zou dit naar de backend gaan
+            // Hier simuleren we het
+            const signedDoc = {
+                documentId: docId,
+                signer: {
+                    name: `${credentials.given_name || ''} ${credentials.family_name || ''}`,
+                    credentials: credentials
+                },
+                signedAt: new Date().toISOString(),
+                documentHash: generateHash(),
+                verified: true
+            };
+            
+            // Store in localStorage voor verificatie pagina
+            localStorage.setItem(`doc_${docId}`, JSON.stringify(signedDoc));
+        }
+        
+        function generateDocumentId() {
+            return 'doc_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now().toString(36);
+        }
+        
+        function generateHash() {
+            return 'sha256:' + Math.random().toString(36).substr(2, 16) + Math.random().toString(36).substr(2, 16);
+        }
+        
+        function copyLink() {
+            const linkInput = document.getElementById('verifyLink');
+            linkInput.select();
+            document.execCommand('copy');
+            
+            const btn = event.target;
+            const originalText = btn.textContent;
+            btn.textContent = '✓ Gekopieerd!';
+            btn.classList.add('copied');
+            
+            setTimeout(() => {
+                btn.textContent = originalText;
+                btn.classList.remove('copied');
+            }, 2000);
+        }
+        
+        function updateProgress(percent) {
+            document.getElementById('progressBar').style.width = percent + '%';
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status show ${type}`;
+        }
+        
+        function resetDemo() {
+            currentStep = 0;
+            document.getElementById('startSignBtn').disabled = false;
+            document.getElementById('step1').classList.remove('active', 'completed');
+            document.getElementById('step2').classList.remove('active', 'completed');
+            document.getElementById('qrSection').style.display = 'none';
+            document.getElementById('processStatus').style.display = 'block';
+            document.getElementById('shareSection').classList.remove('show');
+            document.getElementById('signatureBlock').classList.remove('show');
+            document.getElementById('documentPreview').classList.remove('signed');
+            updateProgress(0);
+            pinDigits = ['', '', '', ''];
+            currentPinIndex = 0;
+            document.querySelectorAll('.pin-digit').forEach(d => {
+                d.textContent = '';
+                d.classList.remove('filled');
+            });
+            document.getElementById('walletStep1').classList.add('active');
+            document.getElementById('walletStep2').classList.remove('active');
+            document.getElementById('walletStep3').classList.remove('active');
+        }
+    </script>
+</body>
+</html>
+

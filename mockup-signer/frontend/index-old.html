@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL Wallet Document Signer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            text-align: center;
+            color: white;
+            max-width: 600px;
+        }
+        
+        h1 {
+            font-size: 3.5rem;
+            margin-bottom: 20px;
+            animation: fadeInDown 0.8s ease;
+        }
+        
+        p {
+            font-size: 1.3rem;
+            margin-bottom: 40px;
+            opacity: 0.9;
+            animation: fadeInUp 0.8s ease 0.2s both;
+        }
+        
+        .options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 40px;
+        }
+        
+        @media (max-width: 600px) {
+            .options {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .option-card {
+            background: white;
+            color: #333;
+            padding: 40px;
+            border-radius: 20px;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .option-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+        
+        .option-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+        
+        .option-title {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .option-description {
+            color: #666;
+            font-size: 1rem;
+        }
+        
+        @keyframes fadeInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 NL Wallet Document Signer</h1>
+        <p>Kies een modus om te beginnen</p>
+        
+        <div class="options">
+            <a href="demo.html" class="option-card">
+                <div class="option-icon">🎬</div>
+                <div class="option-title">Interactieve Demo</div>
+                <div class="option-description">
+                    Bekijk een geanimeerde simulatie van het ondertekeningsproces met NL Wallet
+                </div>
+            </a>
+            
+            <a href="index-old.html" class="option-card">
+                <div class="option-icon">📄</div>
+                <div class="option-title">PDF Upload</div>
+                <div class="option-description">
+                    Upload en onderteken je eigen PDF documenten
+                </div>
+            </a>
+        </div>
+    </div>
+</body>
+</html>
