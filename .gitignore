@@ -63,3 +63,7 @@ _floatsignTemp/
 
 # DigiD connector checkout from devenv
 /nl-rdo-max
+
+# Node modules
+node_modules/
+**/node_modules/
