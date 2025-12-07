@@ -276,32 +276,15 @@
         }
         
         function verifyDocument(docId) {
-            // Check localStorage (van demo)
+            // Check localStorage (volledig client-side, geen backend nodig)
             const stored = localStorage.getItem(`doc_${docId}`);
             
             if (stored) {
                 const doc = JSON.parse(stored);
                 showVerificationResult(doc, true);
             } else {
-                // Probeer backend
-                fetch(`http://localhost:3002/api/documents/verify/${docId}`)
-                    .then(res => {
-                        if (!res.ok) {
-                            throw new Error('Document niet gevonden');
-                        }
-                        return res.json();
-                    })
-                    .then(data => {
-                        if (data.verified) {
-                            showVerificationResult(data, true);
-                        } else {
-                            showVerificationResult(data, false);
-                        }
-                    })
-                    .catch(err => {
-                        // Als backend niet beschikbaar is, toon een vriendelijke melding
-                        showError('Document niet gevonden. Zorg dat je de juiste verificatielink gebruikt die is gegenereerd na ondertekening.');
-                    });
+                // Document niet gevonden in localStorage
+                showError('Document niet gevonden. Zorg dat je de juiste verificatielink gebruikt die is gegenereerd na ondertekening.');
             }
         }
         

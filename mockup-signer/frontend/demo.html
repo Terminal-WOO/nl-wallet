@@ -713,12 +713,21 @@
     </div>
     
     <script>
-        const API_BASE = 'http://localhost:3002/api';
+        // Volledig client-side, geen backend nodig
         let currentStep = 0;
         let documentId = null;
         let sessionToken = null;
         let pinDigits = ['', '', '', ''];
         let currentPinIndex = 0;
+        
+        // Mock credentials
+        const mockCredentials = {
+            given_name: "Jan",
+            family_name: "Jansen",
+            birth_date: "1990-05-15",
+            document_number: "NLD123456789",
+            nationality: "Nederlandse",
+        };
         
         // Simuleer PIN input
         document.addEventListener('keydown', (e) => {
@@ -752,20 +761,12 @@
             
             showStatus('Sessie starten met NL Wallet...', 'info');
             
-            // Start sessie
-            fetch(`${API_BASE}/sessions/start`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ usecase: 'document_signing' })
-            })
-            .then(res => res.json())
-            .then(data => {
-                sessionToken = data.session_token;
+            // Simuleer sessie start (geen backend nodig)
+            sessionToken = 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now().toString(36);
+            
+            setTimeout(() => {
                 showQRCode();
-            })
-            .catch(err => {
-                showStatus('Fout: ' + err.message, 'error');
-            });
+            }, 500);
         }
         
         function showQRCode() {
@@ -811,15 +812,9 @@
             document.getElementById('walletStep3').classList.add('active');
             updateProgress(90);
             
-            // Haal credentials op
+            // Simuleer credentials ophalen (geen backend nodig)
             setTimeout(() => {
-                fetch(`${API_BASE}/sessions/${sessionToken}/credentials`)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.credentials) {
-                            completeSigning(data.credentials);
-                        }
-                    });
+                completeSigning(mockCredentials);
             }, 1000);
         }
         
@@ -850,8 +845,9 @@
                 document.getElementById('walletSim').classList.remove('show');
             }, 2000);
             
-            // Toon verificatie link
-            const verifyUrl = `${window.location.origin}${window.location.pathname.replace('demo.html', '')}verify.html?id=${documentId}`;
+            // Toon verificatie link (werk met relatieve paden voor GitHub Pages)
+            const basePath = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
+            const verifyUrl = `${window.location.origin}${basePath}verify.html?id=${documentId}`;
             document.getElementById('verifyLink').value = verifyUrl;
             const verifyLinkBtn = document.getElementById('verifyLinkBtn');
             verifyLinkBtn.href = verifyUrl;
