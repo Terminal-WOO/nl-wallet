@@ -323,14 +323,10 @@
                         <span class="info-label">Ondertekend op:</span>
                         <span class="info-value">${signedAt}</span>
                     </div>
-                    ${signer.credentials ? `
+                    ${signer.organization_id ? `
                     <div class="info-item">
-                        <span class="info-label">Geboortedatum:</span>
-                        <span class="info-value">${signer.credentials.birth_date || '-'}</span>
-                    </div>
-                    <div class="info-item">
-                        <span class="info-label">Documentnummer:</span>
-                        <span class="info-value">${signer.credentials.document_number || '-'}</span>
+                        <span class="info-label">Organisatie ID:</span>
+                        <span class="info-value" style="font-family: monospace;">${signer.organization_id}</span>
                     </div>
                     ` : ''}
                     <div class="info-item">

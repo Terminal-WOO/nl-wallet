@@ -630,6 +630,10 @@
                                 <div class="signature-value" id="signDate">-</div>
                             </div>
                             <div>
+                                <div class="signature-label">Organisatie ID:</div>
+                                <div class="signature-value" id="organizationId" style="font-family: monospace; font-size: 0.9rem;">-</div>
+                            </div>
+                            <div>
                                 <div class="signature-label">Document ID:</div>
                                 <div class="signature-value" id="documentId" style="font-family: monospace; font-size: 0.8rem;">-</div>
                             </div>
@@ -774,6 +778,7 @@
             nationality: "Nederlandse",
             function_name: "Hoofd Privacy & Compliance",
             department: "Juridische Zaken",
+            organization_id: "NL-KVK-12345678",
         };
         
         // Simuleer PIN input
@@ -882,6 +887,7 @@
             document.getElementById('signerName').textContent = signerDisplay;
             document.getElementById('signDate').textContent = 
                 new Date().toLocaleString('nl-NL');
+            document.getElementById('organizationId').textContent = credentials.organization_id || '-';
             document.getElementById('documentId').textContent = documentId;
             
             // Voeg verificatielink toe aan document zelf
@@ -940,6 +946,7 @@
                     name: signerDisplay,
                     function_name: credentials.function_name,
                     department: credentials.department,
+                    organization_id: credentials.organization_id,
                     credentials: credentials
                 },
                 signedAt: new Date().toISOString(),
