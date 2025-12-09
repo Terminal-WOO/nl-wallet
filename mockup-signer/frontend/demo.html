@@ -179,6 +179,46 @@
             color: #333;
         }
         
+        .verify-link-section {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #c8e6c9;
+            grid-column: 1 / -1;
+        }
+        
+        .verify-link-label {
+            font-weight: 600;
+            color: #2e7d32;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+        }
+        
+        .verify-link {
+            display: inline-block;
+            color: #667eea;
+            text-decoration: none;
+            font-size: 0.85rem;
+            word-break: break-all;
+            padding: 6px 10px;
+            background: #f0f2ff;
+            border-radius: 6px;
+            border: 1px solid #667eea;
+            transition: all 0.2s ease;
+        }
+        
+        .verify-link:hover {
+            background: #e8ebff;
+            text-decoration: underline;
+        }
+        
+        .verify-qr-small {
+            margin-top: 10px;
+            display: inline-block;
+            padding: 8px;
+            background: white;
+            border-radius: 6px;
+        }
+        
         /* QR Code Section */
         .qr-section {
             text-align: center;
@@ -597,6 +637,11 @@
                                 <div class="signature-label">Status:</div>
                                 <div class="signature-value" style="color: #4caf50; font-weight: bold;">✓ Geverifieerd</div>
                             </div>
+                            <div class="verify-link-section">
+                                <div class="verify-link-label">🔗 Verifieer dit document:</div>
+                                <a href="#" id="documentVerifyLink" class="verify-link" target="_blank">-</a>
+                                <div class="verify-qr-small" id="documentVerifyQR" style="display: none;"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -824,12 +869,32 @@
             // Genereer document ID
             documentId = generateDocumentId();
             
+            // Bereken verificatie URL
+            const basePath = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
+            const verifyUrl = `${window.location.origin}${basePath}verify.html?id=${documentId}`;
+            
             // Update document preview
             document.getElementById('signerName').textContent = 
                 `${credentials.given_name || ''} ${credentials.family_name || ''}`;
             document.getElementById('signDate').textContent = 
                 new Date().toLocaleString('nl-NL');
             document.getElementById('documentId').textContent = documentId;
+            
+            // Voeg verificatielink toe aan document zelf
+            const documentVerifyLink = document.getElementById('documentVerifyLink');
+            documentVerifyLink.href = verifyUrl;
+            documentVerifyLink.textContent = verifyUrl;
+            
+            // Genereer QR code voor verificatie link in document
+            const qrContainer = document.getElementById('documentVerifyQR');
+            qrContainer.innerHTML = '';
+            new QRCode(qrContainer, {
+                text: verifyUrl,
+                width: 120,
+                height: 120,
+                correctLevel: QRCode.CorrectLevel.M
+            });
+            qrContainer.style.display = 'inline-block';
             
             document.getElementById('signatureBlock').classList.add('show');
             document.getElementById('documentPreview').classList.add('signed');
@@ -845,18 +910,16 @@
                 document.getElementById('walletSim').classList.remove('show');
             }, 2000);
             
-            // Toon verificatie link (werk met relatieve paden voor GitHub Pages)
-            const basePath = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
-            const verifyUrl = `${window.location.origin}${basePath}verify.html?id=${documentId}`;
+            // Toon verificatie link in share section
             document.getElementById('verifyLink').value = verifyUrl;
             const verifyLinkBtn = document.getElementById('verifyLinkBtn');
             verifyLinkBtn.href = verifyUrl;
             verifyLinkBtn.style.display = 'block';
             document.getElementById('shareSection').classList.add('show');
             
-            showStatus('✓ Document succesvol ondertekend!', 'success');
+            showStatus('✓ Document succesvol ondertekend! De verificatielink staat nu in het document.', 'success');
             
-            // Store in backend (mock)
+            // Store in localStorage
             storeSignedDocument(documentId, credentials);
         }
         
