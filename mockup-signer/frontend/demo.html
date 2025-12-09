@@ -622,7 +622,7 @@
                         <div class="signature-title">✓ Digitaal Ondertekend met NL Wallet</div>
                         <div class="signature-info">
                             <div>
-                                <div class="signature-label">Naam:</div>
+                                <div class="signature-label">Ondertekend door:</div>
                                 <div class="signature-value" id="signerName">-</div>
                             </div>
                             <div>
@@ -772,6 +772,8 @@
             birth_date: "1990-05-15",
             document_number: "NLD123456789",
             nationality: "Nederlandse",
+            function_name: "Hoofd Privacy & Compliance",
+            department: "Juridische Zaken",
         };
         
         // Simuleer PIN input
@@ -873,9 +875,11 @@
             const basePath = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
             const verifyUrl = `${window.location.origin}${basePath}verify.html?id=${documentId}`;
             
-            // Update document preview
-            document.getElementById('signerName').textContent = 
-                `${credentials.given_name || ''} ${credentials.family_name || ''}`;
+            // Update document preview met functienaam en afdeling
+            const signerDisplay = credentials.function_name && credentials.department
+                ? `${credentials.function_name}, ${credentials.department}`
+                : `${credentials.given_name || ''} ${credentials.family_name || ''}`;
+            document.getElementById('signerName').textContent = signerDisplay;
             document.getElementById('signDate').textContent = 
                 new Date().toLocaleString('nl-NL');
             document.getElementById('documentId').textContent = documentId;
@@ -926,10 +930,16 @@
         function storeSignedDocument(docId, credentials) {
             // In een echte app zou dit naar de backend gaan
             // Hier simuleren we het
+            const signerDisplay = credentials.function_name && credentials.department
+                ? `${credentials.function_name}, ${credentials.department}`
+                : `${credentials.given_name || ''} ${credentials.family_name || ''}`;
+            
             const signedDoc = {
                 documentId: docId,
                 signer: {
-                    name: `${credentials.given_name || ''} ${credentials.family_name || ''}`,
+                    name: signerDisplay,
+                    function_name: credentials.function_name,
+                    department: credentials.department,
                     credentials: credentials
                 },
                 signedAt: new Date().toISOString(),
