@@ -43,6 +43,8 @@ post_install do |installer|
     
     # Start of the permission_handler configuration
     target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+
       # workaround for: https://github.com/CocoaPods/CocoaPods/pull/12009
       xcconfig_path = config.base_configuration_reference.real_path
       xcconfig = File.read(xcconfig_path)
