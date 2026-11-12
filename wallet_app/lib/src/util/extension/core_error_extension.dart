@@ -3,7 +3,6 @@ import 'package:fimber/fimber.dart';
 import '../../data/repository/network/network_repository.dart';
 import '../../domain/model/result/application_error.dart';
 import '../../wallet_core/error/core_error.dart';
-import '../mapper/card/attribute/localized_labels_mapper.dart';
 
 extension CoreErrorExtension on CoreError {
   /// Static reference, set on app start, needed to check
@@ -17,6 +16,7 @@ extension CoreErrorExtension on CoreError {
       CoreNetworkError() => _mapNetworkError(error),
       CoreRedirectUriError() => RedirectUriError(redirectError: error.redirectError, sourceError: error),
       CoreHardwareKeyUnsupportedError() => HardwareUnsupportedError(sourceError: error),
+      CoreAttestationError() => AttestationFailedError(sourceError: error),
       CoreDisclosureSourceMismatchError() => _mapDisclosureSourceMismatchError(error),
       CoreExpiredSessionError() => SessionError(
         state: SessionState.expired,
@@ -29,10 +29,16 @@ extension CoreErrorExtension on CoreError {
         returnUrl: returnUrl,
         sourceError: error,
       ),
+      CoreCloseProximityDisconnectedError() => CloseProximityDisconnectedError(sourceError: error),
       CoreRelyingPartyError() => _mapRelyingPartyError(error),
       CoreWrongDigidError() => WrongDigidError(sourceError: error),
       CoreDeniedDigidError() => DeniedDigidError(sourceError: error),
       CoreStateError() => _handleStateError(error),
+      CoreAccountRevokedError() => AccountRevokedError(
+        sourceError: error,
+        canRegisterNewAccount: error.canRegisterNewAccount,
+      ),
+      CorePreAuthorizedCodeExpired() => PreAuthorizedCodeExpiredError(sourceError: error),
     };
   }
 
@@ -51,14 +57,11 @@ extension CoreErrorExtension on CoreError {
   }
 
   ApplicationError _mapRelyingPartyError(CoreRelyingPartyError error) {
-    final organizationName = error.organizationName != null
-        ? LocalizedLabelsMapper().map(error.organizationName!)
-        : null;
-    return RelyingPartyError(sourceError: error, organizationName: organizationName);
+    return RelyingPartyError(sourceError: error, organizationName: error.organizationName);
   }
 
-  Never _handleStateError(CoreStateError error) {
-    Fimber.e('StateError detected!', ex: this);
-    throw StateError(toString());
+  ApplicationError _handleStateError(CoreStateError error) {
+    Fimber.e('Invariant violation, mapping to ApplicationStateError', ex: this);
+    return ApplicationStateError(sourceError: error);
   }
 }

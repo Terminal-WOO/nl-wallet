@@ -1,5 +1,6 @@
 .default-sonar:
   image: "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/nl-wallet-app-builder-ci-quality:${BUILD_TAG}"
+  stage: qa
   rules: !reference [.default-or-merge-request, rules]
   variables:
     GIT_STRATEGY: clone
@@ -19,20 +20,23 @@ sonar-rust:
       artifacts: true
     - job: test-rust-doctest
       artifacts: false
+    - job: test-revocation-portal-js
+      artifacts: true
   script:
     - cd wallet_core
     - sonar-scanner
-      -Dsonar.scanner.skipJreProvisioning=true
-      -Dsonar.sourceEncoding=UTF-8
-      -Dsonar.projectKey=nl-wallet-demo-app-rust
-      -Dsonar.sources=.
-      -Dsonar.exclusions=configuration_server/**,demo/**,wallet_ca/**,wallet_*/*/src/entity/**,uniffi-bindgen/**,target/**,**/examples.rs,**/examples/**,**/resources/**,**/assets/**,**/test-assets/**,**/tests/**,**/tests_integration/**,wallet/platform_support/android/**,wallet/platform_support/ios/**,flutter_api/src/frb_generated.rs
-      -Dsonar.coverage.exclusions=**/migrations/**
-      -Dsonar.tests=.
-      -Dsonar.test.inclusions=**/tests/**,**/tests_integration/**
-      -Dsonar.rust.lcov.reportPaths=lcov.info
-      -Dsonar.rust.clippy.enabled=false
-      -Dsonar.rust.clippy.reportPaths=clippy.json
+        -Dsonar.scanner.skipJreProvisioning=true
+        -Dsonar.sourceEncoding=UTF-8
+        -Dsonar.projectKey=nl-wallet-demo-app-rust
+        -Dsonar.sources=.
+        -Dsonar.exclusions=demo/**,static_server/**,wallet_ca/**,wallet_*/*/src/entity/**,uniffi-bindgen/**,target/**,**/examples.rs,**/examples/**,**/resources/**,**/assets/**,**/test-assets/**,**/tests/**,**/tests_integration/**,wallet/platform_support/android/**,wallet/platform_support/ios/**,flutter_api/src/frb_generated.rs,revocation_portal/static/__tests__/**/*,revocation_portal/pnpm-lock.yaml,revocation_portal/pnpm-workspace.yaml
+        -Dsonar.coverage.exclusions=**/migrations/**
+        -Dsonar.tests=.
+        -Dsonar.test.inclusions=**/tests/**,**/tests_integration/**,revocation_portal/static/__tests__/**
+        -Dsonar.rust.lcov.reportPaths=lcov.info
+        -Dsonar.rust.clippy.enabled=false
+        -Dsonar.rust.clippy.reportPaths=clippy.json
+        -Dsonar.javascript.lcov.reportPaths=revocation_portal/coverage/lcov.info
   allow_failure: true
 
 sonar-flutter:
@@ -42,8 +46,8 @@ sonar-flutter:
       artifacts: true
     - job: test-flutter-ui
       artifacts: true
-    - job: dependency-check
-      artifacts: true
+    # - job: dependency-check
+    #   artifacts: true
   script:
     - cd wallet_app
     - flutter pub get --enforce-lockfile
@@ -53,12 +57,30 @@ sonar-flutter:
       -Dsonar.projectKey=nl-wallet-demo-app
       -Dsonar.qualitygate.wait=$QUALITY_GATE_WAIT
       -Dsonar.sources=.
-      -Dsonar.exclusions=android/**,ios/**,test/**,packages/wallet_core/lib/src/**,**/*.freezed.dart,**/*.g.dart,**/*.yaml
+      -Dsonar.exclusions=**/android/**,**/ios/**,test/**,packages/wallet_core/lib/src/**,**/*.freezed.dart,**/*.g.dart,**/*.yaml
       -Dsonar.coverage.exclusions=packages/wallet_mock/**
       -Dsonar.tests=test/
       -Dsonar.dependencyCheck.htmlReportPath=../dependency-check-report.html
       -Dsonar.dependencyCheck.jsonReportPath=../dependency-check-report.json
       -Dsonar.dart.lcov.reportPaths=coverage/lcov*.info
+  allow_failure: true
+
+sonar-admin-portal:
+  extends: .default-sonar
+  needs:
+    - job: build-admin-portal
+      artifacts: true
+  script:
+    - cd wallet_admin_portal
+    - sonar-scanner
+      -Dsonar.scanner.skipJreProvisioning=true
+      -Dsonar.sourceEncoding=UTF-8
+      -Dsonar.projectKey=nl-wallet-admin-portal
+      -Dsonar.qualitygate.wait=$QUALITY_GATE_WAIT
+      -Dsonar.sources=src/
+      -Dsonar.exclusions=src/__tests__/**/*
+      -Dsonar.tests=src/__tests__
+      -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
   allow_failure: true
 
 sonar-wallet-web:
@@ -82,7 +104,7 @@ sonar-wallet-web:
 sonar-ios:
   extends: .default-sonar
   needs:
-    - job: test-ios
+    - job: test-ios-platform-support-device
       artifacts: true
   script:
     - cd wallet_core/wallet/platform_support/ios
@@ -96,13 +118,15 @@ sonar-ios:
       -Dsonar.c.file.suffixes=-
       -Dsonar.cpp.file.suffixes=-
       -Dsonar.objc.file.suffixes=-
-      -Dsonar.coverageReportPaths=../../../../fastlane/test_output/sonarqube-generic-coverage.xml
+      -Dsonar.coverageReportPaths=../../../../fastlane/test_output/device-coverage/sonarqube-generic-coverage.xml
   allow_failure: true
 
 sonar-android:
   extends: .default-sonar
   needs:
     - job: test-android
+      artifacts: true
+    - job: test-android-platform-support-device
       artifacts: true
   script:
     - cd wallet_core/wallet/platform_support/android

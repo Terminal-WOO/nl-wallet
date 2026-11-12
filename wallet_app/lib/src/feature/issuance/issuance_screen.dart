@@ -5,24 +5,27 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../environment.dart';
 import '../../domain/model/attribute/attribute.dart';
+import '../../domain/model/result/application_error.dart';
 import '../../domain/usecase/pin/disclose_for_issuance_usecase.dart';
 import '../../domain/usecase/pin/impl/disclose_for_issuance_usecase_impl.dart';
 import '../../navigation/wallet_routes.dart';
 import '../../util/cast_util.dart';
 import '../../util/extension/build_context_extension.dart';
+import '../../util/extension/list_extension.dart';
 import '../../util/extension/object_extension.dart';
 import '../../util/launch_util.dart';
 import '../../wallet_assets.dart';
 import '../common/dialog/scan_with_wallet_dialog.dart';
+import '../common/dialog/stop_to_reset_pin_dialog.dart';
 import '../common/page/generic_loading_page.dart';
 import '../common/page/missing_attributes_page.dart';
-import '../common/page/network_error_page.dart';
 import '../common/page/terminal_page.dart';
 import '../common/screen/placeholder_screen.dart';
 import '../common/widget/button/icon/back_icon_button.dart';
 import '../common/widget/button/icon/close_icon_button.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
+import '../common/widget/button/primary_button.dart';
 import '../common/widget/fade_in_at_offset.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
 import '../common/widget/page_illustration.dart';
@@ -32,6 +35,7 @@ import '../common/widget/wallet_app_bar.dart';
 import '../dashboard/dashboard_screen.dart';
 import '../disclosure/widget/disclosure_stop_sheet.dart';
 import '../error/error_page.dart';
+import '../forgot_pin/forgot_pin_screen.dart';
 import '../organization/approve/organization_approve_page.dart';
 import '../report_issue/report_issue_screen.dart';
 import '../report_issue/reporting_group.dart';
@@ -40,10 +44,9 @@ import 'argument/issuance_screen_argument.dart';
 import 'bloc/issuance_bloc.dart';
 import 'issuance_request_details_screen.dart';
 import 'issuance_stop_sheet.dart';
+import 'page/issuance_confirm_issuer_page.dart';
 import 'page/issuance_confirm_pin_for_disclosure_page.dart';
 import 'page/issuance_confirm_pin_for_issuance_page.dart';
-import 'page/issuance_generic_error_page.dart';
-import 'page/issuance_relying_party_error_page.dart';
 import 'page/issuance_review_cards_page.dart';
 import 'page/issuance_stopped_page.dart';
 import 'page/issuance_success_page.dart';
@@ -52,7 +55,7 @@ class IssuanceScreen extends StatelessWidget {
   static IssuanceScreenArgument getArgument(RouteSettings settings) {
     final args = settings.arguments;
     try {
-      return tryCast<IssuanceScreenArgument>(args) ?? IssuanceScreenArgument.fromMap(args! as Map<String, dynamic>);
+      return tryCast<IssuanceScreenArgument>(args) ?? IssuanceScreenArgument.fromJson(args! as Map<String, dynamic>);
     } catch (exception, stacktrace) {
       Fimber.e('Failed to decode $args', ex: exception, stacktrace: stacktrace);
       throw UnsupportedError('Make sure to pass in [IssuanceScreenArgument] when opening the IssuanceScreen');
@@ -71,9 +74,8 @@ class IssuanceScreen extends StatelessWidget {
           leading: _buildBackButton(context),
           automaticallyImplyLeading: false,
           actions: [
-            const HelpIconButton(),
-            CloseIconButton(onPressed: () => _stopIssuance(context)),
-          ],
+            CloseIconButton(onPressed: () => _stopIssuance(context)).takeIf((_) => _showCloseIcon(context)),
+          ].nonNullsList,
           title: _buildTitle(context),
           fadeInTitleOnScroll: false,
           progress: progress,
@@ -96,10 +98,21 @@ class IssuanceScreen extends StatelessWidget {
     );
   }
 
+  bool _showCloseIcon(BuildContext context) {
+    final state = context.watch<IssuanceBloc>().state;
+    return switch (state) {
+      IssuanceInitial() => false,
+      IssuanceLoadInProgress() => false,
+      IssuanceAuthenticateWithIssuer() => false,
+      _ => true,
+    };
+  }
+
   Widget _buildPage() {
     return BlocConsumer<IssuanceBloc, IssuanceState>(
       listener: (context, state) {
         context.read<ScrollOffset>().reset(); // Reset provided scrollOffset between pages
+        if (state is IssuanceAuthenticateWithIssuer) _launchCredentialOfferAuth(context, state.authUrl);
         if (state is IssuanceExternalScannerError) {
           Navigator.maybePop(context).then((popped) {
             if (context.mounted) ScanWithWalletDialog.show(context);
@@ -110,20 +123,19 @@ class IssuanceScreen extends StatelessWidget {
         final Widget result = switch (state) {
           IssuanceInitial() => _buildLoadingRequestPage(context),
           IssuanceLoadInProgress() => _buildLoadingCardsPage(context),
+          IssuanceAuthenticateWithIssuer(:final authUrl) => _buildAuthenticateWithIssuer(context, authUrl),
           IssuanceCheckOrganization() => _buildCheckOrganizationPage(context, state),
           IssuanceMissingAttributes() => _buildMissingAttributes(context, state),
           IssuanceReviewCards() => _buildReviewCardsPage(context, state),
+          IssuanceConfirmIssuer() => _buildConfirmIssuerPage(context, state),
           IssuanceCompleted() => _buildIssuanceCompletedPage(context, state),
           IssuanceStopped() => _buildStoppedPage(context, state),
-          IssuanceGenericError() => _buildGenericErrorPage(context),
+          IssuanceError(:final error, :final returnUrl) => _buildGenericErrorPage(context, error, returnUrl: returnUrl),
           IssuanceProvidePinForDisclosure() => _buildProvidePinForDisclosurePage(context, state),
           IssuanceProvidePinForIssuance() => _buildProvidePinForIssuancePage(context, state),
           IssuanceNoCardsRetrieved() => _buildNoCardsReceived(context, state),
-          IssuanceExternalScannerError() => _buildGenericErrorPage(context),
-          IssuanceNetworkError() => _buildNetworkErrorPage(context, state),
+          IssuanceExternalScannerError(:final error) => _buildGenericErrorPage(context, error),
           IssuanceSessionExpired() => _buildSessionExpiredPage(context, state),
-          IssuanceSessionCancelled() => _buildCancelledSessionPage(context, state),
-          IssuanceRelyingPartyError() => _buildRelyingPartyErrorPage(context, state),
         };
 
         final skipAnim = !state.didGoBack && state is IssuanceCheckOrganization;
@@ -133,13 +145,6 @@ class IssuanceScreen extends StatelessWidget {
           child: result,
         );
       },
-    );
-  }
-
-  Widget _buildNetworkErrorPage(BuildContext context, IssuanceNetworkError state) {
-    return NetworkErrorPage(
-      hasInternet: state.hasInternet,
-      onStopPressed: () => Navigator.pop(context),
     );
   }
 
@@ -174,17 +179,16 @@ class IssuanceScreen extends StatelessWidget {
       final attributeLabel = requestedAttribute?.label.l10nValue(context) ?? '';
       description = context.l10n.issuanceRequestedAttributeDescription(
         attributeLabel,
-        state.organization.displayName.l10nValue(context),
+        state.organization.displayName,
       );
     } else {
       description = context.l10n.issuanceRequestedAttributesDescription(
         attributes.length,
-        state.organization.displayName.l10nValue(context),
+        state.organization.displayName,
       );
     }
     return OrganizationApprovePage(
       onDeclinePressed: () => _stopIssuance(context),
-      originUrl: 'http://issue.origin.org',
       onAcceptPressed: () => context.bloc.add(const IssuanceOrganizationApproved()),
       organization: state.organization,
       purpose: ApprovalPurpose.issuance,
@@ -210,6 +214,7 @@ class IssuanceScreen extends StatelessWidget {
         onConfirmWithPinFailed: (context, errorState) => context.bloc.add(
           IssuanceConfirmPinFailed(error: errorState.error),
         ),
+        onForgotPinPressed: () => _onForgotPinPressed(context),
       ),
     );
   }
@@ -217,11 +222,23 @@ class IssuanceScreen extends StatelessWidget {
   Widget _buildProvidePinForIssuancePage(BuildContext context, IssuanceProvidePinForIssuance state) {
     return IssuanceConfirmPinForIssuancePage(
       onPinValidated: (_) => context.bloc.add(const IssuancePinForIssuanceConfirmed()),
-      onConfirmWithPinFailed: (context, errorState) => context.bloc.add(
-        IssuanceConfirmPinFailed(error: errorState.error),
-      ),
+      onConfirmWithPinFailed: (context, errorState) =>
+          context.bloc.add(IssuanceConfirmPinFailed(error: errorState.error)),
       cards: state.cards,
+      onForgotPinPressed: () => _onForgotPinPressed(context),
     );
+  }
+
+  Future<void> _onForgotPinPressed(BuildContext context) async {
+    final session = context.bloc.state is IssuanceProvidePinForIssuance
+        ? StopCopyVariant.issuance
+        : StopCopyVariant.disclosure;
+    final organizationName = context.bloc.relyingParty?.displayName;
+    final stopped = await StopToResetPinDialog.show(context, session, organizationName: organizationName);
+    if (stopped && context.mounted) {
+      context.bloc.add(const IssuanceStopRequested());
+      await ForgotPinScreen.show(context, popToDashboard: true);
+    }
   }
 
   Widget _buildReviewCardsPage(BuildContext context, IssuanceReviewCards state) {
@@ -229,6 +246,14 @@ class IssuanceScreen extends StatelessWidget {
       offeredCards: state.offeredCards,
       renewedCards: state.renewedCards,
       onAccept: (acceptedCards) => context.bloc.add(IssuanceApproveCards(cards: acceptedCards)),
+      onDecline: () => _stopIssuance(context),
+    );
+  }
+
+  Widget _buildConfirmIssuerPage(BuildContext context, IssuanceConfirmIssuer state) {
+    return IssuanceConfirmIssuerPage(
+      organization: state.organization,
+      onAccept: () => context.bloc.add(const IssuanceIssuerApproved()),
       onDecline: () => _stopIssuance(context),
     );
   }
@@ -251,12 +276,18 @@ class IssuanceScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildGenericErrorPage(BuildContext context, {String? returnUrl}) {
-    return IssuanceGenericErrorPage(
-      onClosePressed: () {
+  Widget _buildGenericErrorPage(BuildContext context, ApplicationError error, {String? returnUrl}) {
+    // Check for [RelyingPartyError], as the issuance flow uses non-standard copy for this state.
+    if (error is RelyingPartyError) return _buildRelyingPartyErrorPage(context, error);
+    return ErrorPage.fromError(
+      context,
+      error,
+      onPrimaryActionPressed: () {
         returnUrl?.let((url) => launchUrlStringCatching(url, mode: LaunchMode.externalApplication));
         Navigator.pop(context);
       },
+      style: .close,
+      organizationName: context.bloc.relyingParty?.displayName,
     );
   }
 
@@ -267,7 +298,7 @@ class IssuanceScreen extends StatelessWidget {
       final inDisclosureState = state is IssuanceCheckOrganization || state is IssuanceProvidePinForDisclosure;
       final stopped = await (inDisclosureState ? DisclosureStopSheet.show : IssuanceStopSheet.show)(
         context,
-        organizationName: bloc.relyingParty?.displayName.l10nValue(context),
+        organizationName: bloc.relyingParty?.displayName,
         onReportIssuePressed: () => ReportIssueScreen.show(context, _resolveReportingOptionsForState(context, state)),
       );
       if (stopped) bloc.add(const IssuanceStopRequested());
@@ -279,11 +310,16 @@ class IssuanceScreen extends StatelessWidget {
   Widget _buildNoCardsReceived(BuildContext context, IssuanceNoCardsRetrieved state) {
     return TerminalPage(
       title: context.l10n.issuanceNoCardsPageTitle,
-      description: context.l10n.issuanceNoCardsPageDescription(state.organization.displayName.l10nValue(context)),
-      primaryButtonCta: context.l10n.generalClose,
-      onPrimaryPressed: () => _stopIssuance(context),
-      primaryButtonIcon: const Icon(Icons.close),
+      description: context.l10n.issuanceNoCardsPageDescription(
+        state.organization.displayName,
+      ),
       illustration: const PageIllustration(asset: WalletAssets.svg_no_cards),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.generalClose),
+        icon: const Icon(Icons.close),
+        onPressed: () => _stopIssuance(context),
+        key: const Key('primaryButtonCta'),
+      ),
     );
   }
 
@@ -301,10 +337,14 @@ class IssuanceScreen extends StatelessWidget {
       context,
       style: state.canRetry ? ErrorCtaStyle.retry : ErrorCtaStyle.close,
       cta: cta,
+      error: state.error,
       onPrimaryActionPressed: () {
         if (userShouldRetryScan) {
-          Navigator.popUntil(context, ModalRoute.withName(WalletRoutes.dashboardRoute));
-          Navigator.pushNamed(context, WalletRoutes.qrRoute);
+          Navigator.pushNamedAndRemoveUntil(
+            context,
+            WalletRoutes.qrScanRoute,
+            ModalRoute.withName(WalletRoutes.dashboardRoute),
+          );
         } else if (hasReturnUrl) {
           Navigator.maybePop(context);
           launchUrlStringCatching(state.returnUrl!, mode: LaunchMode.externalApplication);
@@ -315,21 +355,14 @@ class IssuanceScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildCancelledSessionPage(BuildContext context, IssuanceSessionCancelled state) {
-    return ErrorPage.cancelledSession(
+  Widget _buildRelyingPartyErrorPage(BuildContext context, RelyingPartyError error) {
+    return ErrorPage.relyingParty(
       context,
-      organizationName: state.relyingParty?.displayName.l10nValue(context) ?? context.l10n.organizationFallbackName,
-      onPrimaryActionPressed: () {
-        Navigator.pop(context);
-        state.returnUrl?.let((url) => launchUrlStringCatching(url, mode: LaunchMode.externalApplication));
-      },
-    );
-  }
-
-  Widget _buildRelyingPartyErrorPage(BuildContext context, IssuanceRelyingPartyError state) {
-    return IssuanceRelyingPartyErrorPage(
-      organizationName: state.organizationName?.l10nValue(context),
-      onClosePressed: () => Navigator.pop(context),
+      organizationName: error.organizationName ?? context.bloc.relyingParty?.displayName,
+      onPrimaryActionPressed: () => Navigator.pop(context),
+      style: .close,
+      useIssuanceStyle: true,
+      error: error,
     );
   }
 
@@ -350,6 +383,7 @@ class IssuanceScreen extends StatelessWidget {
     return switch (state) {
       IssuanceInitial() => context.l10n.issuanceLoadingRequestTitle,
       IssuanceLoadInProgress() => context.l10n.issuanceLoadingCardsTitle,
+      IssuanceAuthenticateWithIssuer() => context.l10n.issuanceAuthenticateExternallyTitle,
       IssuanceCheckOrganization() => OrganizationApprovePage.resolveTitle(
         context,
         ApprovalPurpose.issuance,
@@ -363,16 +397,13 @@ class IssuanceScreen extends StatelessWidget {
         renewedCards: state.renewedCards,
         offeredCards: state.offeredCards,
       ),
+      IssuanceConfirmIssuer() => IssuanceConfirmIssuerPage.resolveTitle(context, state.organization),
       IssuanceCompleted() => context.l10n.issuanceSuccessPageTitle(state.addedCards.length),
       IssuanceStopped() => context.l10n.issuanceStoppedPageTitle,
-      IssuanceGenericError() => context.l10n.issuanceGenericErrorPageTitle,
+      IssuanceError(:final error) => ErrorPage.titleFromError(context, error),
       IssuanceNoCardsRetrieved() => context.l10n.issuanceNoCardsPageTitle,
-      IssuanceExternalScannerError() => context.l10n.issuanceGenericErrorPageTitle,
-      IssuanceNetworkError() =>
-        state.hasInternet ? context.l10n.errorScreenServerHeadline : context.l10n.errorScreenNoInternetHeadline,
+      IssuanceExternalScannerError() => context.l10n.errorScreenGenericHeadline,
       IssuanceSessionExpired() => context.l10n.errorScreenSessionExpiredHeadline,
-      IssuanceSessionCancelled() => context.l10n.errorScreenCancelledSessionHeadline,
-      IssuanceRelyingPartyError() => context.l10n.issuanceRelyingPartyErrorTitle,
     };
   }
 
@@ -394,6 +425,24 @@ class IssuanceScreen extends StatelessWidget {
       default:
         Fimber.d('No ReportingOptions provided for $state');
         return <ReportingOption>[];
+    }
+  }
+
+  Widget _buildAuthenticateWithIssuer(BuildContext context, String authUrl) {
+    return GenericLoadingPage(
+      title: context.l10n.issuanceAuthenticateExternallyTitle,
+      description: context.l10n.issuanceAuthenticateExternallyDescription,
+      onCancel: () => context.bloc.add(const IssuanceStopRequested()),
+      cancelCta: context.l10n.generalStop,
+      loadingIndicator: const SizedBox.shrink(),
+    );
+  }
+
+  void _launchCredentialOfferAuth(BuildContext context, String authUrl) {
+    if (authUrl == 'mock://auth_url' && Environment.mockRepositories) {
+      context.bloc.add(const IssuanceSessionContinued('mock'));
+    } else {
+      launchUrlStringCatching(authUrl, mode: .externalApplication);
     }
   }
 }

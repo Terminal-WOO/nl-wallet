@@ -1,6 +1,7 @@
 package screen.security
 
 import data.TestConfigRepository.Companion.testConfig
+import domain.Platform
 import util.MobileActions
 
 class PinScreen : MobileActions() {
@@ -15,6 +16,7 @@ class PinScreen : MobileActions() {
     private val forgotPinButton = l10n.getString("pinScreenForgotPinCta")
     private val confirmPinErrorFatalCta = l10n.getString("pinConfirmationErrorDialogFatalCta")
     private val skipBiometricsCta = l10n.getString("setupBiometricsPageSkipCta")
+    private val enableBiometricsCta = l10n.getString("setupBiometricsPageEnableCta")
     private val closeAlertDialogButton = l10n.getString("generalOkCta")
     private val closeIncorrectPinAlertDialogButton = l10n.getString("pinErrorDialogCloseCta")
     private val pinValidationErrorTooFewUniqueDigits = l10n.getString("pinValidationErrorDialogTooFewUniqueDigitsError")
@@ -25,10 +27,15 @@ class PinScreen : MobileActions() {
     private val confirmPinErrorMismatchFatalDescription = l10n.getString("pinConfirmationErrorDialogFatalDescription")
     private val pinErrorDialogNonFinalRoundInitialAttempt = l10n.getString("pinErrorDialogNonFinalRoundInitialAttempt")
     private val pinErrorDialogNonFinalRoundFinalAttempt = l10n.getString("pinErrorDialogNonFinalRoundFinalAttempt")
+    private val changePinScreenEnterCurrentPinTitle = l10n.getString("changePinScreenEnterCurrentPinTitle")
+    private val changePinScreenSelectNewPinTitle = l10n.getString("changePinScreenSelectNewPinTitle")
+    private val changePinScreenConfirmNewPinTitle = l10n.getString("changePinScreenConfirmNewPinTitle")
+    private val faceIdButton = l10n.getString("biometricsFaceId")
+    private val fingerprintButton = l10n.getString("biometricsFingerprint")
 
     fun setupPinScreenVisible() = elementWithTextVisible(setupSecuritySelectPinPageTitle)
 
-    fun pinScreenVisible() = elementWithTextVisible(pinScreenHeader)
+    fun pinScreenVisible(timeoutInSeconds: Long = 5) = elementWithTextVisible(pinScreenHeader, timeoutInSeconds)
 
     fun confirmPinScreenVisible() = elementWithTextVisible(confirmPinScreen)
 
@@ -62,13 +69,13 @@ class PinScreen : MobileActions() {
 
     fun confirmPin(pin: String) {
         elementWithTextVisible(confirmPinScreen)
+        Thread.sleep(ANIMATION_SETTLE_MILLIS)
         enterPin(pin)
     }
 
     fun enterPin(pin: String) {
-        for (digit in pin) {
-            clickElementWithText(digit.toString())
-        }
+        clickElementWithText(pin.take(1))
+        withoutWaitForIdle { pin.drop(1).forEach { clickElementWithText(it.toString()) } }
     }
 
     fun clickConfirmPinErrorFatalCta() = clickElementWithText(confirmPinErrorFatalCta)
@@ -87,8 +94,33 @@ class PinScreen : MobileActions() {
 
     fun pinErrorDialogNonFinalRoundNonFinalAttemptVisible(retriesLeft: String): Boolean {
         val selectortext = l10n.getString("pinErrorDialogNonFinalRoundNonFinalAttempt").replace("{count}", retriesLeft)
-        return elementWithTextVisible(selectortext);
+        return elementWithTextVisible(selectortext)
     }
 
     fun pinErrorDialogNonFinalRoundFinalAttemptVisible() = elementWithTextVisible(pinErrorDialogNonFinalRoundFinalAttempt)
+
+    fun enterCurrentPinTitleVisible() = elementWithTextVisible(changePinScreenEnterCurrentPinTitle)
+
+    fun selectNewPinTitleVisible() = elementWithTextVisible(changePinScreenSelectNewPinTitle)
+
+    fun confirmNewPinTitleVisible() = elementWithTextVisible(changePinScreenConfirmNewPinTitle)
+
+    fun enableBiometrics() {
+        clickElementWithText(enableBiometricsCta)
+        enterBiometric(true)
+    }
+
+    fun openBiometricLogin() {
+        when (platform()) {
+            Platform.IOS -> clickElementContainingText(faceIdButton)
+            Platform.ANDROID -> clickElementContainingText(fingerprintButton)
+        }
+    }
+
+    fun enterBiometric(match: Boolean) {
+        Thread.sleep(SET_FRAME_SYNC_MAX_WAIT_MILLIS)
+        performBiometricAuthentication(match)
+    }
+
+    fun biometricUnlockAvailable() = elementWithTextVisible(faceIdButton)
 }

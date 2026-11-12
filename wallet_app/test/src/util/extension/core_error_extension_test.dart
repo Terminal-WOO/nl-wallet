@@ -1,11 +1,8 @@
-import 'dart:ui';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/util/extension/core_error_extension.dart';
 import 'package:wallet/src/wallet_core/error/core_error.dart';
-import 'package:wallet_core/core.dart';
 
 import '../../mocks/wallet_mocks.mocks.dart';
 
@@ -75,6 +72,15 @@ void main() {
       expect(applicationError.sourceError, coreError);
     });
 
+    test('CoreAttestationError maps to AttestationFailedError', () async {
+      const coreError = CoreAttestationError('description');
+
+      final applicationError = await coreError.asApplicationError();
+
+      expect(applicationError, isA<AttestationFailedError>());
+      expect(applicationError.sourceError, coreError);
+    });
+
     group('CoreDisclosureSourceMismatchError', () {
       test('maps to ExternalScannerError when isCrossDevice is true', () async {
         const coreError = CoreDisclosureSourceMismatchError('description', isCrossDevice: true);
@@ -128,18 +134,27 @@ void main() {
       expect(sessionError.sourceError, coreError);
     });
 
+    test('CoreCloseProximityDisconnectedError maps to CloseProximityDisconnectedError', () async {
+      const coreError = CoreCloseProximityDisconnectedError('description');
+
+      final applicationError = await coreError.asApplicationError();
+
+      expect(applicationError, isA<CloseProximityDisconnectedError>());
+      expect(applicationError.sourceError, coreError);
+    });
+
     group('CoreRelyingPartyError', () {
       test('maps to RelyingPartyError with organization name', () async {
         final coreError = CoreRelyingPartyError(
           'description',
-          organizationName: [const LocalizedString(language: 'en', value: 'org')],
+          organizationName: 'org',
         );
 
         final applicationError = await coreError.asApplicationError();
 
         expect(applicationError, isA<RelyingPartyError>());
         final rpError = applicationError as RelyingPartyError;
-        expect(rpError.organizationName, {const Locale('en'): 'org'});
+        expect(rpError.organizationName, 'org');
         expect(rpError.sourceError, coreError);
       });
 
@@ -173,10 +188,12 @@ void main() {
       expect(applicationError.sourceError, coreError);
     });
 
-    test('CoreStateError throws StateError', () async {
+    test('CoreStateError maps to ApplicationStateError (no longer crashes)', () async {
       const coreError = CoreStateError('description');
+      final applicationError = await coreError.asApplicationError();
 
-      expect(() async => coreError.asApplicationError(), throwsA(isA<StateError>()));
+      expect(applicationError, isA<ApplicationStateError>());
+      expect(applicationError.sourceError, coreError);
     });
   });
 }

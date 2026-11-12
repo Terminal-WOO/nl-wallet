@@ -6,6 +6,7 @@ import 'package:wallet/l10n/generated/app_localizations.dart';
 import 'package:wallet/src/data/repository/configuration/configuration_repository.dart';
 import 'package:wallet/src/domain/model/attribute/attribute.dart';
 import 'package:wallet/src/domain/model/configuration/flutter_app_configuration.dart';
+import 'package:wallet/src/domain/model/pid/pid_attestation.dart';
 import 'package:wallet/src/domain/model/result/result.dart';
 import 'package:wallet/src/domain/model/tour/tour_video.dart';
 import 'package:wallet/src/domain/usecase/tour/impl/fetch_tour_videos_usecase_impl.dart';
@@ -23,14 +24,17 @@ void main() {
     idleWarningTimeout: Duration.zero,
     backgroundLockTimeout: Duration.zero,
     staticAssetsBaseUrl: testBaseUrl,
-    version: 0,
+    pidAttestations: [PidAttestation(attestationType: 'com.example.attestationType', format: .sdJwt)],
+    maintenanceWindow: null,
+    version: '0',
+    environment: 'test',
   );
 
   setUp(() {
     mockConfigurationRepository = MockConfigurationRepository();
     useCase = FetchTourVideosUseCaseImpl(mockConfigurationRepository);
 
-    when(mockConfigurationRepository.appConfiguration).thenAnswer((_) => Stream.value(appConfig));
+    when(mockConfigurationRepository.observeAppConfiguration).thenAnswer((_) => Stream.value(appConfig));
   });
 
   test('invoke returns success with a list of tour videos matching the amount of video_slugs', () async {

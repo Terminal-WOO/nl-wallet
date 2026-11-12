@@ -1,12 +1,19 @@
+pub mod admin_portal_session;
+pub mod admin_task;
 pub mod database;
 #[rustfmt::skip]
 pub mod entity;
+pub mod recovery_code;
 pub mod repositories;
 pub mod transaction;
+pub mod wallet_flag;
 pub mod wallet_transfer;
 pub mod wallet_user;
 pub mod wallet_user_key;
-pub mod wallet_user_wua;
+pub mod wallet_user_wia;
+
+#[cfg(feature = "test")]
+pub mod test;
 
 pub trait PersistenceConnection<T> {
     fn connection(&self) -> &T;

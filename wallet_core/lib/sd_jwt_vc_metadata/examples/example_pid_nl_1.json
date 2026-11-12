@@ -1,0 +1,128 @@
+{
+  "vct": "urn:example:pid:nl:1",
+  "name": "NL PID credential",
+  "description": "Working version of the Dutch PID credential",
+  "extends": "urn:example:pid:1",
+  "extends#integrity": "sha256-44Ectg/fOPsm9CVK+y0s3zsC5+TkBvlVxnD6jmt/MjQ=",
+  "display": [
+    {
+      "locale": "en-US",
+      "name": "Personal data",
+      "description": "The Dutch personal data credential",
+      "summary": "{{given_name}}",
+      "rendering": {
+        "simple": {
+          "background_color": "#C7E8EE",
+          "text_color": "#152A62"
+        }
+      }
+    },
+    {
+      "locale": "nl-NL",
+      "name": "Persoonsgegevens",
+      "description": "De Nederlandse persoonsgegevensattestatie",
+      "summary": "{{given_name}}",
+      "rendering": {
+        "simple": {
+          "background_color": "#C7E8EE",
+          "text_color": "#152A62"
+        }
+      }
+    }
+  ],
+  "claims": [
+    {
+      "path": ["family_name"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Achternaam",
+          "description": "Achternaam van de persoon, inclusief voorvoegsels"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["given_name"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Voornaam",
+          "description": "Voornaam van de persoon"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true,
+      "svg_id": "given_name"
+    },
+    {
+      "path": ["birthdate"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Geboortedatum",
+          "description": "Geboortedatum van de persoon"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["age_over_18"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "18+",
+          "description": "Of de persoon 18+ is"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["nationalities"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Nationaliteiten",
+          "description": "Lijst van nationaliteiten van de persoon"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["bsn"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "BSN",
+          "description": "BSN of the person"
+        },
+        {
+          "locale": "nl-NL",
+          "label": "BSN",
+          "description": "BSN van de persoon"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["recovery_code"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Recovery code",
+          "description": "Recovery code of the person"
+        },
+        {
+          "locale": "nl-NL",
+          "label": "Herstelcode",
+          "description": "Herstelcode van de persoon"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    }
+  ]
+}

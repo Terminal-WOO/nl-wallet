@@ -1,9 +1,13 @@
 require 'active_support'
+require 'json'
 require 'active_support/core_ext'
+
+require_relative 'badge'
 
 # taken from previous GitHub repository
 BUILD_OFFSET = 861
 DEFAULT_APP_NAME = "NL Wallet"
+BADGE_FONT='../wallet_app/assets/non-free/fonts/rijksoverheid-sans-web-text-regular.ttf'
 
 # opt out of analytics
 opt_out_usage
@@ -49,15 +53,49 @@ private_lane :get_newest_file do |options|
   end
 end
 
+def sentry_upload_configured?
+  !ENV["SENTRY_AUTH_TOKEN"].blank?
+end
+
+def ensure_sentry_upload_environment!
+  UI.user_error!("Missing environment variable 'SENTRY_ORG'") if ENV["SENTRY_ORG"].blank?
+  UI.user_error!("Missing environment variable 'SENTRY_PROJECT'") if ENV["SENTRY_PROJECT"].blank?
+  UI.user_error!("Missing environment variable 'SENTRY_URL'") if ENV["SENTRY_URL"].blank?
+end
+
 # Upload debug symbols to Sentry.
 # Requires the following environment variables: [SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT, SENTRY_URL].
-# SENTRY_AUTH_TOKEN enables the sentry_dart_plugin, after which the existense of the other variables is checked.
-private_lane :upload_sentry_symbols do
-  unless ENV["SENTRY_AUTH_TOKEN"].blank? then
-    UI.user_error!("Missing environment variable 'SENTRY_ORG'") if ENV["SENTRY_ORG"].blank?
-    UI.user_error!("Missing environment variable 'SENTRY_PROJECT'") if ENV["SENTRY_PROJECT"].blank?
-    UI.user_error!("Missing environment variable 'SENTRY_URL'") if ENV["SENTRY_URL"].blank?
-    sh(*flutter_cmd, "packages", "pub", "run", "sentry_dart_plugin")
+# SENTRY_AUTH_TOKEN enables the sentry_dart_plugin, after which the existence of the other variables is checked.
+# On iOS, sentry_dart_plugin uploads the archive/dSYM paths used for Rust symbolication.
+private_lane :upload_sentry_symbols do |options|
+  if sentry_upload_configured?
+    ensure_sentry_upload_environment!
+    sh({ "SENTRY_RELEASE" => options[:sentry_release] }, *flutter_cmd, "packages", "pub", "run", "sentry_dart_plugin")
+  end
+end
+
+# Android Rust .so files are uploaded explicitly after the Flutter build copies them to jniLibs.
+# Keep --include-sources aligned with sentry.upload_sources in wallet_app/pubspec.yaml.
+private_lane :upload_android_rust_sentry_symbols do |options|
+  if sentry_upload_configured?
+    ensure_sentry_upload_environment!
+
+    sentry_cli = File.expand_path("../wallet_app/.dart_tool/pub/bin/sentry_dart_plugin/sentry-cli", __dir__)
+    UI.user_error!("Sentry CLI not found at #{sentry_cli}; run upload_sentry_symbols first") unless File.exist?(sentry_cli)
+
+    symbol_files = Dir.glob("android/app/src/main/jniLibs/**/libwallet_core.so").sort
+    UI.user_error!("No Android Rust debug symbols found under android/app/src/main/jniLibs") if symbol_files.empty?
+
+    UI.message("Uploading #{symbol_files.length} Android Rust debug symbol file(s) to Sentry")
+    sh(
+      { "SENTRY_RELEASE" => options[:sentry_release] },
+      sentry_cli,
+      "debug-files",
+      "upload",
+      "--include-sources",
+      "--wait",
+      *symbol_files
+    )
   end
 end
 
@@ -75,7 +113,7 @@ lane :upload_to_play_store_internal_track do |options|
   )
 end
 
-private_lane :upload_to_browserstack do |options|
+private_lane :upload_app_to_browserstack do |options|
   Dir.chdir("..") do
     sh(
       "curl",
@@ -90,6 +128,16 @@ private_lane :upload_to_browserstack do |options|
 end
 
 platform :android do
+  desc "Add badge to launcher icons"
+  lane :add_badge do |options|
+    badge = Badge::new((options[:label] || 'latest').upcase, BADGE_FONT)
+    Pathname.new('../wallet_app').glob('**/ic_launcher*.{png,webp}').each do |i|
+      compose = i.basename.to_s.match?('foreground') ? 'over' : 'atop'
+      badge.add_to_image(i, font_rel_size: 0.13, translate: 0.66, compose: compose)
+      badge.add_seasonal_image(i, compose: compose)
+    end
+  end
+
   desc "Build and sign Android app"
   lane :build do |options|
 
@@ -105,7 +153,6 @@ platform :android do
     universal_link_base = options[:universal_link_base]
     sentry_dsn = ENV["SENTRY_DSN"]
     sentry_environment = ENV["SENTRY_ENVIRONMENT"]
-    sentry_release = ENV["SENTRY_RELEASE"]
 
     local_version, local_build = get_local_version_and_build
     build = options[:build] || local_build
@@ -114,6 +161,14 @@ platform :android do
     build_mode = options[:build_mode] || "release"
     mock_repositories = options[:mock] || false
     demo_index_url = options[:demo_index_url] || ""
+    show_debug_options = options[:show_debug_options] || false
+    enable_wrprc_strict_mode_toggle = options[:enable_wrprc_strict_mode_toggle] || false
+    show_error_details = options[:show_error_details] || false
+    allow_insecure_url = options[:allow_insecure_url] || (build_mode == "debug")
+    allow_release_logs = options[:allow_release_logs] || false
+
+    sentry_release = ENV["SENTRY_RELEASE"]
+    sentry_release = "#{application_id}@#{version}+#{build}" if sentry_release.blank?
 
     UI.user_error!("Invalid file_format: #{file_format}") unless ["aab", "apk"].include? file_format
     UI.user_error!("Invalid build_mode: #{build_mode}") unless ["release", "profile", "debug"].include? build_mode
@@ -124,7 +179,7 @@ platform :android do
     flutter = flutter_cmd
 
     Dir.chdir("../wallet_app") do
-      sh(*flutter, "pub", "get")
+      sh(*flutter, "pub", "get", "--enforce-lockfile")
       sh({ "APPLICATION_ID" => application_id, "APP_NAME" => app_name },
         *flutter, "build", file_format_command,
             "--build-number", build.to_s,
@@ -133,17 +188,23 @@ platform :android do
             "--dart-define=MOCK_REPOSITORIES=#{mock_repositories}",
             "--dart-define=DEMO_INDEX_URL=#{demo_index_url}",
             "--dart-define=UL_HOSTNAME=#{universal_link_base}",
+            "--dart-define=ALLOW_RELEASE_LOGS=#{allow_release_logs}",
             "--dart-define=SENTRY_DSN=#{sentry_dsn}",
             "--dart-define=SENTRY_ENVIRONMENT=#{sentry_environment}",
             "--dart-define=SENTRY_RELEASE=#{sentry_release}",
+            "--dart-define=SHOW_DEBUG_OPTIONS=#{show_debug_options}",
+            "--dart-define=ENABLE_WRPRC_STRICT_MODE_TOGGLE=#{enable_wrprc_strict_mode_toggle}",
+            "--dart-define=SHOW_ERROR_DETAILS=#{show_error_details}",
+            "--dart-define=ALLOW_INSECURE_URL=#{allow_insecure_url}",
       )
 
-      upload_sentry_symbols
+      upload_sentry_symbols(sentry_release: sentry_release)
+      upload_android_rust_sentry_symbols(sentry_release: sentry_release)
 
       source_filepath = "build/app/outputs/#{file_format_path}/#{build_mode}/app-#{build_mode}.#{file_format}"
       target_filepath = "../#{application_id}-#{version}-#{build_mode}.#{file_format}"
 
-      File.rename(source_filepath, target_filepath)
+      FileUtils.mv(source_filepath, target_filepath)
     end
   end
 
@@ -166,8 +227,8 @@ platform :android do
   desc "Upload Android app to BrowserStack from GitLab CI"
   lane :ci_browserstack do |options|
     browserstack_user = ENV["BROWSERSTACK_USER"]
-    browserstack_key = ENV["BROWSERSTACK_KEY"]
-    commit_sha = ENV["CI_COMMIT_SHA"]
+    browserstack_key  = ENV["BROWSERSTACK_KEY"]
+    commit_sha        = ENV["CI_COMMIT_SHA"]
 
     UI.user_error!("No BROWSERSTACK_USER environment variable set") if browserstack_user.blank?
     UI.user_error!("No BROWSERSTACK_KEY environment variable set") if browserstack_key.blank?
@@ -187,6 +248,20 @@ platform :android do
     )
   end
 
+  desc "Run the full platform_support instrumented test suite on a physically connected Android device"
+  lane :test_platform_support_device do
+    serial = ENV["ANDROID_SERIAL"]
+    UI.user_error!("No ANDROID_SERIAL set") if serial.blank?
+
+    Dir.chdir("..") do
+      sh({ "ANDROID_NDK_TARGETS" => "arm64-v8a" },
+         "scripts/close_proximity/run_disclosure_android_test.py",
+         "--serial", serial, "--",
+         "./gradlew", "--no-daemon",
+         ":test-app:connectedDebugAndroidTest", ":createDebugAndroidTestCoverageReport")
+    end
+  end
+
   desc "Upload Android app to BrowserStack"
   lane :browserstack do |options|
     file = options[:file]
@@ -195,11 +270,20 @@ platform :android do
     application_id = options[:application_id]
     commit_sha = options[:commit_sha]
 
-    upload_to_browserstack(file: file, user: user, key: key, custom_id: "NLWalletAndroid_#{application_id}_#{commit_sha}")
+    upload_app_to_browserstack(file: file, user: user, key: key, custom_id: "NLWalletAndroid_#{application_id}_#{commit_sha}")
   end
 end
 
 platform :ios do
+  desc "Add badge to app icons"
+  lane :add_badge do |options|
+    badge = Badge::new((options[:label] || 'latest').upcase, BADGE_FONT)
+    Pathname.new('../wallet_app').glob('**/AppIcon.appiconset/*.png').each do |i|
+      badge.add_to_image(i, font_rel_size: 0.15, translate: 0.70)
+      badge.add_seasonal_image(i)
+    end
+  end
+
   desc "Deploy iOS app from GitLab CI"
   lane :ci_deploy do |options|
     # Get app identifier
@@ -208,7 +292,7 @@ platform :ios do
 
     # Parse API key values and convert to a Fastlane API key object
     asc_secrets_base64_json = ENV["APP_STORE_CONNECT_SECRETS_BASE64_JSON"]
-    UI.user_error!("No APP_STORE_CONNECT_API_KEY_SECRETS_BASE64 environment variable given") if asc_secrets_base64_json.blank?
+    UI.user_error!("No APP_STORE_CONNECT_SECRETS_BASE64_JSON environment variable given") if asc_secrets_base64_json.blank?
 
     asc_secrets = begin
       JSON.parse(asc_secrets_base64_json).map{ |k, v| [k, Base64.strict_decode64(v)] }.to_h
@@ -232,6 +316,26 @@ platform :ios do
     )
   end
 
+  private_lane :report_platform_support_coverage do |options|
+    # This adjusts the working directory so that the "wallet_core/wallet/platform_support/ios/"
+    # path prefix is not present in the coverage output file. Note that we need to be one
+    # directory higher, because of how Fastlane determines the current working directory.
+    Dir.chdir("../wallet_core/wallet/platform_support/ios/PlatformSupport") do
+      [{ sonarqube_xml: true }, { cobertura_xml: true }].each do |format|
+        slather(
+          {
+            output_directory: options[:output_directory],
+            proj: "PlatformSupport.xcodeproj",
+            scheme: "PlatformSupport",
+            binary_basename: "libPlatformSupport",
+            ignore: "../**", # ignore files outside of the project dir
+            arch: "arm64", # pick an architecture because of universal binary
+          }.merge(format)
+        )
+      end
+    end
+  end
+
   desc "Test iOS app"
   lane :test do
     run_tests(
@@ -240,30 +344,7 @@ platform :ios do
       xcodebuild_formatter: 'xcpretty',
     )
 
-    # This adjust the working directory so that the "wallet_core/wallet/platform_support/ios/"
-    # path prefix is not present in the coverage output file. Note that we need to be one
-    # directory higher, because of how Fastlane determines the current working directory.
-    Dir.chdir("../wallet_core/wallet/platform_support/ios/PlatformSupport") do
-      slather(
-        output_directory: "../../../../fastlane/test_output",
-        proj: "PlatformSupport.xcodeproj",
-        scheme: "PlatformSupport",
-        binary_basename: "libPlatformSupport",
-        ignore: "../**", # ignore files outside of the project dir
-        arch: "arm64", # pick an architecture because of universal binary
-        sonarqube_xml: true,
-      )
-
-      slather(
-        output_directory: "../../../../fastlane/test_output",
-        proj: "PlatformSupport.xcodeproj",
-        scheme: "PlatformSupport",
-        binary_basename: "libPlatformSupport",
-        ignore: "../**", # ignore files outside of the project dir
-        arch: "arm64", # pick an architecture because of universal binary
-        cobertura_xml: true,
-      )
-    end
+    report_platform_support_coverage(output_directory: "../../../../fastlane/test_output")
   end
 
   desc "Build iOS app"
@@ -277,9 +358,10 @@ platform :ios do
 
     app_name = options[:app_name] || DEFAULT_APP_NAME
     universal_link_base = options[:universal_link_base]
+    ensure_env_vars(env_vars: ['APP_STORE_ID'])
+    app_store_id = ENV["APP_STORE_ID"]
     sentry_dsn = ENV["SENTRY_DSN"]
     sentry_environment = ENV["SENTRY_ENVIRONMENT"]
-    sentry_release = ENV["SENTRY_RELEASE"]
 
     local_version, local_build = get_local_version_and_build
     build = options[:build] || local_build
@@ -288,6 +370,15 @@ platform :ios do
     fake_attestation = !!options[:fake_attestation]
     mock_repositories = options[:mock] || false
     demo_index_url = options[:demo_index_url] || ""
+    show_debug_options = options[:show_debug_options] || false
+    enable_wrprc_strict_mode_toggle = options[:enable_wrprc_strict_mode_toggle] || false
+    show_error_details = options[:show_error_details] || false
+    allow_insecure_url = options[:allow_insecure_url] || (build_mode == "debug")
+    allow_release_logs = options[:allow_release_logs] || false
+
+    bundle_id = options[:bundle_id] || get_app_identifier
+    sentry_release = ENV["SENTRY_RELEASE"]
+    sentry_release = "#{bundle_id}@#{version}+#{build}" if sentry_release.blank?
 
     UI.user_error!("Invalid build_mode: #{build_mode}") unless ["release", "profile", "debug"].include? build_mode
 
@@ -298,8 +389,16 @@ platform :ios do
 
     # Set the app name and have Flutter build it
     Dir.chdir("../wallet_app") do
-      sh(*flutter, "pub", "get")
-      sh({ "APP_NAME" => app_name },
+      sh(*flutter, "pub", "get", "--enforce-lockfile")
+
+      # Although installing pods is part of the "flutter build" command below,
+      # preload them now in order to ensure the "--deployment" flag is used
+      # and an error occurs if "Podfile.lock" needs to be modified.
+      Dir.chdir("ios") do
+        sh("bundle", "exec", "pod", "install", "--allow-root", "--deployment")
+      end
+
+      sh({ "APP_NAME" => app_name, "FLUTTER_XCODE_APP_NAME" => app_name },
         *flutter, "build", "ipa",
             "--build-number", build.to_s,
             "--build-name", version.to_s,
@@ -309,13 +408,88 @@ platform :ios do
             "--dart-define=MOCK_REPOSITORIES=#{mock_repositories}",
             "--dart-define=DEMO_INDEX_URL=#{demo_index_url}",
             "--dart-define=UL_HOSTNAME=#{universal_link_base}",
+            "--dart-define=ALLOW_RELEASE_LOGS=#{allow_release_logs}",
+            "--dart-define=APP_STORE_ID=#{app_store_id}",
             "--dart-define=SENTRY_DSN=#{sentry_dsn}",
             "--dart-define=SENTRY_ENVIRONMENT=#{sentry_environment}",
             "--dart-define=SENTRY_RELEASE=#{sentry_release}",
+            "--dart-define=SHOW_DEBUG_OPTIONS=#{show_debug_options}",
+            "--dart-define=ENABLE_WRPRC_STRICT_MODE_TOGGLE=#{enable_wrprc_strict_mode_toggle}",
+            "--dart-define=SHOW_ERROR_DETAILS=#{show_error_details}",
+            "--dart-define=ALLOW_INSECURE_URL=#{allow_insecure_url}",
       )
 
-      upload_sentry_symbols
+      upload_sentry_symbols(sentry_release: sentry_release)
       extract_entitlements
+    end
+  end
+
+  desc "Build iOS app for simulator"
+  lane :build_simulator do |options|
+
+    if options[:build_mode] == "release"
+      ensure_env_vars(
+        env_vars: ['CONFIG_ENV']
+      )
+    end
+
+    app_name = options[:app_name] || DEFAULT_APP_NAME
+    universal_link_base = options[:universal_link_base]
+    ensure_env_vars(env_vars: ['APP_STORE_ID'])
+    app_store_id = ENV["APP_STORE_ID"]
+    sentry_dsn = ENV["SENTRY_DSN"]
+    sentry_environment = ENV["SENTRY_ENVIRONMENT"]
+    sentry_release = ENV["SENTRY_RELEASE"]
+
+    local_version, local_build = get_local_version_and_build
+    build = options[:build] || local_build
+    version = options[:version].blank? ? local_version : options[:version]
+    build_mode = options[:build_mode] || "debug"
+    fake_attestation = !!options[:fake_attestation]
+    mock_repositories = options[:mock] || false
+    demo_index_url = options[:demo_index_url] || ""
+    show_debug_options = options[:show_debug_options] || false
+    enable_wrprc_strict_mode_toggle = options[:enable_wrprc_strict_mode_toggle] || false
+    show_error_details = options[:show_error_details] || false
+    allow_insecure_url = options[:allow_insecure_url] || (build_mode == "debug")
+    allow_release_logs = options[:allow_release_logs] || false
+
+    UI.user_error!("Invalid build_mode: #{build_mode}") unless ["release", "profile", "debug"].include? build_mode
+
+    flutter = flutter_cmd
+
+    UI.message("Going to build iOS simulator app name #{app_name}, build name #{version} with number #{build} in mode #{build_mode}")
+    UI.message("Using UL hostname \"#{universal_link_base}\", #{fake_attestation ? "fake" : "real"} key/app attestation and #{mock_repositories ? "mock repositories" : "Rust core"}")
+
+    Dir.chdir("../wallet_app") do
+      sh(*flutter, "pub", "get", "--enforce-lockfile")
+
+      Dir.chdir("ios") do
+        sh("bundle", "exec", "pod", "install", "--allow-root", "--deployment")
+      end
+
+      sh({ "APP_NAME" => app_name },
+        *flutter, "build", "ios",
+            "--simulator",
+            "--build-number", build.to_s,
+            "--build-name", version.to_s,
+            "--#{build_mode}",
+            "--dart-define=FAKE_ATTESTATION=#{fake_attestation}",
+            "--dart-define=MOCK_REPOSITORIES=#{mock_repositories}",
+            "--dart-define=DEMO_INDEX_URL=#{demo_index_url}",
+            "--dart-define=UL_HOSTNAME=#{universal_link_base}",
+            "--dart-define=ALLOW_RELEASE_LOGS=#{allow_release_logs}",
+            "--dart-define=APP_STORE_ID=#{app_store_id}",
+            "--dart-define=SENTRY_DSN=#{sentry_dsn}",
+            "--dart-define=SENTRY_ENVIRONMENT=#{sentry_environment}",
+            "--dart-define=SENTRY_RELEASE=#{sentry_release}",
+            "--dart-define=SHOW_DEBUG_OPTIONS=#{show_debug_options}",
+            "--dart-define=ENABLE_WRPRC_STRICT_MODE_TOGGLE=#{enable_wrprc_strict_mode_toggle}",
+            "--dart-define=SHOW_ERROR_DETAILS=#{show_error_details}",
+            "--dart-define=ALLOW_INSECURE_URL=#{allow_insecure_url}",
+      )
+
+      UI.message("Simulator app built at wallet_app/build/ios/iphonesimulator/Runner.app")
     end
   end
 
@@ -430,48 +604,55 @@ platform :ios do
     upload_to_testflight(skip_submission: true, app_identifier: bundle_id)
   end
 
-  desc "Upload iOS app to BrowserStack"
-  lane :browserstack do |options|
-    ipa_file = options[:ipa_file]
-    user = options[:user]
-    key = options[:key]
-
-    upload_to_browserstack(file: ipa_file, user: user, key: key, custom_id: "NLWalletIos")
+  # Coverage reporting is best effort: a failure here should not hide the test result
+  private_lane :report_platform_support_device_coverage do
+    begin
+      report_platform_support_coverage(output_directory: "../../../../fastlane/test_output/device-coverage")
+    rescue StandardError => error
+      UI.important("Could not generate the device coverage report: #{error.message}")
+    end
   end
 
-  desc "Upload iOS app to BrowserStack from GitLab CI"
-  lane :ci_browserstack do |options|
-    browserstack_user = ENV["BROWSERSTACK_USER"]
-    browserstack_key  = ENV["BROWSERSTACK_KEY"]
-    commit_sha        = ENV["CI_COMMIT_SHA"]
+  desc "Run the full platform_support test suite on a physically connected iOS device"
+  lane :test_platform_support_device do
+    udid = ENV["IOS_DEVICE_UDID"]
+    UI.user_error!("No IOS_DEVICE_UDID set") if udid.blank?
 
-    UI.user_error!("No BROWSERSTACK_USER environment variable set") if browserstack_user.blank?
-    UI.user_error!("No BROWSERSTACK_KEY environment variable set")  if browserstack_key.blank?
+    begin
+      Dir.chdir("..") do
+        output_dir    = "fastlane/test_output"
+        log_file      = "#{output_dir}/platform-support-device.log"
+        junit_file    = "#{output_dir}/platform-support-device.junit"
+        result_bundle = "#{output_dir}/PlatformSupportDevice.xcresult"
 
-    bundle_id = options[:bundle_id] || get_app_identifier
-    UI.user_error!("No bundle id set") if bundle_id.blank?
+        FileUtils.mkdir_p(output_dir)
+        FileUtils.rm_rf(result_bundle)
+        FileUtils.rm_rf("#{output_dir}/device-coverage")
+        FileUtils.rm_f(log_file)
 
-    real_version, _ = get_local_version_and_build
-
-    ipa_basename = "#{bundle_id}-#{real_version}.ipa"
-    ipa_path_from_repo_root = "#{ipa_basename}"
-
-    label = options[:label] || options[:version] #
-
-    custom_id_parts = ["NLWalletIos", bundle_id]
-    custom_id_parts << commit_sha unless commit_sha.to_s.empty?
-    custom_id_parts << label unless label.to_s.empty?
-    custom_id = custom_id_parts.join("_")
-
-    unless File.exist?("../#{ipa_path_from_repo_root}")
-      UI.user_error!("IPA not found at #{ipa_path_from_repo_root}. Make sure build_app produced #{ipa_basename} in fastlane/.")
+        begin
+          sh("scripts/close_proximity/run_disclosure_ios_test.py", "--",
+             "/bin/bash", "-c",
+             "set -o pipefail; xcodebuild test " \
+             "-project wallet_core/wallet/platform_support/ios/PlatformSupport.xcodeproj " \
+             "-scheme PlatformSupport " \
+             "-testPlan LocalRealDevice " \
+             "-destination id=#{udid} " \
+             "-resultBundlePath #{result_bundle} " \
+             "-test-timeouts-enabled YES " \
+             "-default-test-execution-time-allowance 120 " \
+             "-maximum-test-execution-time-allowance 300 " \
+             "2>&1 | tee #{log_file}")
+        ensure
+          if File.exist?(log_file)
+            sh("/bin/bash", "-c",
+               "xcpretty --report junit --output #{junit_file} < #{log_file} || true")
+          end
+        end
+      end
+    ensure
+      # Reported from the ensure block so that a failing test run still reports what it did cover
+      report_platform_support_device_coverage
     end
-
-    upload_to_browserstack(
-      file: ipa_path_from_repo_root,
-      user: browserstack_user,
-      key:  browserstack_key,
-      custom_id: custom_id
-    )
   end
 end

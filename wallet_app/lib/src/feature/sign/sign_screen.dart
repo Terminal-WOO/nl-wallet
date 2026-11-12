@@ -14,6 +14,7 @@ import '../common/widget/button/icon/close_icon_button.dart';
 import '../common/widget/centered_loading_indicator.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
 import '../common/widget/wallet_app_bar.dart';
+import '../error/error_page.dart';
 import '../organization/approve/organization_approve_page.dart';
 import '../organization/detail/organization_detail_screen.dart';
 import 'argument/sign_screen_argument.dart';
@@ -21,7 +22,6 @@ import 'bloc/sign_bloc.dart';
 import 'page/check_agreement_page.dart';
 import 'page/confirm_agreement_page.dart';
 import 'page/sign_confirm_pin_page.dart';
-import 'page/sign_generic_error_page.dart';
 import 'page/sign_stopped_page.dart';
 import 'page/sign_success_page.dart';
 
@@ -29,7 +29,7 @@ class SignScreen extends StatelessWidget {
   static SignScreenArgument getArgument(RouteSettings settings) {
     final args = settings.arguments;
     try {
-      return tryCast<SignScreenArgument>(args) ?? SignScreenArgument.fromMap(args! as Map<String, dynamic>);
+      return tryCast<SignScreenArgument>(args) ?? SignScreenArgument.fromJson(args! as Map<String, dynamic>);
     } catch (exception, stacktrace) {
       Fimber.e('Failed to decode $args', ex: exception, stacktrace: stacktrace);
       throw UnsupportedError('Make sure to pass in [SignScreenArgument] when opening the SignScreen');
@@ -82,7 +82,6 @@ class SignScreen extends StatelessWidget {
     return BlocBuilder<SignBloc, SignState>(
       builder: (context, state) {
         final Widget result = switch (state) {
-          SignInitial() => _buildLoading(),
           SignLoadInProgress() => _buildLoading(),
           SignCheckOrganization() => _buildCheckOrganization(context, state),
           SignCheckAgreement() => _buildCheckAgreement(context, state),
@@ -103,18 +102,13 @@ class SignScreen extends StatelessWidget {
 
   Widget _buildLoading() => const CenteredLoadingIndicator();
 
-  Widget _buildError(BuildContext context) {
-    return SignGenericErrorPage(
-      onClosePressed: () => Navigator.pop(context),
-    );
-  }
+  Widget _buildError(BuildContext context) => ErrorPage.generic(context, style: .close);
 
   Widget _buildCheckOrganization(BuildContext context, SignCheckOrganization state) {
     return OrganizationApprovePage(
       onDeclinePressed: () => _stopSigning(context),
       onAcceptPressed: () => context.read<SignBloc>().add(const SignOrganizationApproved()),
       organization: state.relyingParty,
-      originUrl: 'http://sign.origin.org',
       purpose: ApprovalPurpose.sign,
       onShowDetailsPressed: () {
         OrganizationDetailScreen.showPreloaded(
@@ -142,7 +136,6 @@ class SignScreen extends StatelessWidget {
     }
     return ConfirmAgreementPage(
       requestedAttributes: state.requestedAttributes.whereType<DataAttribute>().toList(),
-      policy: state.policy,
       relyingParty: state.relyingParty,
       trustProvider: state.trustProvider,
       onDeclinePressed: () => _stopSigning(context),

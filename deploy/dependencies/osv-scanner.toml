@@ -1,9 +1,44 @@
 [[IgnoredVulns]]
+id = "RUSTSEC-2016-0007"
+ignoreUntil = 2028-01-01
+reason = "False positive due to our own crate named `jwt`"
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2023-0071"
-ignoreUntil = 2026-07-01
-reason = "The vulnerability pertains to the use of RSA private keys in the rsa crate. We only use this crate to evaluate RSA public keys as found in Google CA certificates."
+ignoreUntil = 2027-01-01
+reason = "`rsa` version 0.9 is a transitive dependency of `jsonwebtoken`. Waiting for `jsonwebtoken` to upgrade."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+ignoreUntil = 2027-01-01
+reason = "`bincode` is a transitive dependency that is no longer maintained but considered complete and used by `http-cache`. Waiting for `http-cache` to release a new version."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0235"
+ignoreUntil = 2027-01-01
+reason = "`rkyv` is a transitive dependency that is only used by `lightningcss` through `parcel_sourcemap`. This last crate has not been updated recently. Additionally, `lightningcss` is only ever used as a build dependency."
 
 [[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
-ignoreUntil = 2026-07-01
-reason = "This is a transitive dependency that is no longer maintained but used by a couple dependencies. Waiting for dependencies to find alternatives."
+ignoreUntil = 2027-01-01
+reason = "The unmaintained `paste` crate is only used by two transitive dependencies of the `image` crate, `ravif` and `exr`, the features for which are never enabled on the `image` crate."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+ignoreUntil = 2026-12-01
+reason = "`basic-toml` is only used by `askama`'s `config` feature, which we disable. `uniffi_bindgen` still enables it, and `askama` has not yet released a version without this dependency."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+ignoreUntil = 2027-01-01
+reason = "`crypto-bigint` version 0.5.5 and `p256` and `p384` version 0.13 are transitive dependencies of `jsonwebtoken`. Waiting for `jsonwebtoken` to upgrade."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0440"
+ignoreUntil = 2027-01-01
+reason = "`astral-tokio-tar` is an unmaintained transitive dependency of `testcontainers`, which is only used in tests. Waiting for `testcontainers` to upgrade."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0459"
+ignoreUntil = 2027-01-01
+reason = "The fixed `libsqlite3-sys` version 0.39 conflicts with dependencies of `sqlx`, which is already fix upstream. However, a new version has not yet been released."

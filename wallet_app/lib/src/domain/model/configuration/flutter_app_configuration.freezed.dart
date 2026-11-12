@@ -1,0 +1,330 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// coverage:ignore-file
+// ignore_for_file: type=lint, type=warning, deprecated_member_use, deprecated_member_use_from_same_package
+// ignore_for_file: unused_element, deprecated_member_use, deprecated_member_use_from_same_package, use_function_type_syntax_for_parameters, unnecessary_const, avoid_init_to_null, invalid_override_different_default_values_named, prefer_expression_function_bodies, annotate_overrides, invalid_annotation_target, unnecessary_question_mark
+
+part of 'flutter_app_configuration.dart';
+
+// **************************************************************************
+// FreezedGenerator
+// **************************************************************************
+
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// dart format off
+T _$identity<T>(T value) => value;
+/// @nodoc
+mixin _$FlutterAppConfiguration {
+
+ Duration get idleLockTimeout; Duration get idleWarningTimeout; Duration get backgroundLockTimeout; String get staticAssetsBaseUrl; List<PidAttestation> get pidAttestations; MaintenanceWindow? get maintenanceWindow; String get version; String get environment;
+/// Create a copy of FlutterAppConfiguration
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$FlutterAppConfigurationCopyWith<FlutterAppConfiguration> get copyWith => _$FlutterAppConfigurationCopyWithImpl<FlutterAppConfiguration>(this as FlutterAppConfiguration, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as FlutterAppConfiguration;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is FlutterAppConfiguration&&(identical(other.idleLockTimeout, _this.idleLockTimeout) || other.idleLockTimeout == _this.idleLockTimeout)&&(identical(other.idleWarningTimeout, _this.idleWarningTimeout) || other.idleWarningTimeout == _this.idleWarningTimeout)&&(identical(other.backgroundLockTimeout, _this.backgroundLockTimeout) || other.backgroundLockTimeout == _this.backgroundLockTimeout)&&(identical(other.staticAssetsBaseUrl, _this.staticAssetsBaseUrl) || other.staticAssetsBaseUrl == _this.staticAssetsBaseUrl)&&const DeepCollectionEquality().equals(other.pidAttestations, _this.pidAttestations)&&(identical(other.maintenanceWindow, _this.maintenanceWindow) || other.maintenanceWindow == _this.maintenanceWindow)&&(identical(other.version, _this.version) || other.version == _this.version)&&(identical(other.environment, _this.environment) || other.environment == _this.environment));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as FlutterAppConfiguration;
+  return Object.hash(runtimeType,_this.idleLockTimeout,_this.idleWarningTimeout,_this.backgroundLockTimeout,_this.staticAssetsBaseUrl,const DeepCollectionEquality().hash(_this.pidAttestations),_this.maintenanceWindow,_this.version,_this.environment);
+}
+
+@override
+String toString() {
+  final _this = this as FlutterAppConfiguration;
+  return 'FlutterAppConfiguration(idleLockTimeout: ${_this.idleLockTimeout}, idleWarningTimeout: ${_this.idleWarningTimeout}, backgroundLockTimeout: ${_this.backgroundLockTimeout}, staticAssetsBaseUrl: ${_this.staticAssetsBaseUrl}, pidAttestations: ${_this.pidAttestations}, maintenanceWindow: ${_this.maintenanceWindow}, version: ${_this.version}, environment: ${_this.environment})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $FlutterAppConfigurationCopyWith<$Res>  {
+  factory $FlutterAppConfigurationCopyWith(FlutterAppConfiguration value, $Res Function(FlutterAppConfiguration) _then) = _$FlutterAppConfigurationCopyWithImpl;
+@useResult
+$Res call({
+ Duration idleLockTimeout, Duration idleWarningTimeout, Duration backgroundLockTimeout, String staticAssetsBaseUrl, List<PidAttestation> pidAttestations, MaintenanceWindow? maintenanceWindow, String version, String environment
+});
+
+
+$MaintenanceWindowCopyWith<$Res>? get maintenanceWindow;
+
+}
+/// @nodoc
+class _$FlutterAppConfigurationCopyWithImpl<$Res>
+    implements $FlutterAppConfigurationCopyWith<$Res> {
+  _$FlutterAppConfigurationCopyWithImpl(this._self, this._then);
+
+  final FlutterAppConfiguration _self;
+  final $Res Function(FlutterAppConfiguration) _then;
+
+/// Create a copy of FlutterAppConfiguration
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? idleLockTimeout = null,Object? idleWarningTimeout = null,Object? backgroundLockTimeout = null,Object? staticAssetsBaseUrl = null,Object? pidAttestations = null,Object? maintenanceWindow = freezed,Object? version = null,Object? environment = null,}) {
+  return _then(FlutterAppConfiguration(
+idleLockTimeout: null == idleLockTimeout ? _self.idleLockTimeout : idleLockTimeout // ignore: cast_nullable_to_non_nullable
+as Duration,idleWarningTimeout: null == idleWarningTimeout ? _self.idleWarningTimeout : idleWarningTimeout // ignore: cast_nullable_to_non_nullable
+as Duration,backgroundLockTimeout: null == backgroundLockTimeout ? _self.backgroundLockTimeout : backgroundLockTimeout // ignore: cast_nullable_to_non_nullable
+as Duration,staticAssetsBaseUrl: null == staticAssetsBaseUrl ? _self.staticAssetsBaseUrl : staticAssetsBaseUrl // ignore: cast_nullable_to_non_nullable
+as String,pidAttestations: null == pidAttestations ? _self.pidAttestations : pidAttestations // ignore: cast_nullable_to_non_nullable
+as List<PidAttestation>,maintenanceWindow: freezed == maintenanceWindow ? _self.maintenanceWindow : maintenanceWindow // ignore: cast_nullable_to_non_nullable
+as MaintenanceWindow?,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as String,environment: null == environment ? _self.environment : environment // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+/// Create a copy of FlutterAppConfiguration
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$MaintenanceWindowCopyWith<$Res>? get maintenanceWindow {
+    if (_self.maintenanceWindow == null) {
+    return null;
+  }
+
+  return $MaintenanceWindowCopyWith<$Res>(_self.maintenanceWindow!, (value) {
+    return _then(_self.copyWith(maintenanceWindow: value));
+  });
+}
+}
+
+
+/// Adds pattern-matching-related methods to [FlutterAppConfiguration].
+extension FlutterAppConfigurationPatterns on FlutterAppConfiguration {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _FlutterAppConfiguration value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _FlutterAppConfiguration() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _FlutterAppConfiguration value)  $default,){
+final _that = this;
+switch (_that) {
+case _FlutterAppConfiguration():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _FlutterAppConfiguration value)?  $default,){
+final _that = this;
+switch (_that) {
+case _FlutterAppConfiguration() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( Duration idleLockTimeout,  Duration idleWarningTimeout,  Duration backgroundLockTimeout,  String staticAssetsBaseUrl,  List<PidAttestation> pidAttestations,  MaintenanceWindow? maintenanceWindow,  String version,  String environment)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _FlutterAppConfiguration() when $default != null:
+return $default(_that.idleLockTimeout,_that.idleWarningTimeout,_that.backgroundLockTimeout,_that.staticAssetsBaseUrl,_that.pidAttestations,_that.maintenanceWindow,_that.version,_that.environment);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( Duration idleLockTimeout,  Duration idleWarningTimeout,  Duration backgroundLockTimeout,  String staticAssetsBaseUrl,  List<PidAttestation> pidAttestations,  MaintenanceWindow? maintenanceWindow,  String version,  String environment)  $default,) {final _that = this;
+switch (_that) {
+case _FlutterAppConfiguration():
+return $default(_that.idleLockTimeout,_that.idleWarningTimeout,_that.backgroundLockTimeout,_that.staticAssetsBaseUrl,_that.pidAttestations,_that.maintenanceWindow,_that.version,_that.environment);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( Duration idleLockTimeout,  Duration idleWarningTimeout,  Duration backgroundLockTimeout,  String staticAssetsBaseUrl,  List<PidAttestation> pidAttestations,  MaintenanceWindow? maintenanceWindow,  String version,  String environment)?  $default,) {final _that = this;
+switch (_that) {
+case _FlutterAppConfiguration() when $default != null:
+return $default(_that.idleLockTimeout,_that.idleWarningTimeout,_that.backgroundLockTimeout,_that.staticAssetsBaseUrl,_that.pidAttestations,_that.maintenanceWindow,_that.version,_that.environment);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _FlutterAppConfiguration extends FlutterAppConfiguration {
+  const _FlutterAppConfiguration({required this.idleLockTimeout, required this.idleWarningTimeout, required this.backgroundLockTimeout, required this.staticAssetsBaseUrl, required  List<PidAttestation> pidAttestations, required this.maintenanceWindow, required this.version, required this.environment}): _pidAttestations = pidAttestations,super._();
+  
+
+@override final  Duration idleLockTimeout;
+@override final  Duration idleWarningTimeout;
+@override final  Duration backgroundLockTimeout;
+@override final  String staticAssetsBaseUrl;
+ final  List<PidAttestation> _pidAttestations;
+@override List<PidAttestation> get pidAttestations {
+  if (_pidAttestations is EqualUnmodifiableListView) return _pidAttestations;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_pidAttestations);
+}
+
+@override final  MaintenanceWindow? maintenanceWindow;
+@override final  String version;
+@override final  String environment;
+
+/// Create a copy of FlutterAppConfiguration
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$FlutterAppConfigurationCopyWith<_FlutterAppConfiguration> get copyWith => __$FlutterAppConfigurationCopyWithImpl<_FlutterAppConfiguration>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _FlutterAppConfiguration&&(identical(other.idleLockTimeout, idleLockTimeout) || other.idleLockTimeout == idleLockTimeout)&&(identical(other.idleWarningTimeout, idleWarningTimeout) || other.idleWarningTimeout == idleWarningTimeout)&&(identical(other.backgroundLockTimeout, backgroundLockTimeout) || other.backgroundLockTimeout == backgroundLockTimeout)&&(identical(other.staticAssetsBaseUrl, staticAssetsBaseUrl) || other.staticAssetsBaseUrl == staticAssetsBaseUrl)&&const DeepCollectionEquality().equals(other.pidAttestations, _pidAttestations)&&(identical(other.maintenanceWindow, maintenanceWindow) || other.maintenanceWindow == maintenanceWindow)&&(identical(other.version, version) || other.version == version)&&(identical(other.environment, environment) || other.environment == environment));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,idleLockTimeout,idleWarningTimeout,backgroundLockTimeout,staticAssetsBaseUrl,const DeepCollectionEquality().hash(_pidAttestations),maintenanceWindow,version,environment);
+}
+
+@override
+String toString() {
+    return 'FlutterAppConfiguration(idleLockTimeout: $idleLockTimeout, idleWarningTimeout: $idleWarningTimeout, backgroundLockTimeout: $backgroundLockTimeout, staticAssetsBaseUrl: $staticAssetsBaseUrl, pidAttestations: $pidAttestations, maintenanceWindow: $maintenanceWindow, version: $version, environment: $environment)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$FlutterAppConfigurationCopyWith<$Res> implements $FlutterAppConfigurationCopyWith<$Res> {
+  factory _$FlutterAppConfigurationCopyWith(_FlutterAppConfiguration value, $Res Function(_FlutterAppConfiguration) _then) = __$FlutterAppConfigurationCopyWithImpl;
+@override @useResult
+$Res call({
+ Duration idleLockTimeout, Duration idleWarningTimeout, Duration backgroundLockTimeout, String staticAssetsBaseUrl, List<PidAttestation> pidAttestations, MaintenanceWindow? maintenanceWindow, String version, String environment
+});
+
+
+@override $MaintenanceWindowCopyWith<$Res>? get maintenanceWindow;
+
+}
+/// @nodoc
+class __$FlutterAppConfigurationCopyWithImpl<$Res>
+    implements _$FlutterAppConfigurationCopyWith<$Res> {
+  __$FlutterAppConfigurationCopyWithImpl(this._self, this._then);
+
+  final _FlutterAppConfiguration _self;
+  final $Res Function(_FlutterAppConfiguration) _then;
+
+/// Create a copy of FlutterAppConfiguration
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? idleLockTimeout = null,Object? idleWarningTimeout = null,Object? backgroundLockTimeout = null,Object? staticAssetsBaseUrl = null,Object? pidAttestations = null,Object? maintenanceWindow = freezed,Object? version = null,Object? environment = null,}) {
+  return _then(_FlutterAppConfiguration(
+idleLockTimeout: null == idleLockTimeout ? _self.idleLockTimeout : idleLockTimeout // ignore: cast_nullable_to_non_nullable
+as Duration,idleWarningTimeout: null == idleWarningTimeout ? _self.idleWarningTimeout : idleWarningTimeout // ignore: cast_nullable_to_non_nullable
+as Duration,backgroundLockTimeout: null == backgroundLockTimeout ? _self.backgroundLockTimeout : backgroundLockTimeout // ignore: cast_nullable_to_non_nullable
+as Duration,staticAssetsBaseUrl: null == staticAssetsBaseUrl ? _self.staticAssetsBaseUrl : staticAssetsBaseUrl // ignore: cast_nullable_to_non_nullable
+as String,pidAttestations: null == pidAttestations ? _self._pidAttestations : pidAttestations // ignore: cast_nullable_to_non_nullable
+as List<PidAttestation>,maintenanceWindow: freezed == maintenanceWindow ? _self.maintenanceWindow : maintenanceWindow // ignore: cast_nullable_to_non_nullable
+as MaintenanceWindow?,version: null == version ? _self.version : version // ignore: cast_nullable_to_non_nullable
+as String,environment: null == environment ? _self.environment : environment // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+/// Create a copy of FlutterAppConfiguration
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$MaintenanceWindowCopyWith<$Res>? get maintenanceWindow {
+    if (_self.maintenanceWindow == null) {
+    return null;
+  }
+
+  return $MaintenanceWindowCopyWith<$Res>(_self.maintenanceWindow!, (value) {
+    return _then(_self.copyWith(maintenanceWindow: value));
+  });
+}
+}
+
+// dart format on

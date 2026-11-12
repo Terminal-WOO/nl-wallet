@@ -1,15 +1,40 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 import net.razvan.JacocoToCoberturaPlugin
 import net.razvan.JacocoToCoberturaTask
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 plugins {
     id("com.android.library")
-    id("org.jetbrains.kotlin.android")
     id("net.razvan.jacoco-to-cobertura")
 }
 
 val ndkTargets = System.getenv("ANDROID_NDK_TARGETS")?.split(' ')
     ?: listOf("armeabi-v7a", "arm64-v8a", "x86_64")
+
+val dartEnvironmentVariables = if (project.hasProperty("dart-defines")) {
+    project.property("dart-defines").let { defines ->
+        check(defines is String) { "dart-defines should be String" }
+        defines.split(",").associate { entry ->
+            val pair =
+                Base64.getDecoder().decode(entry).toString(Charsets.UTF_8).split("=", limit = 2)
+            check(pair.size == 2) { "Got dart define without =" }
+            pair[0] to pair[1]
+        }
+    }
+} else {
+    mapOf()
+}
+
+fun Map<String, String>.nonEmptyDartDefine(key: String): String? =
+    this[key]?.takeIf { it.isNotEmpty() }
+
+val allowReleaseLogs = dartEnvironmentVariables.nonEmptyDartDefine("ALLOW_RELEASE_LOGS")
+
+check(allowReleaseLogs == null || allowReleaseLogs == "true" || allowReleaseLogs == "false") {
+    "ALLOW_RELEASE_LOGS must be 'true' or 'false'"
+}
 
 android {
     namespace  = "nl.rijksoverheid.edi.wallet.platform_support"
@@ -22,8 +47,14 @@ android {
         lint { targetSdk = 36 }
         testOptions { targetSdk = 36 }
 
+        buildConfigField("boolean", "ALLOW_RELEASE_LOGS", allowReleaseLogs ?: "false")
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+    }
+
+    installation {
+        installOptions += "-g"
     }
 
     buildFeatures {
@@ -72,21 +103,21 @@ android {
     // That indicates that a transitive dependency still has VERSION_1_8 specified. It is emphatically
     // *not* due to the sourceCompatibility, targetCompatibility and jvmTarget settings configured below
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     sourceSets {
         getByName("main") {
             // UniFFI generated bindings
-            kotlin.srcDirs("../kotlin")
+            kotlin.directories += "../kotlin"
         }
     }
 }
 
 kotlin {
     compilerOptions {
-        jvmTarget = JvmTarget.JVM_11
+        jvmTarget = JvmTarget.JVM_17
         freeCompilerArgs = listOf("-Xstring-concat=inline")
     }
 }
@@ -98,11 +129,11 @@ tasks.withType<Test>().configureEach {
 }
 
 tasks.named { it == "testDebugUnitTest" }.configureEach {
-    finalizedBy("jacocoReport")
+    finalizedBy("jacocoReport", "coberturaReport")
 }
 tasks.register<JacocoReport>("jacocoReport") {
     // Explicit setup seems to work best, but might be broken on AGP upgrades
-    classDirectories.setFrom(layout.buildDirectory.file("tmp/kotlin-classes/debug/nl/rijksoverheid/edi/wallet"))
+    classDirectories.setFrom(layout.buildDirectory.file("intermediates/built_in_kotlinc/debug/compileDebugKotlin/classes/nl/rijksoverheid/edi/wallet"))
     executionData.from(layout.buildDirectory.file("outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec"))
     reports {
         csv.required = false
@@ -110,10 +141,10 @@ tasks.register<JacocoReport>("jacocoReport") {
         xml.required = true
         xml.outputLocation = layout.buildDirectory.file("reports/coverage/unit/debug/report.xml")
     }
-    finalizedBy("coberturaReport")
 }
-tasks.register<JacocoToCoberturaTask>("coberturaReport").configure {
+tasks.register<JacocoToCoberturaTask>("coberturaReport") {
     // Connect via jacocoReport does not work: https://github.com/gradle/gradle/issues/6619
+    mustRunAfter("jacocoReport")
     inputFile = layout.buildDirectory.file("reports/coverage/unit/debug/report.xml")
     outputFile = file("${inputFile.get()}/../cobertura.xml")
     splitByPackage = false
@@ -132,6 +163,8 @@ dependencies {
     implementation("androidx.startup:startup-runtime:1.1.1") // Auto initialization
     implementation("com.google.android.play:integrity:1.4.0") // Play Integrity API
     implementation("net.java.dev.jna:jna:5.14.0@aar") // Java Native Access, Android Archive version
+    implementation("org.multipaz:multipaz:0.96.0") // Multipaz core library
+    implementation("org.multipaz:multipaz-android:0.96.0") // Multipaz Android BLE support
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1") // Kotlin coroutines, core library
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3") // Kotlin coroutines for play-services
 
@@ -143,6 +176,7 @@ dependencies {
 
     // Android test dependencies
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }
@@ -151,6 +185,26 @@ dependencies {
 val jniTargetDir = android.sourceSets.getByName("main").jniLibs.srcDirs.first()
 val moduleWorkingDir = file("${project.projectDir}/../")
 val bindingsTargetDir = "$moduleWorkingDir/kotlin"
+var integrationTestFeature = "hardware_integration_test"
+
+// Register a task to determine emulator or real device
+tasks.register<Exec>("determineEmulator") {
+    executable = "adb"
+    args("devices")
+    standardOutput = ByteArrayOutputStream()
+    doLast {
+        if (Regex("^emulator", RegexOption.MULTILINE).find(standardOutput.toString()) != null) {
+            logger.warn("Using emulator integration test features")
+            logger.info("This will allow Software security level")
+            logger.info("and skip the root certificate public key check")
+            integrationTestFeature = "emulator_integration_test"
+        } else {
+            logger.info("Using hardware integration test feature")
+            logger.info("Only allow TEE or Strongbox keys")
+            logger.info("and check against the configured root public keys")
+        }
+    }
+}
 
 // Register a task to generate Kotlin bindings
 tasks.register<Exec>("cargoBuildNativeBindings") {
@@ -165,11 +219,11 @@ tasks.register<Exec>("cargoBuildNativeBindings") {
 enum class BuildMode { Debug, Profile, Release }
 data class BuildOptions(val args: List<String> = emptyList())
 mapOf(
-    BuildMode.Debug to BuildOptions(args=listOf("--features", "hardware_integration_test")),
+    BuildMode.Debug to BuildOptions(),
     BuildMode.Profile to BuildOptions(args=listOf("--locked", "--release")),
     BuildMode.Release to BuildOptions(args=listOf("--locked", "--release")),
 ).forEach { (buildMode, options) ->
-    tasks.named { it == "compile${buildMode}Kotlin" }.configureEach {
+    tasks.named { it in setOf("compile${buildMode}Kotlin", "extract${buildMode}Annotations") }.configureEach {
         dependsOn("cargoBuildNativeBindings")
     }
 
@@ -181,6 +235,14 @@ mapOf(
         args("-o", jniTargetDir)
         args("build")
         args(options.args)
+        if (buildMode == BuildMode.Debug) {
+            dependsOn("determineEmulator")
+        }
+        doFirst {
+            if (buildMode == BuildMode.Debug) {
+                args("--features", integrationTestFeature)
+            }
+        }
     }
     tasks.named { it == "merge${buildMode}NativeLibs" }.configureEach {
         dependsOn("cargoBuildNativeLibrary${buildMode}")

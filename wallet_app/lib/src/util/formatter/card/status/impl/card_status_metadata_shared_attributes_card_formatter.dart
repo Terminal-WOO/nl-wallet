@@ -4,31 +4,32 @@ import '../../../../../domain/model/card/status/card_status.dart';
 import '../../../../../domain/model/card/wallet_card.dart';
 import '../../../../extension/build_context_extension.dart';
 import '../card_status_metadata_formatter.dart';
+import 'card_status_metadata_wallet_item_formatter.dart';
 
 class CardStatusMetadataSharedAttributesCardFormatter implements CardStatusMetadataFormatter {
   @override
   bool show(CardStatus status) {
     return switch (status) {
-      CardStatus.validSoon => false,
-      CardStatus.valid => false,
-      CardStatus.expiresSoon => false,
-      CardStatus.expired => true,
-      CardStatus.revoked => true,
-      CardStatus.corrupted => true,
-      CardStatus.unknown => false,
+      CardStatusValidSoon() => false,
+      CardStatusValid() => false,
+      CardStatusExpiresSoon() => false,
+      CardStatusExpired() => true,
+      CardStatusRevoked() => true,
+      CardStatusCorrupted() => true,
+      CardStatusUndetermined() => true,
     };
   }
 
   @override
-  String text(BuildContext context, WalletCard card) {
+  String text(BuildContext context, WalletCard card, {bool isPidCard = false}) {
     return switch (card.status) {
-      CardStatus.validSoon => '',
-      CardStatus.valid => '',
-      CardStatus.expiresSoon => '',
-      CardStatus.expired => context.l10n.cardStatusMetadataSharedAttributesCardExpired,
-      CardStatus.revoked => context.l10n.cardStatusMetadataSharedAttributesCardRevoked,
-      CardStatus.corrupted => context.l10n.cardStatusMetadataSharedAttributesCardCorrupted,
-      CardStatus.unknown => '',
+      CardStatusValidSoon() => '',
+      CardStatusValid() => '',
+      CardStatusExpiresSoon() => '',
+      CardStatusExpired() => context.l10n.cardStatusMetadataSharedAttributesCardExpired,
+      CardStatusRevoked() => context.l10n.cardStatusMetadataSharedAttributesCardRevoked,
+      CardStatusCorrupted() => context.l10n.cardStatusMetadataSharedAttributesCardCorrupted,
+      CardStatusUndetermined() => context.l10n.cardStatusMetadataSharedAttributesCardUndetermined,
     };
   }
 
@@ -36,7 +37,21 @@ class CardStatusMetadataSharedAttributesCardFormatter implements CardStatusMetad
   Color textColor(BuildContext context, CardStatus status) => context.colorScheme.onSurface;
 
   @override
-  IconData? icon(CardStatus status) => Icons.warning_amber;
+  IconData? icon(CardStatus status) {
+    return switch (status) {
+      CardStatusValidSoon() => null,
+      CardStatusValid() => null,
+      CardStatusExpiresSoon() => null,
+      CardStatusExpired() => Icons.warning_amber,
+      CardStatusRevoked() => Icons.warning_amber,
+      CardStatusCorrupted() => Icons.warning_amber,
+      CardStatusUndetermined() => Icons.feedback_outlined,
+    };
+  }
+
+  @override
+  String? iconSemanticsLabel(BuildContext context, WalletCard card) =>
+      CardStatusMetadataWalletItemFormatter().text(context, card);
 
   @override
   Color? iconColor(BuildContext context, CardStatus status) => context.colorScheme.onSurfaceVariant;

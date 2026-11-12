@@ -1,35 +1,102 @@
+import 'dart:async';
+
+import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
+import 'package:mockito/mockito.dart';
+import 'package:wallet/src/data/repository/help/help_content_repository.dart';
 import 'package:wallet/src/domain/model/app_image_data.dart';
 import 'package:wallet/src/domain/model/attribute/attribute.dart';
+import 'package:wallet/src/domain/model/card/format/attestation_format.dart';
 import 'package:wallet/src/domain/model/card/metadata/card_display_metadata.dart';
 import 'package:wallet/src/domain/model/card/metadata/card_rendering.dart';
 import 'package:wallet/src/domain/model/card/status/card_status.dart';
 import 'package:wallet/src/domain/model/card/wallet_card.dart';
+import 'package:wallet/src/domain/model/configuration/flutter_app_configuration.dart';
+import 'package:wallet/src/domain/model/configuration/maintenance_window.dart';
 import 'package:wallet/src/domain/model/disclosure/disclose_card_request.dart';
 import 'package:wallet/src/domain/model/document.dart';
 import 'package:wallet/src/domain/model/event/wallet_event.dart';
+import 'package:wallet/src/domain/model/help/help_category.dart';
+import 'package:wallet/src/domain/model/help/help_subcategory.dart';
+import 'package:wallet/src/domain/model/help/help_topic.dart';
+import 'package:wallet/src/domain/model/help/topic_block.dart';
+import 'package:wallet/src/domain/model/notification/app_notification.dart';
 import 'package:wallet/src/domain/model/organization.dart';
-import 'package:wallet/src/domain/model/policy/policy.dart';
+import 'package:wallet/src/domain/model/person_type.dart';
+import 'package:wallet/src/domain/model/pid/pid_attestation.dart';
 import 'package:wallet/src/domain/model/wallet_card_detail.dart';
-import 'package:wallet/src/theme/dark_wallet_theme.dart';
-import 'package:wallet/src/theme/light_wallet_theme.dart';
 import 'package:wallet/src/util/extension/string_extension.dart';
 import 'package:wallet/src/wallet_assets.dart';
+
+const _kWhiteTextColor = Color(0xFFFFFFFF);
+const _kDarkTextColor = Color(0xFF152A62);
+
+class MockWalletCard extends Mock implements WalletCard {}
+
+/// Hand-coded [HelpContentRepository] fake used by help-feature tests.
+///
+/// By default [getCategories] returns [categories] immediately. For tests that
+/// need to observe the intermediate loading state, call [deferCategories] —
+/// after that, [getCategories] does not resolve until [resolveCategories] or
+/// [failCategoriesLoad] is invoked. The same pair exists for
+/// [getTopicBlocks] via [resolveBlocks] / [failBlocksLoad].
+class FakeHelpContentRepository implements HelpContentRepository {
+  List<HelpCategory> categories = const [];
+  Completer<List<HelpCategory>>? _categoriesCompleter;
+  final Completer<List<TopicBlock>> _blocksCompleter = Completer<List<TopicBlock>>();
+
+  /// Forces [getCategories] to wait for an explicit [resolveCategories] or
+  /// [failCategoriesLoad] call before completing.
+  void deferCategories() {
+    _categoriesCompleter = Completer<List<HelpCategory>>();
+  }
+
+  void resolveCategories(List<HelpCategory> result) => _categoriesCompleter!.complete(result);
+
+  void failCategoriesLoad(Object error) => _categoriesCompleter!.completeError(error);
+
+  void resolveBlocks(List<TopicBlock> blocks) => _blocksCompleter.complete(blocks);
+
+  void failBlocksLoad(Object error) => _blocksCompleter.completeError(error);
+
+  @override
+  Future<List<HelpCategory>> getCategories(Locale locale) {
+    final completer = _categoriesCompleter;
+    if (completer != null) return completer.future;
+    return Future.value(categories);
+  }
+
+  @override
+  Future<List<TopicBlock>> getTopicBlocks(String topicId, Locale locale) => _blocksCompleter.future;
+}
 
 abstract class WalletMockData {
   static Locale testLocale = const Locale('en');
 
-  static final CardStatus status = CardStatus.valid;
   static final DateTime validFrom = DateTime(2050, 5, 1, 17, 25);
   static final DateTime validUntil = DateTime(2025, 5, 1, 17, 25);
+  static final CardStatus status = CardStatusValid(validUntil: validUntil);
+
+  static FlutterAppConfiguration flutterAppConfiguration = FlutterAppConfiguration(
+    idleLockTimeout: const Duration(seconds: 300),
+    idleWarningTimeout: const Duration(seconds: 60),
+    backgroundLockTimeout: const Duration(seconds: 600),
+    staticAssetsBaseUrl: 'https://example.com/',
+    pidAttestations: [const PidAttestation(attestationType: 'urn:eudi:pid:nl:1', format: .sdJwt)],
+    maintenanceWindow: MaintenanceWindow(
+      startDateTime: DateTime(2025, 1, 15, 10, 0),
+      endDateTime: DateTime(2025, 1, 15, 11, 0),
+    ),
+    version: '1.0.0',
+    environment: 'production',
+  );
 
   static WalletCard card = WalletCard(
     attestationId: 'id',
     attestationType: 'com.example.attestationType',
+    format: AttestationFormat.sdJwt,
     issuer: WalletMockData.organization,
     status: WalletMockData.status,
-    validFrom: WalletMockData.validFrom,
-    validUntil: WalletMockData.validUntil,
     metadata: [
       CardDisplayMetadata(
         language: testLocale,
@@ -37,7 +104,7 @@ abstract class WalletMockData {
         rawSummary: 'Subtitle',
         rendering: const SimpleCardRendering(
           logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid),
-          textColor: DarkWalletTheme.textColor,
+          textColor: _kWhiteTextColor,
           bgColor: Color(0xFF35426E),
         ),
       ),
@@ -47,13 +114,22 @@ abstract class WalletMockData {
 
   static WalletCard cardWithStatus(CardStatus status) => card.copyWith(status: status);
 
+  static List<CardStatus> cardStatusList = [
+    CardStatusValidSoon(validFrom: validFrom),
+    CardStatusValid(validUntil: validUntil),
+    CardStatusExpiresSoon(validUntil: validUntil),
+    CardStatusExpired(validUntil: validUntil),
+    const CardStatusRevoked(),
+    const CardStatusCorrupted(),
+    const CardStatusUndetermined(),
+  ];
+
   static WalletCard simpleRenderingCard = WalletCard(
     attestationId: 'id',
     attestationType: 'com.example.attestationType',
+    format: AttestationFormat.sdJwt,
     issuer: WalletMockData.organization,
     status: WalletMockData.status,
-    validFrom: WalletMockData.validFrom,
-    validUntil: WalletMockData.validUntil,
     metadata: [
       CardDisplayMetadata(
         language: testLocale,
@@ -69,17 +145,16 @@ abstract class WalletMockData {
   static WalletCard altCard = WalletCard(
     attestationId: 'id2',
     attestationType: 'com.example.alt.attestationType',
+    format: AttestationFormat.sdJwt,
     issuer: WalletMockData.organization,
     status: WalletMockData.status,
-    validFrom: WalletMockData.validFrom,
-    validUntil: WalletMockData.validUntil,
     metadata: [
       CardDisplayMetadata(
         language: testLocale,
         name: 'Sample Card #2',
         rawSummary: 'Alt Subtitle',
         rendering: const SimpleCardRendering(
-          textColor: LightWalletTheme.textColor,
+          textColor: _kDarkTextColor,
           logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid),
           bgColor: Color(0xFFCCEFF0),
         ),
@@ -99,15 +174,24 @@ abstract class WalletMockData {
 
   static final Organization organization = Organization(
     id: 'id',
-    legalName: 'Organization Legal Name'.untranslated,
-    displayName: 'Organization Display Name'.untranslated,
-    category: 'Category'.untranslated,
+    legalName: 'Organization Legal Name',
+    displayName: 'Organization Display Name',
+    publicBody: false,
+    personType: PersonType.legalPerson,
     description: 'Organization description'.untranslated,
-    logo: const AppAssetImage(WalletAssets.logo_rijksoverheid),
-    privacyPolicyUrl: 'https://example.org/privacy',
-    city: 'Den Haag'.untranslated,
-    department: 'department abc'.untranslated,
-    kvk: '12345678',
+    privacyPolicyUri: 'https://example.org/privacy',
+    supportUri: 'https://example.org/support',
+    organizationId: '12345678',
+    countryCode: 'NL',
+  );
+
+  static final Organization naturalPersonOrganization = organization.copyWith(
+    legalName: 'Jantje Smith',
+    displayName: 'Smith Plumber Services',
+    personType: PersonType.naturalPerson,
+    description:
+        'Smith Plumber Services helps with leaks, blocked drains, pipes, taps, toilets and heating.'.untranslated,
+    organizationId: 'NL12345678901',
   );
 
   static final DataAttribute textDataAttribute = DataAttribute.untranslated(
@@ -117,162 +201,207 @@ abstract class WalletMockData {
     value: const StringValue('Value'),
   );
 
-  static const Policy policy = Policy(
-    storageDuration: Duration(days: 90),
-    dataPurpose: 'Data Purpose',
-    dataIsShared: false,
-    deletionCanBeRequested: true,
-    privacyPolicyUrl: 'https://www.example.org',
-  );
-
   static const Document document = Document(
     title: 'Title',
     fileName: 'docs/agreement.pdf',
     url: 'https://example.org/agreement.pdf',
   );
 
+  /// Notification data
+  static final DateTime _appNotificationNow = clock.now();
+  static final DateTime expiresIn30Days = _appNotificationNow.add(const Duration(days: 30));
+  static final DateTime expiresIn5Days = _appNotificationNow.add(const Duration(days: 5));
+  static final DateTime defaultNotifyAt = _appNotificationNow.add(const Duration(days: 1));
+
+  static AppNotification dashboardCardExpiresSoonNotification = AppNotification(
+    id: 1,
+    type: CardExpiresSoon(card: card, expiresAt: expiresIn30Days),
+    displayTargets: [const Dashboard()],
+  );
+
+  static AppNotification dashboardCardExpiredNotification = AppNotification(
+    id: 2,
+    type: CardExpired(card: card),
+    displayTargets: [const Dashboard()],
+  );
+
+  static AppNotification osCardExpiresSoonNotification = AppNotification(
+    id: 3,
+    type: CardExpiresSoon(card: card, expiresAt: expiresIn5Days),
+    displayTargets: [Os(notifyAt: defaultNotifyAt)],
+  );
+
+  static AppNotification osCardExpiredNotification = AppNotification(
+    id: 4,
+    type: CardExpired(card: card),
+    displayTargets: [Os(notifyAt: defaultNotifyAt)],
+  );
+
+  /// Deletion events
+
+  static DeletionEvent get deletionEvent => WalletEvent.deletion(
+    dateTime: DateTime(2024, 5, 1),
+    status: EventStatus.success,
+    card: card,
+  ) as DeletionEvent;
+
   /// Disclosure events
 
-  static DisclosureEvent get disclosureEvent =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2024, 3, 1),
-            status: EventStatus.success,
-            relyingParty: organization,
-            purpose: 'disclosure'.untranslated,
-            cards: [card],
-            policy: policy,
-            type: DisclosureType.regular,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get disclosureEvent => WalletEvent.disclosure(
+    dateTime: DateTime(2024, 3, 1),
+    status: EventStatus.success,
+    relyingParty: organization,
+    purpose: 'disclosure'.untranslated,
+    cards: [card],
+    type: DisclosureType.regular,
+  ) as DisclosureEvent;
 
-  static DisclosureEvent get loginEvent =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2024, 2, 1),
-            status: EventStatus.success,
-            relyingParty: organization,
-            purpose: 'disclosure'.untranslated,
-            cards: [card],
-            policy: policy,
-            type: DisclosureType.login,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get loginEvent => WalletEvent.disclosure(
+    dateTime: DateTime(2024, 2, 1),
+    status: EventStatus.success,
+    relyingParty: organization,
+    purpose: 'disclosure'.untranslated,
+    cards: [card],
+    type: DisclosureType.login,
+  ) as DisclosureEvent;
 
-  static DisclosureEvent get failedLoginEvent =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2024, 2, 1),
-            status: EventStatus.error,
-            relyingParty: organization,
-            purpose: 'disclosure'.untranslated,
-            cards: [card],
-            policy: policy,
-            type: DisclosureType.login,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get failedLoginEvent => WalletEvent.disclosure(
+    dateTime: DateTime(2024, 2, 1),
+    status: EventStatus.error,
+    relyingParty: organization,
+    purpose: 'disclosure'.untranslated,
+    cards: [card],
+    type: DisclosureType.login,
+  ) as DisclosureEvent;
 
-  static DisclosureEvent get failedLoginEventNothingShared =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2024, 2, 1, 22, 11),
-            status: EventStatus.error,
-            relyingParty: organization,
-            purpose: 'disclosure'.untranslated,
-            cards: const [],
-            policy: policy,
-            type: DisclosureType.login,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get failedLoginEventNothingShared => WalletEvent.disclosure(
+    dateTime: DateTime(2024, 2, 1, 22, 11),
+    status: EventStatus.error,
+    relyingParty: organization,
+    purpose: 'disclosure'.untranslated,
+    cards: const [],
+    type: DisclosureType.login,
+  ) as DisclosureEvent;
 
-  static DisclosureEvent get failedDisclosureEvent =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2024, 2, 1),
-            status: EventStatus.error,
-            relyingParty: organization,
-            purpose: 'disclosure'.untranslated,
-            cards: [card],
-            policy: policy,
-            type: DisclosureType.regular,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get failedDisclosureEvent => WalletEvent.disclosure(
+    dateTime: DateTime(2024, 2, 1),
+    status: EventStatus.error,
+    relyingParty: organization,
+    purpose: 'disclosure'.untranslated,
+    cards: [card],
+    type: DisclosureType.regular,
+  ) as DisclosureEvent;
 
-  static DisclosureEvent get failedDisclosureEventNothingShared =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2023, 5, 9, 11, 23),
-            status: EventStatus.error,
-            relyingParty: organization,
-            purpose: 'disclosure - nothing shared error'.untranslated,
-            cards: const [],
-            policy: policy,
-            type: DisclosureType.regular,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get failedDisclosureEventNothingShared => WalletEvent.disclosure(
+    dateTime: DateTime(2023, 5, 9, 11, 23),
+    status: EventStatus.error,
+    relyingParty: organization,
+    purpose: 'disclosure - nothing shared error'.untranslated,
+    cards: const [],
+    type: DisclosureType.regular,
+  ) as DisclosureEvent;
 
-  static DisclosureEvent get cancelledDisclosureEvent =>
-      WalletEvent.disclosure(
-            dateTime: DateTime(2024, 2, 1),
-            status: EventStatus.cancelled,
-            relyingParty: organization,
-            purpose: 'disclosure'.untranslated,
-            cards: [card],
-            policy: policy,
-            type: DisclosureType.regular,
-          )
-          as DisclosureEvent;
+  static DisclosureEvent get cancelledDisclosureEvent => WalletEvent.disclosure(
+    dateTime: DateTime(2024, 2, 1),
+    status: EventStatus.cancelled,
+    relyingParty: organization,
+    purpose: 'disclosure'.untranslated,
+    cards: [card],
+    type: DisclosureType.regular,
+  ) as DisclosureEvent;
 
   /// Sign events
 
-  static SignEvent get signEvent =>
-      WalletEvent.sign(
-            dateTime: DateTime(2024, 1, 1),
-            status: EventStatus.success,
-            relyingParty: organization,
-            policy: policy,
-            document: document,
-          )
-          as SignEvent;
+  static SignEvent get signEvent => WalletEvent.sign(
+    dateTime: DateTime(2024, 1, 1),
+    status: EventStatus.success,
+    relyingParty: organization,
+    document: document,
+  ) as SignEvent;
 
   /// Issuance events
 
-  static IssuanceEvent get issuanceEvent =>
-      WalletEvent.issuance(
-            dateTime: DateTime(2023, 12, 1),
-            status: EventStatus.success,
-            card: card,
-            eventType: IssuanceEventType.cardIssued,
-          )
-          as IssuanceEvent;
+  static IssuanceEvent get issuanceEvent => WalletEvent.issuance(
+    dateTime: DateTime(2023, 12, 1),
+    status: EventStatus.success,
+    card: card,
+    eventType: IssuanceEventType.cardIssued,
+  ) as IssuanceEvent;
 
-  static IssuanceEvent get issuanceEventCardRenewed =>
-      WalletEvent.issuance(
-            dateTime: DateTime(2025, 2, 1),
-            status: EventStatus.success,
-            card: card,
-            eventType: IssuanceEventType.cardRenewed,
-          )
-          as IssuanceEvent;
+  static IssuanceEvent get issuanceEventCardRenewed => WalletEvent.issuance(
+    dateTime: DateTime(2025, 2, 1),
+    status: EventStatus.success,
+    card: card,
+    eventType: IssuanceEventType.cardRenewed,
+  ) as IssuanceEvent;
 
-  static IssuanceEvent get issuanceEventCardStatusExpired =>
-      WalletEvent.issuance(
-            dateTime: DateTime(2025, 2, 1),
-            status: EventStatus.success,
-            card: cardWithStatus(CardStatus.expired),
-            eventType: IssuanceEventType.cardStatusExpired,
-          )
-          as IssuanceEvent;
+  static IssuanceEvent get issuanceEventCardStatusExpired => WalletEvent.issuance(
+    dateTime: DateTime(2025, 2, 1),
+    status: EventStatus.success,
+    card: cardWithStatus(CardStatusExpired(validUntil: validUntil)),
+    eventType: IssuanceEventType.cardStatusExpired,
+  ) as IssuanceEvent;
 
-  static IssuanceEvent get issuanceEventCardStatusRevoked =>
-      WalletEvent.issuance(
-            dateTime: DateTime(2025, 2, 1),
-            status: EventStatus.success,
-            card: cardWithStatus(CardStatus.revoked),
-            eventType: IssuanceEventType.cardStatusRevoked,
-          )
-          as IssuanceEvent;
+  static IssuanceEvent get issuanceEventCardStatusRevoked => WalletEvent.issuance(
+    dateTime: DateTime(2025, 2, 1),
+    status: EventStatus.success,
+    card: cardWithStatus(const CardStatusRevoked()),
+    eventType: IssuanceEventType.cardStatusRevoked,
+  ) as IssuanceEvent;
 
-  static IssuanceEvent get issuanceEventCardStatusCorrupted =>
-      WalletEvent.issuance(
-            dateTime: DateTime(2025, 2, 1),
-            status: EventStatus.success,
-            card: cardWithStatus(CardStatus.corrupted),
-            eventType: IssuanceEventType.cardStatusCorrupted,
-          )
-          as IssuanceEvent;
+  static IssuanceEvent get issuanceEventCardStatusCorrupted => WalletEvent.issuance(
+    dateTime: DateTime(2025, 2, 1),
+    status: EventStatus.success,
+    card: cardWithStatus(const CardStatusCorrupted()),
+    eventType: IssuanceEventType.cardStatusCorrupted,
+  ) as IssuanceEvent;
+
+  /// A realistic two-category help fixture with populated subcategories and topics,
+  /// suitable for rendering a representative help overview / category / subcategory.
+  static const helpCategories = <HelpCategory>[
+    HelpCategory(
+      id: 'getting_started',
+      icon: 'play_arrow',
+      title: 'Getting started',
+      subtitle: 'Introduction, DigiD, and app overview',
+      subcategories: [
+        HelpSubcategory(
+          id: 'introduction',
+          title: 'Introduction',
+          topics: [
+            HelpTopic(id: 'cannot_continue_demo', title: 'I cannot continue with the demo'),
+            HelpTopic(id: 'dont_know_wallet', title: 'I do not know what NL Wallet is'),
+            HelpTopic(id: 'what_is_wallet', title: 'What is NL Wallet?'),
+            HelpTopic(id: 'is_demo_real', title: 'Is the NL Wallet demo real?'),
+          ],
+        ),
+        HelpSubcategory(
+          id: 'digid',
+          title: 'Start with DigiD',
+          topics: [
+            HelpTopic(id: 'why_digid_needed_to_start', title: 'Why is DigiD needed?'),
+          ],
+        ),
+      ],
+    ),
+    HelpCategory(
+      id: 'cards',
+      icon: 'credit_card',
+      title: 'Cards',
+      subtitle: 'Adding, renewing, status, and deleting cards',
+      subcategories: [
+        HelpSubcategory(
+          id: 'add',
+          title: 'Add cards',
+          topics: [
+            HelpTopic(id: 'cannot_add_card', title: 'I cannot add a card'),
+          ],
+        ),
+      ],
+    ),
+  ];
+
+  static HelpCategory get helpGettingStartedCategory => helpCategories[0];
+
+  static HelpSubcategory get helpIntroductionSubcategory => helpCategories[0].subcategories[0];
 }

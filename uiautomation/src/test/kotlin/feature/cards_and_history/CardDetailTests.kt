@@ -45,32 +45,30 @@ class CardDetailTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC33 Show Card Details")
-    @Tags(Tag("a11yBatch1"))
+    @DisplayName("LTC25 Show Card Details")
     fun verifyCardDetailScreen(testInfo: TestInfo) {
         setUp(testInfo)
         assertAll(
             { assertTrue(cardDetailScreen.visible(), "card detail screen is not visible") },
-            { assertTrue(cardDetailScreen.cardFaceElements(), "card face for detail screen is not visible and/or correct") },
+            { assertTrue(cardDetailScreen.pidCardVisible(), "card face for detail screen is not visible and/or correct") },
             { assertTrue(cardDetailScreen.issuerAndHistoryStates(), "issuer and/or history state not not visible and/or correct") }
         )
-
+        cardDetailScreen.captureA11ySnapshot("CardDetail")
         cardDetailScreen.clickCardDataButton()
-        val nationalities = gbaData.getNationalities(DEFAULT_BSN)
         assertAll(
-            { assertTrue(cardDataScreen.visible(), "card data screen is not visible") },
             { assertTrue(cardDataScreen.dataAttributeVisible(gbaData.getValueByField(FIRST_NAME, DEFAULT_BSN)), "data attribute are not visible") },
             { assertTrue(cardDataScreen.dataLabelVisible(cardMetadata.getPidClaimLabel("given_name")), "data label are not visible") },
             { assertTrue(cardDataScreen.dataAttributeVisible(gbaData.getValueByField(NAME, DEFAULT_BSN)), "data attribute are not visible") },
             { assertTrue(cardDataScreen.dataLabelVisible(cardMetadata.getPidClaimLabel("family_name")), "data label are not visible") },
             { assertTrue(cardDataScreen.dataLabelVisible(cardMetadata.getPidClaimLabel("birthdate")), "data label are not visible") },
-            { assertTrue(cardDataScreen.dataAttributeVisible(nationalities[0]), "array attribute is not visible") },
-            { assertTrue(cardDataScreen.dataAttributeVisible(nationalities[1]), "array attribute is not visible") },
             { assertTrue(cardDataScreen.dataLabelAbsent(cardMetadata.getPidClaimLabel("recovery_code")), "recovery code is visible") },
+            { assertTrue(cardDataScreen.visible(), "card data screen is not visible") },
         )
+        cardDataScreen.captureA11ySnapshot("CardData")
 
         cardDataScreen.clickDataIncorrectButton()
         assertTrue(cardDataIncorrectScreen.visible(), "card data incorrect screen is not visible")
+        cardDataIncorrectScreen.captureA11ySnapshot("CardDataIncorrect")
 
         cardDataIncorrectScreen.goBack()
         cardDataScreen.clickBottomBackButton()
@@ -82,7 +80,7 @@ class CardDetailTests : TestBase() {
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
     @Tags(Tag("english"))
-    @DisplayName("LTC33 The Card attribute labels are multi-lingual")
+    @DisplayName("LTC25 The Card attribute labels are multi-lingual")
     fun verifyDataLabelMultiLingual(testInfo: TestInfo) {
         setUp(testInfo)
         cardDetailScreen.clickCardDataButton()

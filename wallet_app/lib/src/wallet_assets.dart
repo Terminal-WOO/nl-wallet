@@ -40,39 +40,45 @@ class WalletAssets {
   static const svg_app_store = 'assets/non-free/svg/app_store_logo.svg';
   static const svg_play_store = 'assets/non-free/svg/play_store_logo.svg';
 
+  static const svg_camera_permission = 'assets/non-free/svg/NL_WALLET_camera_permission.svg';
+  static const svg_biometrics_face = 'assets/non-free/svg/NL_WALLET_biometrics_face.svg';
+  static const svg_biometrics_finger = 'assets/non-free/svg/NL_WALLET_biometrics_finger.svg';
   static const svg_blocked_final = 'assets/non-free/svg/NL_WALLET_blocked_final.svg';
+  static const svg_delete_card_success = 'assets/non-free/svg/NL_WALLET_delete_card_success.svg';
   static const svg_blocked_temporary = 'assets/non-free/svg/NL_WALLET_blocked_temporary.svg';
   static const svg_digid = 'assets/non-free/svg/NL_WALLET_DigiD.svg';
+  static const svg_error_card_blocked = 'assets/non-free/svg/NL_WALLET_card_blocked.svg';
   static const svg_error_config_update = 'assets/non-free/svg/NL_WALLET_error_config_update.svg';
   static const svg_error_general = 'assets/non-free/svg/NL_WALLET_error_general.svg';
+  static const svg_error_no_card = 'assets/non-free/svg/NL_WALLET_no_card.svg';
   static const svg_error_no_internet = 'assets/non-free/svg/NL_WALLET_error_no_internet.svg';
   static const svg_error_rooted = 'assets/non-free/svg/NL_WALLET_error_rooted.svg';
   static const svg_error_server_outage = 'assets/non-free/svg/NL_WALLET_error_server_outage.svg';
   static const svg_error_server_overload = 'assets/non-free/svg/NL_WALLET_error_server_overload.svg';
   static const svg_error_session_expired = 'assets/non-free/svg/NL_WALLET_error_session_expired.svg';
-  static const svg_error_no_card = 'assets/non-free/svg/NL_WALLET_no_card.svg';
-  static const svg_error_card_blocked = 'assets/non-free/svg/NL_WALLET_card_blocked.svg';
+  static const svg_error_qr_invalid = 'assets/non-free/svg/NL_WALLET_qr_invalid.svg';
+  static const svg_maintenance = 'assets/non-free/svg/NL_WALLET_maintenance.svg';
+  static const svg_move_destination_permission = 'assets/non-free/svg/NL_WALLET_move_destination_permission.svg';
+  static const svg_move_destination_success = 'assets/non-free/svg/NL_WALLET_move_destination_success.svg';
+  static const svg_move_source_confirm = 'assets/non-free/svg/NL_WALLET_move_source_confirm.svg';
+  static const svg_move_source_success = 'assets/non-free/svg/NL_WALLET_move_source_success.svg';
+  static const svg_no_cards = 'assets/non-free/svg/NL_WALLET_no_card.svg';
+  static const svg_phone = 'assets/non-free/svg/NL_WALLET_phone.svg';
   static const svg_pin_forgot = 'assets/non-free/svg/NL_WALLET_PIN_forgot.svg';
   static const svg_pin_set = 'assets/non-free/svg/NL_WALLET_PIN_set.svg';
+  static const svg_placeholder = 'assets/non-free/svg/NL_WALLET_placeholder.svg';
   static const svg_privacy = 'assets/non-free/svg/NL_WALLET_privacy.svg';
+  static const svg_security_code = 'assets/non-free/svg/NL_WALLET_security_code.svg';
   static const svg_sharing_failed = 'assets/non-free/svg/NL_WALLET_sharing_failed.svg';
   static const svg_sharing_success = 'assets/non-free/svg/NL_WALLET_sharing_success.svg';
-  static const svg_url_check = 'assets/non-free/svg/NL_WALLET_url_check.svg';
   static const svg_signed = 'assets/non-free/svg/NL_WALLET_signed.svg';
   static const svg_stopped = 'assets/non-free/svg/NL_WALLET_stopped.svg';
   static const svg_terms = 'assets/non-free/svg/NL_WALLET_terms.svg'; // Not used at the moment due to PVW-4092
-  static const svg_placeholder = 'assets/non-free/svg/NL_WALLET_placeholder.svg';
-  static const svg_biometrics_finger = 'assets/non-free/svg/NL_WALLET_biometrics_finger.svg';
-  static const svg_biometrics_face = 'assets/non-free/svg/NL_WALLET_biometrics_face.svg';
+  static const svg_tour_icon = 'assets/non-free/svg/NL_WALLET_tour_icon.svg';
   static const svg_update_app = 'assets/non-free/svg/NL_WALLET_update_android.svg';
   static const svg_update_app_ios = 'assets/non-free/svg/NL_WALLET_update_ios.svg';
-  static const svg_tour_icon = 'assets/non-free/svg/NL_WALLET_tour_icon.svg';
-  static const svg_phone = 'assets/non-free/svg/NL_WALLET_phone.svg';
-  static const svg_no_cards = 'assets/non-free/svg/NL_WALLET_no_card.svg';
-  static const svg_move_source_confirm = 'assets/non-free/svg/NL_WALLET_move_source_confirm.svg';
-  static const svg_move_source_success = 'assets/non-free/svg/NL_WALLET_move_source_success.svg';
-  static const svg_move_destination_permission = 'assets/non-free/svg/NL_WALLET_move_destination_permission.svg';
-  static const svg_move_destination_success = 'assets/non-free/svg/NL_WALLET_move_destination_success.svg';
+  static const svg_url_check = 'assets/non-free/svg/NL_WALLET_url_check.svg';
+  static const svg_error_bluetooth = 'assets/non-free/svg/NL_WALLET_error_bluetooth.svg';
 
   static const svg_icon_face_id = 'assets/non-free/svg/icon_face_id.svg';
 
@@ -90,27 +96,16 @@ class WalletAssets {
   static const illustration_placeholder_generic = 'assets/non-free/illustrations/placeholder_generic.png';
 
   // LOGOS
-  static const logo_sign_provider = 'assets/non-free/logos/sign_provider.png';
   static const logo_wallet = 'assets/non-free/logos/wallet.png';
+  static const logo_wallet_qr = 'assets/non-free/logos/logo_nl_wallet_qr.png';
   static const logo_card_rijksoverheid = 'assets/non-free/logos/card_rijksoverheid.png';
   static const logo_ecommerce = 'assets/non-free/logos/ecommerce.png';
-  static const logo_car_rental = 'assets/non-free/logos/car_rental.png';
   static const logo_rijksoverheid = 'assets/non-free/logos/rijksoverheid.png';
-  static const logo_housing_corp = 'assets/non-free/logos/housing_corp.png';
-  static const logo_monkeybike = 'assets/non-free/logos/monkeybike.png';
-  static const logo_den_haag = 'assets/non-free/logos/den_haag.png';
   static const logo_nl_driving_license = 'assets/non-free/logos/nl_driving_license.png';
   static const logo_nl_health_insurance = 'assets/non-free/logos/nl_health_insurance.png';
   static const logo_digid = 'assets/non-free/logos/digid.png';
   static const logo_digid_large = 'assets/non-free/logos/digid_large.png';
-  static const logo_bank = 'assets/non-free/logos/bank.png';
-  static const logo_first_aid = 'assets/non-free/logos/first_aid.png';
   static const logo_rijksoverheid_label = 'assets/non-free/logos/rijksoverheid_label.png';
-  static const logo_bar = 'assets/non-free/logos/bar.png';
-  static const logo_zorgverzekeraar_z = 'assets/non-free/logos/zorgverzekeraar_z.png';
-  static const logo_delft = 'assets/non-free/logos/delft.png';
-  static const logo_rdw = 'assets/non-free/logos/rdw.png';
-  static const logo_rp_placeholder = 'assets/non-free/logos/rp_placeholder.png';
 
   // ICONS
   static const icon_alert_data = 'assets/non-free/icons/alert_data.png';
@@ -119,6 +114,8 @@ class WalletAssets {
   static const icon_card_share = 'assets/non-free/icons/card_share.png';
   static const icon_wallet_transfer = 'assets/non-free/icons/wallet_transfer.png';
   static const icon_disclose = 'assets/non-free/icons/disclose.png';
+  static const icon_manage_notifications = 'assets/non-free/icons/manage_notifications.png';
+  static const icon_qr_scan = 'assets/non-free/icons/qr_scan.png';
 
   // VIDEOS
   static const slug_placeholder = '{slug}';

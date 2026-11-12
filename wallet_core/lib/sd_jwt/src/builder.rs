@@ -1,14 +1,13 @@
 use std::fmt::Display;
 
-use indexmap::IndexMap;
-use serde_with::SerializeDisplay;
-
 use attestation_types::claim_path::ClaimPath;
-use crypto::EcdsaKey;
+use crypto::keys::EcdsaKey;
 use crypto::server_keys::KeyPair;
+use indexmap::IndexMap;
 use jwt::JwtTyp;
 use jwt::SignedJwt;
 use jwt::headers::HeaderWithX5c;
+use serde_with::SerializeDisplay;
 use utils::vec_at_least::VecNonEmpty;
 
 use crate::disclosure::Disclosure;
@@ -95,27 +94,26 @@ impl From<SignedSdJwt> for VerifiedSdJwt {
 /// # Example:
 /// ```
 /// # use attestation_types::claim_path::ClaimPath;
+/// # use crypto::keys::PublicKeyRef;
 /// # use chrono::Utc;
 /// # use crypto::server_keys::generate::Ca;
 /// # use jwt::confirmation::ConfirmationClaim;
 /// # use p256::ecdsa::SigningKey;
-/// # use rand_core::OsRng;
+/// # use p256::elliptic_curve::Generate;
 /// # use sd_jwt::builder::SdJwtBuilder;
 /// # use sd_jwt::sd_jwt::SdJwtVcClaims;
 /// # use utils::date_time_seconds::DateTimeSeconds;
 ///
 ///  # tokio_test::block_on(async {
-/// let holder_key = SigningKey::random(&mut OsRng);
+/// let holder_key = SigningKey::generate();
 /// let claims = SdJwtVcClaims {
 ///     _sd_alg: None,
-///     cnf: ConfirmationClaim::from_verifying_key(&holder_key.verifying_key())?,
+///     cnf: ConfirmationClaim::try_from_public_key(&PublicKeyRef::from(holder_key.verifying_key()))?,
 ///     vct: "urn:example:vct".into(),
 ///     vct_integrity: None,
-///     iss: "https://issuer.example.com".parse()?,
 ///     iat: DateTimeSeconds::from(Utc::now()),
 ///     exp: None,
 ///     nbf: None,
-///     attestation_qualification: None,
 ///     status: None,
 ///     claims: serde_json::from_value(serde_json::json!({
 ///         "name": "alice"
@@ -164,25 +162,24 @@ impl<H: Hasher> SdJwtBuilder<H> {
     /// ```
     /// # use attestation_types::claim_path::ClaimPath;
     /// # use chrono::Utc;
+    /// # use crypto::keys::PublicKeyRef;
     /// # use jwt::confirmation::ConfirmationClaim;
     /// # use p256::ecdsa::SigningKey;
+    /// # use p256::elliptic_curve::Generate;
     /// # use serde_json::json;
     /// # use sd_jwt::builder::SdJwtBuilder;
     /// # use sd_jwt::sd_jwt::SdJwtVcClaims;
     /// # use utils::date_time_seconds::DateTimeSeconds;
-    /// # use utils::vec_at_least::VecNonEmpty;
-    /// # use rand_core::OsRng;
+    /// # use utils::vec_nonempty;
     ///
     /// let builder = SdJwtBuilder::new(SdJwtVcClaims {
     ///     _sd_alg: None,
-    ///     cnf: ConfirmationClaim::from_verifying_key(&SigningKey::random(&mut OsRng).verifying_key())?,
+    ///     cnf: ConfirmationClaim::try_from_public_key(&PublicKeyRef::from(SigningKey::generate().verifying_key()))?,
     ///     vct: "com:example:vct".into(),
     ///     vct_integrity: None,
-    ///     iss: "https://issuer.example.com".parse()?  ,
     ///     iat: DateTimeSeconds::from(Utc::now()),
     ///     exp: None,
     ///     nbf: None,
-    ///     attestation_qualification: None,
     ///     status: None,
     ///     claims: serde_json::from_value(serde_json::json!({
     ///         "name": "alice",
@@ -193,21 +190,17 @@ impl<H: Hasher> SdJwtBuilder<H> {
     ///     }))?,
     /// })
     /// // conceals "name": "alice"
-    /// .make_concealable(VecNonEmpty::try_from(vec![ClaimPath::SelectByKey(String::from("name"))])?)?
+    /// .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("name"))])?
     /// // "house_number": 1
-    /// .make_concealable(VecNonEmpty::try_from(
-    ///     vec![
-    ///        ClaimPath::SelectByKey(String::from("address")),
-    ///        ClaimPath::SelectByKey(String::from("house_number"))
-    ///     ]
-    /// )?)?
+    /// .make_concealable(vec_nonempty![
+    ///     ClaimPath::SelectByKey(String::from("address")),
+    ///     ClaimPath::SelectByKey(String::from("house_number"))
+    /// ])?
     /// // conceals "Dutch"
-    /// .make_concealable(VecNonEmpty::try_from(
-    ///     vec![
-    ///        ClaimPath::SelectByKey(String::from("nationalities")),
-    ///        ClaimPath::SelectByIndex(0)
-    ///     ]
-    /// )?)?;
+    /// .make_concealable(vec_nonempty![
+    ///     ClaimPath::SelectByKey(String::from("nationalities")),
+    ///     ClaimPath::SelectByIndex(0)
+    /// ])?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn make_concealable(mut self, path: VecNonEmpty<ClaimPath>) -> Result<Self, EncoderError> {
@@ -243,31 +236,26 @@ impl<H: Hasher> SdJwtBuilder<H> {
 
 #[cfg(feature = "examples")]
 mod examples {
-    use futures::FutureExt;
-    use p256::ecdsa::VerifyingKey;
-
     use attestation_types::claim_path::ClaimPath;
+    use crypto::keys::AsPublicKeyRef;
     use crypto::server_keys::KeyPair;
+    use futures::FutureExt;
     use utils::generator::mock::MockTimeGenerator;
-
-    use crate::sd_jwt::SdJwtVcClaims;
+    use utils::vec_nonempty;
 
     use super::SdJwtBuilder;
     use super::SignedSdJwt;
+    use crate::sd_jwt::SdJwtVcClaims;
 
     impl SignedSdJwt {
-        pub fn pid_example(issuer_keypair: &KeyPair, holder_pubkey: &VerifyingKey) -> Self {
+        pub fn pid_example(issuer_keypair: &KeyPair, holder_pubkey: &impl AsPublicKeyRef) -> Self {
             let claims = SdJwtVcClaims::pid_example(holder_pubkey, &MockTimeGenerator::default());
 
             // issuer signs SD-JWT
             SdJwtBuilder::new(claims)
-                .make_concealable(
-                    vec![ClaimPath::SelectByKey(String::from("family_name"))]
-                        .try_into()
-                        .unwrap(),
-                )
+                .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("family_name"))])
                 .unwrap()
-                .make_concealable(vec![ClaimPath::SelectByKey(String::from("bsn"))].try_into().unwrap())
+                .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("bsn"))])
                 .unwrap()
                 .add_decoys(&[], 2)
                 .unwrap()
@@ -281,18 +269,18 @@ mod examples {
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
-    use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
-    use serde_json::json;
+    use std::assert_matches;
 
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
+    use serde_json::json;
     use utils::generator::mock::MockTimeGenerator;
 
     use super::*;
 
     fn builder_from_json(object: serde_json::Value) -> SdJwtBuilder<Sha256Hasher> {
         SdJwtBuilder::new(SdJwtVcClaims::example_from_json(
-            SigningKey::random(&mut OsRng).verifying_key(),
+            SigningKey::generate().verifying_key(),
             object,
             &MockTimeGenerator::default(),
         ))
@@ -305,44 +293,39 @@ mod test {
             use super::*;
 
             mod on_top_level {
+                use utils::vec_nonempty;
+
                 use super::*;
 
                 #[test]
                 fn can_be_done_for_object_values() {
-                    let result = builder_from_json(json!({ "address": {} })).make_concealable(
-                        vec![ClaimPath::SelectByKey(String::from("address"))]
-                            .try_into()
-                            .unwrap(),
-                    );
+                    let result = builder_from_json(json!({ "address": {} }))
+                        .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("address"))]);
 
                     assert!(result.is_ok());
                 }
 
                 #[test]
                 fn can_be_done_for_array_elements() {
-                    let result = builder_from_json(json!({ "nationalities": ["US", "DE"] })).make_concealable(
-                        vec![ClaimPath::SelectByKey(String::from("nationalities"))]
-                            .try_into()
-                            .unwrap(),
-                    );
+                    let result = builder_from_json(json!({ "nationalities": ["US", "DE"] }))
+                        .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("nationalities"))]);
 
                     assert!(result.is_ok());
                 }
             }
 
             mod as_subproperties {
+                use utils::vec_nonempty;
+
                 use super::*;
 
                 #[test]
                 fn can_be_done_for_object_values() {
-                    let result = builder_from_json(json!({ "address": { "country": "US" } })).make_concealable(
-                        vec![
+                    let result =
+                        builder_from_json(json!({ "address": { "country": "US" } })).make_concealable(vec_nonempty![
                             ClaimPath::SelectByKey(String::from("address")),
                             ClaimPath::SelectByKey(String::from("country")),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                        ]);
 
                     assert!(result.is_ok());
                 }
@@ -352,15 +335,11 @@ mod test {
                     let result = builder_from_json(json!({
                       "address": { "contact_person": [ "Jane Dow", "John Doe" ] }
                     }))
-                    .make_concealable(
-                        vec![
-                            ClaimPath::SelectByKey(String::from("address")),
-                            ClaimPath::SelectByKey(String::from("contact_person")),
-                            ClaimPath::SelectByIndex(0),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                    .make_concealable(vec_nonempty![
+                        ClaimPath::SelectByKey(String::from("address")),
+                        ClaimPath::SelectByKey(String::from("contact_person")),
+                        ClaimPath::SelectByIndex(0),
+                    ]);
 
                     assert!(result.is_ok());
                 }
@@ -371,28 +350,25 @@ mod test {
             use super::*;
 
             mod on_top_level {
-                use crate::error::ClaimError;
+                use utils::vec_nonempty;
 
                 use super::*;
+                use crate::error::ClaimError;
 
                 #[test]
                 fn returns_an_error_for_nonexistant_object_paths() {
                     let result = builder_from_json(json!({}))
-                        .make_concealable(vec![ClaimPath::SelectByKey(String::from("email"))].try_into().unwrap());
+                        .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("email"))]);
 
                     assert_matches!(result, Err(EncoderError::ClaimStructure(ClaimError::ObjectFieldNotFound(key, _))) if key == "email".parse().unwrap());
                 }
 
                 #[test]
                 fn returns_an_error_for_nonexistant_array_paths() {
-                    let result = builder_from_json(json!({})).make_concealable(
-                        vec![
-                            ClaimPath::SelectByKey(String::from("nationalities")),
-                            ClaimPath::SelectByIndex(0),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                    let result = builder_from_json(json!({})).make_concealable(vec_nonempty![
+                        ClaimPath::SelectByKey(String::from("nationalities")),
+                        ClaimPath::SelectByIndex(0),
+                    ]);
 
                     assert_matches!(result, Err(EncoderError::ClaimStructure(ClaimError::ParentNotFound(_))));
                 }
@@ -402,14 +378,10 @@ mod test {
                     let result = builder_from_json(json!({
                       "nationalities": ["US", "DE"]
                     }))
-                    .make_concealable(
-                        vec![
-                            ClaimPath::SelectByKey(String::from("nationalities")),
-                            ClaimPath::SelectByIndex(2),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                    .make_concealable(vec_nonempty![
+                        ClaimPath::SelectByKey(String::from("nationalities")),
+                        ClaimPath::SelectByIndex(2),
+                    ]);
 
                     assert_matches!(
                         result,
@@ -419,23 +391,20 @@ mod test {
             }
 
             mod as_subproperties {
-                use crate::error::ClaimError;
+                use utils::vec_nonempty;
 
                 use super::*;
+                use crate::error::ClaimError;
 
                 #[test]
                 fn returns_an_error_for_nonexistant_object_paths() {
                     let result = builder_from_json(json!({
                       "address": {}
                     }))
-                    .make_concealable(
-                        vec![
-                            ClaimPath::SelectByKey(String::from("address")),
-                            ClaimPath::SelectByKey(String::from("region")),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                    .make_concealable(vec_nonempty![
+                        ClaimPath::SelectByKey(String::from("address")),
+                        ClaimPath::SelectByKey(String::from("region")),
+                    ]);
 
                     assert_matches!(result, Err(EncoderError::ClaimStructure(ClaimError::ObjectFieldNotFound(key, _))) if key == "region".parse().unwrap());
                 }
@@ -445,15 +414,11 @@ mod test {
                     let result = builder_from_json(json!({
                       "address": {}
                     }))
-                    .make_concealable(
-                        vec![
-                            ClaimPath::SelectByKey(String::from("address")),
-                            ClaimPath::SelectByKey(String::from("contact_person")),
-                            ClaimPath::SelectByIndex(2),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                    .make_concealable(vec_nonempty![
+                        ClaimPath::SelectByKey(String::from("address")),
+                        ClaimPath::SelectByKey(String::from("contact_person")),
+                        ClaimPath::SelectByIndex(2),
+                    ]);
 
                     assert_matches!(result, Err(EncoderError::ClaimStructure(ClaimError::ParentNotFound(_))));
                 }
@@ -463,15 +428,11 @@ mod test {
                     let result = builder_from_json(json!({
                       "address": { "contact_person": [ "Jane Dow", "John Doe" ] }
                     }))
-                    .make_concealable(
-                        vec![
-                            ClaimPath::SelectByKey(String::from("address")),
-                            ClaimPath::SelectByKey(String::from("contact_person")),
-                            ClaimPath::SelectByIndex(2),
-                        ]
-                        .try_into()
-                        .unwrap(),
-                    );
+                    .make_concealable(vec_nonempty![
+                        ClaimPath::SelectByKey(String::from("address")),
+                        ClaimPath::SelectByKey(String::from("contact_person")),
+                        ClaimPath::SelectByIndex(2),
+                    ]);
 
                     assert_matches!(
                         result,
@@ -501,8 +462,16 @@ mod test {
 
                 assert!(result.is_ok());
                 assert_eq!(
-                    result.unwrap().encoder.object_claims()._sd.as_ref().unwrap().len(),
-                    2.try_into().unwrap()
+                    result
+                        .unwrap()
+                        .encoder
+                        .object_claims()
+                        ._sd
+                        .as_ref()
+                        .unwrap()
+                        .len()
+                        .get(),
+                    2
                 );
             }
         }

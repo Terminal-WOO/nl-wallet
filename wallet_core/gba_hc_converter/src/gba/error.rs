@@ -1,6 +1,9 @@
-use crate::gba::data::GbaResult;
-use hex::FromHexError;
 use std::string::FromUtf8Error;
+
+use crypto::keys::InvalidKeyLength;
+use hex::FromHexError;
+
+use crate::gba::data::GbaResult;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -8,6 +11,8 @@ pub enum Error {
     Transport(#[from] reqwest::Error),
     #[error("JSON error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("XML decoding error: {0}")]
+    XmlDecoding(#[from] quick_xml::encoding::EncodingError),
     #[error("XML deserialization error: {0}")]
     XmlDeserialization(#[from] quick_xml::de::DeError),
     #[error("XML error: {0}")]
@@ -24,6 +29,10 @@ pub enum Error {
     GbaErrorResponse(GbaResult),
     #[error("Error decoding data: {0}")]
     Decoding(#[from] FromUtf8Error),
+    #[error("Invalid key: {0}")]
+    InvalidKey(#[source] InvalidKeyLength),
+    #[error("Invalid nonce")]
+    InvalidNonce,
     #[error("Error decrypting data: {0}")]
     Decrypting(#[from] aes_gcm::aead::Error),
     #[error("Error decoding data: {0}")]

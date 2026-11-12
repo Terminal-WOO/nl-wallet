@@ -10,74 +10,119 @@ workspace = true
 [lib]
 doctest = false
 
+[[example]]
+name = "device_integration_tests"
+crate-type = ["staticlib"]
+required-features = ["hardware_integration_test"]
+
+[[example]]
+name = "verify_close_proximity_response"
+required-features = ["hardware_integration_test"]
+
+[[test]]
+name = "close_proximity_device_scenario"
+required-features = ["hardware_integration_test"]
+
 [features]
-# Allow the disclosure return URL and its prefix to use http://
-allow_insecure_url = ["openid4vc/allow_insecure_url"]
+# Allow the disclosure return URL to use "http://" and
+# allow Credential Issuer Identifiers to contain "http://"
+allow_insecure_url = ["openid4vc/allow_insecure_url", "wallet_configuration/allow_insecure_url"]
+# Enable the iOS-only UniFFI session-crypto helpers exposed by platform_support.
+ios_session_crypto = ["platform_support/ios_session_crypto"]
 # Use fake Apple attested keys for use in the iOS simulator
 fake_attestation = [
     "dep:apple_app_attest",
     "platform_support/persistent_mock_attested_key",
     "platform_support/xcode_env",
 ]
-# Adds serializability for snapshot tests
-snapshot_test = []
 # Various test related functionality of Wallet types and dependencies
-test = ["openid4vc/mock", "platform_support/mock_hw_keystore", "dep:mockall"]
+test = [
+    "dep:mockall",
+    "openid4vc/mock",
+    "platform_support/mock_hw_keystore",
+    "platform_support/mock_close_proximity_disclosure",
+]
+# Test scenarios embedded in the native device test runner; never enabled by the app.
+hardware_integration_test = [
+    "test",
+    "dep:anyhow",
+    "dep:cose",
+    "dep:hex",
+    "apple_app_attest/mock",
+    "attestation_data/mock",
+    "crypto/generate",
+    "crypto/mock",
+    "crypto/mock_secure_keys",
+    "dcql/mock",
+    "jwt/test",
+    "mdoc/test",
+    "openid4vc/example_constructors",
+    "platform_support/mock_attested_key",
+    "token_status_list/mock",
+    "wallet_account/server",
+    "tokio/time",
+]
 
 [dependencies]
-thiserror.workspace = true
+anyhow = { workspace = true, optional = true }
+async-trait.workspace = true
 base64.workspace = true
-chrono = { workspace = true, features = ["std", "clock"] }
-cfg-if.workspace = true
+chrono = { workspace = true, features = ["now"] }
 ciborium.workspace = true
-derive_more = { workspace = true, features = ["constructor", "debug", "display"] }
-futures = { workspace = true, features = ["std", "async-await"] }
+derive_more = { workspace = true, features = ["constructor", "debug", "display", "is_variant"] }
+futures = { workspace = true, features = ["async-await"] }
+hex = { workspace = true, optional = true }
 http.workspace = true
 indexmap.workspace = true
 itertools.workspace = true
-# This feature is necessary on the transitive dependency sqlx.sqlite so it doesn't rely on a local dynamic library
-libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
-josekit.workspace = true
+jwk-simple.workspace = true
+# This feature is necessary on the transitive dependency sqlx.sqlite
+# so it does not rely on a local dynamic library for SQLCipher.
+libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher"] }
 mime.workspace = true
 nutype.workspace = true
-p256 = { workspace = true, features = ["ecdsa", "std"] }
+p256.workspace = true
 parking_lot.workspace = true
-regex.workspace = true
-reqwest = { workspace = true, features = ["json", "rustls-tls-webpki-roots", "zstd"] }
-ring = { workspace = true, features = ["std"] }
-rusqlite = { workspace = true }
+rand.workspace = true
+reqwest.workspace = true
+ring.workspace = true
+rusqlite.workspace = true
 rustls-pki-types.workspace = true
 sanitize-filename.workspace = true
-sea-orm = { workspace = true, features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-uuid"] }
-sea-query.workspace = true
+sea-orm = { workspace = true, features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-serde_urlencoded.workspace = true
+serde_qs.workspace = true
 serde_with = { workspace = true, features = ["base64", "json"] }
 strum = { workspace = true, features = ["derive"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["sync", "fs"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "fs"] }
 tracing.workspace = true
 trait-variant.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "v7"] }
-zstd.workspace = true
+zeroize = { workspace = true, features = ["zeroize_derive"] }
 
 mockall = { workspace = true, optional = true }
 
 attestation_data.path = "../lib/attestation_data"
 attestation_types.path = "../lib/attestation_types"
+cose = { path = "../lib/cose", optional = true }
 crypto.path = "../lib/crypto"
 dcql.path = "../lib/dcql"
 entity.path = "entity"
 error_category = { path = "../lib/error_category", features = ["sentry"] }
 http_utils.path = "../lib/http_utils"
+jwe.path = "../lib/jwe"
 jwt.path = "../lib/jwt"
 mdoc.path = "../lib/mdoc"
+oauth.path = "../lib/oauth"
 openid4vc.path = "../lib/openid4vc"
 platform_support.path = "platform_support"
 sd_jwt.path = "../lib/sd_jwt"
 sd_jwt_vc_metadata.path = "../lib/sd_jwt_vc_metadata"
+token_status_list.path = "../lib/token_status_list"
 update_policy_model.path = "../update_policy/model"
 wallet_account = { path = "../wallet_provider/wallet_account", features = ["client"] }
 utils.path = "../lib/utils"
@@ -87,23 +132,30 @@ wscd.path = "../lib/wscd"
 
 apple_app_attest = { path = "../lib/apple_app_attest", optional = true }
 
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# When compiling for either Android or iOS, make sure that the "vendored" feature of "openssl-sys" is enabled by
+# enabling the "bundled-sqlcipher-vendored-openssl" feature on "libsqlite3-sys".
+# This compiles and statically links OpenSSL, so that a dynamic library does not need to be present on the system.
+libsqlite3-sys = { workspace = true, features = ["bundled-sqlcipher-vendored-openssl"] }
+
 [dev-dependencies]
-aes-gcm = { workspace = true, features = ["std"] }
-assert_matches.workspace = true
+aes-gcm.workspace = true
+hex.workspace = true
+httpmock.workspace = true
 mockall.workspace = true
 rand_core.workspace = true
 rstest.workspace = true
 serial_test.workspace = true
 ssri.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "test-util", "parking_lot"] }
-wiremock.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 
 apple_app_attest = { path = "../lib/apple_app_attest", features = ["mock"] }
-attestation_types = { path = "../lib/attestation_types", features = ["pid_constants"] }
-attestation_data = { path = "../lib/attestation_data", features = ["example_credential_payloads", "generate", "mock"] }
+attestation_types = { path = "../lib/attestation_types", features = ["mock"] }
+attestation_data = { path = "../lib/attestation_data", features = ["example_credential_payloads", "mock"] }
+cose.path = "../lib/cose"
 crypto = { path = "../lib/crypto", features = ["mock", "mock_secure_keys"] }
 dcql = { path = "../lib/dcql", features = ["mock"] }
-http_utils = { path = "../lib/http_utils", features = ["insecure_http_client"] }
+http_utils = { path = "../lib/http_utils", features = ["httpmock", "test"] }
 jwt = { path = "../lib/jwt", features = ["test"] }
 openid4vc = { path = "../lib/openid4vc", features = [
     "mock",
@@ -111,11 +163,13 @@ openid4vc = { path = "../lib/openid4vc", features = [
     "example_credential_payloads",
     "example_constructors",
 ] }
+mdoc = { path = "../lib/mdoc", features = ["examples", "test"] }
 # enable the "mock" feature for platform_support when running tests
 platform_support = { path = "platform_support", features = ["mock"] }
 sd_jwt = { path = "../lib/sd_jwt", features = ["examples", "mock"] }
 sd_jwt_vc_metadata = { path = "../lib/sd_jwt_vc_metadata", features = ["example_constructors"] }
 wallet_account = { path = "../wallet_provider/wallet_account", features = ["client", "server", "mock"] }
+wallet_configuration = { path = "configuration", features = ["test"] }
 wscd = { path = "../lib/wscd", features = ["mock"] }
 token_status_list = { path = "../lib/token_status_list", features = ["mock"] }
 

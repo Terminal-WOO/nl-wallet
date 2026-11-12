@@ -9,7 +9,6 @@ use sea_orm::DbErr;
 use sea_orm::TransactionTrait;
 use tokio::fs;
 use tracing::log::LevelFilter;
-
 use wallet_migrations::Migrator;
 use wallet_migrations::MigratorTrait;
 
@@ -29,6 +28,8 @@ impl From<&SqliteUrl> for String {
     fn from(value: &SqliteUrl) -> Self {
         match value {
             SqliteUrl::File(path) => format!("sqlite://{}?mode=rwc", path.to_string_lossy()),
+            // sqlx ensures that `:memory:` works in a connection pool, it is
+            // translated to a named in memory database with a shared cache.
             SqliteUrl::InMemory => "sqlite::memory:".to_string(),
         }
     }
@@ -56,7 +57,7 @@ pub struct Database {
 impl Database {
     pub async fn open(url: SqliteUrl, key: SqlCipherKey) -> Result<Self, DbErr> {
         // Open database connection and set database key
-        let mut connection_options = ConnectOptions::new(url.clone());
+        let mut connection_options = ConnectOptions::new(&url);
         connection_options.sqlx_logging_level(LevelFilter::Trace);
         connection_options.sqlcipher_key(format!("\"{}\"", String::from(key)));
         let connection = sea_orm::Database::connect(connection_options).await?;
@@ -65,6 +66,16 @@ impl Database {
         Migrator::up(&connection, None).await?;
 
         Ok(Self::new(url, connection))
+    }
+
+    /// Exposes the underlying SQLite connection pool. Used by the in-memory test storage to detach
+    /// an "anchor" connection (see [`crate::storage::database_storage::test_storage`]): a
+    /// `sqlite::memory:` database is a shared-cache database that SQLite destroys the instant no
+    /// connection to it remains open, so the pool closing or replacing its connection would
+    /// otherwise wipe the database mid-test.
+    #[cfg(any(test, feature = "test"))]
+    pub(crate) fn sqlite_connection_pool(&self) -> &sea_orm::sqlx::SqlitePool {
+        self.connection.get_sqlite_connection_pool()
     }
 
     pub async fn close(self) -> Result<(), DbErr> {
@@ -190,12 +201,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_entities_database() {
+        use entity::keyed_data;
         use sea_orm::Set;
         use sea_orm::prelude::*;
         use serde::Deserialize;
         use serde::Serialize;
-
-        use entity::keyed_data;
 
         // Define example JSON data
         #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]

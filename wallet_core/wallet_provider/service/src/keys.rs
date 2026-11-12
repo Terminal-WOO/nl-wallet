@@ -1,26 +1,55 @@
+use crypto::keys::EcdsaKey;
+use crypto::keys::SecureEcdsaKey;
+use crypto::kid::Kid;
+use hsm::keys::HsmEcdsaKey;
+use hsm::service::HsmError;
+use jwt::KeyWithKid;
 use p256::ecdsa::Signature;
 use p256::ecdsa::VerifyingKey;
 
-use crypto::keys::EcdsaKey;
-use crypto::keys::SecureEcdsaKey;
-use hsm::keys::HsmEcdsaKey;
-use hsm::service::HsmError;
+const WALLET_CERTIFICATE_SIGNING_KEY_PREFIX: &str = "wallet_certificate_signing_";
+const PIN_HMAC_KEY_PREFIX: &str = "pin_hmac_";
+const PIN_PUBKEY_ENCRYPTION_KEY_PREFIX: &str = "pin_pubkey_encryption_";
+const ATTESTATION_WRAPPING_KEY_PREFIX: &str = "attestation_wrapping_";
 
-pub trait WalletCertificateSigningKey: SecureEcdsaKey {}
-pub trait InstructionResultSigningKey: SecureEcdsaKey {}
+pub fn certificate_signing_key_identifier(kid: &Kid) -> String {
+    format!("{}{}", WALLET_CERTIFICATE_SIGNING_KEY_PREFIX, kid.as_ref())
+}
 
-pub struct WalletCertificateSigning(pub HsmEcdsaKey);
-pub struct InstructionResultSigning(pub HsmEcdsaKey);
+pub fn pin_hmac_key_identifier(kid: &Kid) -> String {
+    format!("{}{}", PIN_HMAC_KEY_PREFIX, kid.as_ref())
+}
+
+pub fn attestation_wrapping_key_identifier(kid: &Kid) -> String {
+    format!("{}{}", ATTESTATION_WRAPPING_KEY_PREFIX, kid.as_ref())
+}
+
+pub fn pin_pubkey_encryption_key_identifier(kid: &Kid) -> String {
+    format!("{}{}", PIN_PUBKEY_ENCRYPTION_KEY_PREFIX, kid.as_ref())
+}
+
+pub trait WalletCertificateSigningKey: SecureEcdsaKey + KeyWithKid {}
+pub trait InstructionResultSigningKey: SecureEcdsaKey + KeyWithKid {}
+
+pub struct WalletCertificateSigning {
+    pub kid: Kid,
+    pub key: HsmEcdsaKey,
+}
+
+pub struct InstructionResultSigning {
+    pub kid: Kid,
+    pub key: HsmEcdsaKey,
+}
 
 impl EcdsaKey for WalletCertificateSigning {
     type Error = HsmError;
 
     async fn verifying_key(&self) -> Result<VerifyingKey, Self::Error> {
-        self.0.verifying_key().await
+        self.key.verifying_key().await
     }
 
     async fn try_sign(&self, msg: &[u8]) -> Result<Signature, Self::Error> {
-        self.0.try_sign(msg).await
+        self.key.try_sign(msg).await
     }
 }
 
@@ -28,17 +57,29 @@ impl EcdsaKey for InstructionResultSigning {
     type Error = HsmError;
 
     async fn verifying_key(&self) -> Result<VerifyingKey, Self::Error> {
-        self.0.verifying_key().await
+        self.key.verifying_key().await
     }
 
     async fn try_sign(&self, msg: &[u8]) -> Result<Signature, Self::Error> {
-        self.0.try_sign(msg).await
+        self.key.try_sign(msg).await
     }
 }
 
 impl SecureEcdsaKey for WalletCertificateSigning {}
 
+impl KeyWithKid for WalletCertificateSigning {
+    fn kid(&self) -> &str {
+        self.kid.as_ref()
+    }
+}
+
 impl SecureEcdsaKey for InstructionResultSigning {}
+
+impl KeyWithKid for InstructionResultSigning {
+    fn kid(&self) -> &str {
+        self.kid.as_ref()
+    }
+}
 
 impl WalletCertificateSigningKey for WalletCertificateSigning {}
 impl InstructionResultSigningKey for InstructionResultSigning {}

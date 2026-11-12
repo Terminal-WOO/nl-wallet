@@ -5,31 +5,34 @@
 //!
 //! Notes
 //! - All headers are convertible to/from `jsonwebtoken::Header` to interoperate with lower-level APIs.
-//! - `HeaderWithTyp::default()` sets `alg` to `ES256` and `typ` to `T::TYP`, which is `"jwt"` by default.
+//! - `HeaderWithTyp::default()` sets `alg` to `ES256` and `typ` to `T::TYP`, which is `"JWT"` by default.
 use std::borrow::Cow;
 
 use base64::prelude::*;
+use crypto::keys::AsPublicKeyRef;
+use crypto::keys::PublicKey;
+use crypto::x509::BorrowingCertificate;
 use jsonwebtoken::Algorithm;
 use jsonwebtoken::Header;
 use jsonwebtoken::jwk::Jwk;
-use p256::ecdsa::VerifyingKey;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::base64::Base64;
 use serde_with::serde_as;
-
-use crypto::WithVerifyingKey;
-use crypto::x509::BorrowingCertificate;
 use utils::vec_at_least::VecNonEmpty;
 
 use crate::JwtTyp;
 use crate::error::JwkConversionError;
-use crate::error::JwtError;
-use crate::jwk::jwk_from_p256;
-use crate::jwk::jwk_to_p256;
+use crate::error::JwtParseError;
+use crate::jwk::jwk_from_public_key;
+use crate::jwk::jwk_to_public_key;
 
 /// Default `typ` value for JWTs when a payload does not override `JwtTyp::TYP`.
-pub(crate) const DEFAULT_JWT_TYP: &str = "jwt";
+///
+/// From the [JWT RFC](https://www.rfc-editor.org/info/rfc7519/#section-5.1): While media type names are not case
+/// sensitive, it is RECOMMENDED that "JWT" always be spelled using uppercase characters for compatibility with legacy
+/// implementations.
+pub(crate) const DEFAULT_JWT_TYP: &str = "JWT";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeaderWithTyp {
@@ -66,10 +69,10 @@ impl From<HeaderWithTyp> for Header {
 }
 
 impl TryFrom<Header> for HeaderWithTyp {
-    type Error = JwtError;
+    type Error = JwtParseError;
 
     fn try_from(value: Header) -> Result<Self, Self::Error> {
-        let typ = value.typ.ok_or(JwtError::MissingTyp)?;
+        let typ = value.typ.ok_or(JwtParseError::MissingTyp)?;
         Ok(HeaderWithTyp {
             alg: value.alg,
             typ: Cow::Owned(typ),
@@ -90,16 +93,22 @@ pub struct HeaderWithJwk<H = HeaderWithTyp> {
 }
 
 impl HeaderWithJwk {
-    pub async fn try_from_verifying_key(key: &impl WithVerifyingKey) -> Result<Self, JwkConversionError> {
-        let jwk = jwk_from_p256(
-            &key.verifying_key()
-                .await
-                .map_err(|e| JwkConversionError::VerifyingKeyFromPrivateKey(e.into()))?,
-        )?;
+    pub fn try_from_public_key(key: &impl AsPublicKeyRef) -> Result<Self, JwkConversionError> {
+        let jwk = jwk_from_public_key(key)?;
         Ok(HeaderWithJwk {
             header: HeaderWithTyp::default(),
             jwk,
         })
+    }
+}
+
+impl<H> HeaderWithJwk<H> {
+    pub fn inner(&self) -> &H {
+        &self.header
+    }
+
+    pub fn public_key(&self) -> Result<PublicKey, JwkConversionError> {
+        jwk_to_public_key(&self.jwk)
     }
 }
 
@@ -111,27 +120,19 @@ impl<H: Into<Header>> From<HeaderWithJwk<H>> for Header {
     }
 }
 
-impl<H> HeaderWithJwk<H> {
-    pub fn inner(&self) -> &H {
-        &self.header
-    }
-
-    pub fn verifying_key(&self) -> Result<VerifyingKey, JwkConversionError> {
-        jwk_to_p256(&self.jwk)
-    }
-}
-
 impl<H, E> TryFrom<Header> for HeaderWithJwk<H>
 where
     H: TryFrom<Header, Error = E>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    type Error = JwtError;
+    type Error = JwtParseError;
 
     fn try_from(value: Header) -> Result<Self, Self::Error> {
-        let jwk = value.jwk.as_ref().ok_or(JwtError::MissingJwk)?.clone();
+        let jwk = value.jwk.as_ref().ok_or(JwtParseError::MissingJwk)?.clone();
         Ok(HeaderWithJwk {
-            header: value.try_into().map_err(|e| JwtError::HeaderConversion(Box::new(e)))?,
+            header: value
+                .try_into()
+                .map_err(|e| JwtParseError::HeaderConversion(Box::new(e)))?,
             jwk,
         })
     }
@@ -163,6 +164,11 @@ impl HeaderWithX5c {
 }
 
 impl<H> HeaderWithX5c<H> {
+    /// Construct a `HeaderWithX5c<H>` from an arbitrary inner header type and a certificate chain.
+    pub fn new(inner: H, x5c: VecNonEmpty<BorrowingCertificate>) -> Self {
+        HeaderWithX5c { header: inner, x5c }
+    }
+
     pub fn inner(&self) -> &H {
         &self.header
     }
@@ -187,29 +193,80 @@ where
     H: TryFrom<Header, Error = E>,
     E: std::error::Error + Send + Sync + 'static,
 {
-    type Error = JwtError;
+    type Error = JwtParseError;
 
     fn try_from(value: Header) -> Result<Self, Self::Error> {
         let x5c = value
             .x5c
             .as_ref()
-            .ok_or(JwtError::MissingX5c)?
+            .ok_or(JwtParseError::MissingX5c)?
             .iter()
             .map(|encoded_cert| {
                 BASE64_STANDARD
                     .decode(encoded_cert)
-                    .map_err(|e| JwtError::HeaderConversion(Box::new(e)))
+                    .map_err(|e| JwtParseError::HeaderConversion(Box::new(e)))
                     .and_then(|bytes| {
-                        BorrowingCertificate::from_der(bytes).map_err(|e| JwtError::HeaderConversion(Box::new(e)))
+                        BorrowingCertificate::from_der(bytes).map_err(|e| JwtParseError::HeaderConversion(Box::new(e)))
                     })
             })
             .collect::<Result<Vec<_>, _>>()?
             .try_into()
-            .map_err(|e| JwtError::HeaderConversion(Box::new(e)))?;
+            .map_err(|e| JwtParseError::HeaderConversion(Box::new(e)))?;
 
         Ok(HeaderWithX5c {
-            header: value.try_into().map_err(|e| JwtError::HeaderConversion(Box::new(e)))?,
+            header: value
+                .try_into()
+                .map_err(|e| JwtParseError::HeaderConversion(Box::new(e)))?,
             x5c,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderWithKid<H = HeaderWithTyp> {
+    #[serde(flatten)]
+    header: H,
+
+    pub kid: String,
+}
+
+impl HeaderWithKid {
+    pub fn from_kid(kid: String) -> Self {
+        Self {
+            header: HeaderWithTyp::default(),
+            kid,
+        }
+    }
+}
+
+impl<H> HeaderWithKid<H> {
+    pub fn inner(&self) -> &H {
+        &self.header
+    }
+}
+
+impl<H: Into<Header>> From<HeaderWithKid<H>> for Header {
+    fn from(value: HeaderWithKid<H>) -> Self {
+        let mut header: Header = value.header.into();
+        header.kid = Some(value.kid);
+        header
+    }
+}
+
+impl<H, E> TryFrom<Header> for HeaderWithKid<H>
+where
+    H: TryFrom<Header, Error = E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    type Error = JwtParseError;
+
+    fn try_from(value: Header) -> Result<Self, Self::Error> {
+        let kid = value.kid.as_ref().ok_or(JwtParseError::MissingKid)?.clone();
+        Ok(HeaderWithKid {
+            header: value
+                .try_into()
+                .map_err(|e| JwtParseError::HeaderConversion(Box::new(e)))?,
+            kid,
         })
     }
 }

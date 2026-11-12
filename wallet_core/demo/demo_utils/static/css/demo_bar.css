@@ -1,0 +1,72 @@
+aside {
+  order: -1;
+
+  width: 100vw;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px;
+  gap: 16px;
+  color: #152a62;
+}
+
+aside:has(.text) {
+  background: #f2f1fe;
+}
+
+@media screen and (min-width: 500px) {
+  aside {
+    padding: 8px 24px 8px 94px; /* 24 + 16 + 54 */
+  }
+}
+
+aside b {
+  font-weight: 700;
+}
+
+aside a {
+  color: #383ede;
+}
+
+aside a:hover {
+  color: #3237c4;
+  text-decoration: none;
+}
+
+aside .demo-bar {
+  flex-grow: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+}
+
+aside .demo-bar::before {
+  content: " ";
+  background: url("../non-free/images/nl-wallet.svg") no-repeat center center / cover;
+  width: 40px;
+  height: 40px;
+}
+
+aside .text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+@media screen and (min-width: 500px) {
+  aside {
+    justify-content: right;
+  }
+
+  aside .demo-bar {
+    flex-grow: 1;
+  }
+
+  aside .text {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+}

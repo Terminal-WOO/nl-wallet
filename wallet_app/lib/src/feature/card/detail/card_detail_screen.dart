@@ -5,6 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../domain/model/card/wallet_card.dart';
 import '../../../domain/model/event/wallet_event.dart';
 import '../../../domain/model/wallet_card_detail.dart';
+import '../../../navigation/secured_page_route.dart';
 import '../../../navigation/wallet_routes.dart';
 import '../../../util/cast_util.dart';
 import '../../../util/extension/animation_extension.dart';
@@ -16,17 +17,16 @@ import '../../../util/mapper/card/status/card_status_metadata_mapper.dart';
 import '../../../util/mapper/card/status/card_status_render_type.dart';
 import '../../../util/mapper/event/wallet_event_status_text_mapper.dart';
 import '../../../wallet_constants.dart';
+import '../../common/dialog/delete_card_dialog.dart';
 import '../../common/screen/placeholder_screen.dart';
 import '../../common/widget/animated_fade_in.dart';
 import '../../common/widget/button/button_content.dart';
-import '../../common/widget/button/icon/help_icon_button.dart';
 import '../../common/widget/button/list_button.dart';
 import '../../common/widget/button/primary_button.dart';
 import '../../common/widget/card/status/card_status_info_text.dart';
 import '../../common/widget/card/wallet_card_item.dart';
 import '../../common/widget/centered_loading_indicator.dart';
 import '../../common/widget/menu_item.dart';
-import '../../common/widget/organization/organization_logo.dart';
 import '../../common/widget/spacer/sliver_divider.dart';
 import '../../common/widget/spacer/sliver_sized_box.dart';
 import '../../common/widget/text/title_text.dart';
@@ -34,10 +34,11 @@ import '../../common/widget/wallet_app_bar.dart';
 import '../../common/widget/wallet_scrollbar.dart';
 import '../../organization/detail/organization_detail_screen.dart';
 import '../data/argument/card_data_screen_argument.dart';
+import '../delete/argument/delete_card_screen_argument.dart';
 import 'argument/card_detail_screen_argument.dart';
 import 'bloc/card_detail_bloc.dart';
 
-/// This value can be used with [SecuredPageRoute.overrideDurationOfNextTransition] when navigating to the
+/// This value can be used with [SecuredPageRoute.overridePendingAnimation] when navigating to the
 /// [CardDetailScreen] to slow down the entry transition a bit, making it feel a bit less rushed when the card
 /// animates into place.
 const kPreferredCardDetailEntryTransitionDuration = Duration(milliseconds: 600);
@@ -55,16 +56,17 @@ class CardDetailScreen extends StatelessWidget {
     }
   }
 
-  final String cardTitle;
+  /// The fallback title used during the loading state; typically the name
+  /// of the card being fetched.
+  final String? cardTitle;
 
-  const CardDetailScreen({required this.cardTitle, super.key});
+  const CardDetailScreen({this.cardTitle, super.key});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: WalletAppBar(
         title: TitleText(_getTitle(context)),
-        actions: const [HelpIconButton()],
       ),
       key: const Key('cardDetailScreen'),
       body: SafeArea(
@@ -99,14 +101,14 @@ class CardDetailScreen extends StatelessWidget {
   String _getTitle(BuildContext context) {
     final state = context.watch<CardDetailBloc>().state;
     final title = tryCast<CardDetailLoadSuccess>(state)?.detail.card.title.l10nValue(context);
-    return title ?? cardTitle;
+    return title ?? cardTitle ?? context.l10n.cardDetailScreenFallbackTitle;
   }
 
   Widget _buildBody(BuildContext context, CardDetailState state) {
     return switch (state) {
       CardDetailInitial() => _buildLoading(context),
       CardDetailLoadInProgress() => _buildLoading(context, card: state.card),
-      CardDetailLoadSuccess() => _buildDetail(context, state.detail),
+      CardDetailLoadSuccess() => _buildDetail(context, state),
       CardDetailLoadFailure() => _buildError(context, state),
     };
   }
@@ -165,9 +167,15 @@ class CardDetailScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildDetail(BuildContext context, WalletCardDetail detail) {
+  Widget _buildDetail(BuildContext context, CardDetailLoadSuccess state) {
+    final detail = state.detail;
     final card = detail.card;
-    final cardStatusMetadata = CardStatusMetadataMapper.map(context, card, CardStatusRenderType.cardDetailScreen);
+    final cardStatusMetadata = CardStatusMetadataMapper.map(
+      context,
+      card,
+      CardStatusRenderType.cardDetailScreen,
+      isPidCard: state.isPidCard,
+    );
     return SliverMainAxisGroup(
       slivers: [
         if (cardStatusMetadata != null) ...[
@@ -186,14 +194,13 @@ class CardDetailScreen extends StatelessWidget {
               widthFactor: 0.6,
               child: Hero(
                 tag: card.hashCode,
-                flightShuttleBuilder:
-                    (
-                      BuildContext flightContext,
-                      Animation<double> animation,
-                      HeroFlightDirection flightDirection,
-                      BuildContext fromHeroContext,
-                      BuildContext toHeroContext,
-                    ) => WalletCardItem.buildShuttleCard(animation, card, ctaAnimation: CtaAnimation.fadeIn),
+                flightShuttleBuilder: (
+                  BuildContext flightContext,
+                  Animation<double> animation,
+                  HeroFlightDirection flightDirection,
+                  BuildContext fromHeroContext,
+                  BuildContext toHeroContext,
+                ) => WalletCardItem.buildShuttleCard(animation, card, ctaAnimation: CtaAnimation.fadeIn),
                 child: WalletCardItem.fromWalletCard(context, card),
               ),
             ),
@@ -203,7 +210,7 @@ class CardDetailScreen extends StatelessWidget {
         const SliverDivider(),
         SliverToBoxAdapter(
           child: AnimatedFadeIn(
-            child: _buildDetailContent(context, detail),
+            child: _buildDetailContent(context, detail, isPidCard: state.isPidCard),
           ),
         ),
         const SliverDivider(),
@@ -212,7 +219,7 @@ class CardDetailScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildDetailContent(BuildContext context, WalletCardDetail detail) {
+  Widget _buildDetailContent(BuildContext context, WalletCardDetail detail, {required bool isPidCard}) {
     final card = detail.card;
     final rows = [
       MenuItem(
@@ -228,9 +235,9 @@ class CardDetailScreen extends StatelessWidget {
         onPressed: card.attestationId == null ? null : () => _onCardHistoryPressed(context, card.attestationId!),
       ),
       MenuItem(
-        leftIcon: OrganizationLogo(image: card.issuer.logo, size: 24),
+        leftIcon: const Icon(Icons.info_outline),
         label: Text.rich(context.l10n.cardDetailScreenIssuerCta.toTextSpan(context)),
-        subtitle: Text.rich(card.issuer.displayName.l10nSpan(context)),
+        subtitle: Text.rich(card.issuer.displayName.toTextSpan(context)),
         onPressed: () => OrganizationDetailScreen.showPreloaded(
           context,
           card.issuer,
@@ -238,6 +245,14 @@ class CardDetailScreen extends StatelessWidget {
           onReportIssuePressed: () => PlaceholderScreen.showGeneric(context),
         ),
       ),
+      if (!isPidCard)
+        MenuItem(
+          leftIcon: Icon(Icons.delete_outline, color: context.colorScheme.error),
+          label: Text.rich(context.l10n.cardDetailScreenCardDeleteCta.toTextSpan(context)),
+          labelColor: context.colorScheme.error,
+          subtitle: Text.rich(context.l10n.cardDetailScreenCardDeleteWarning.toTextSpan(context)),
+          onPressed: () => _onCardDeletePressed(context, card),
+        ),
     ];
     return ListView.separated(
       shrinkWrap: true,
@@ -254,7 +269,7 @@ class CardDetailScreen extends StatelessWidget {
       final String status = WalletEventStatusTextMapper().map(context, attribute).toLowerCase();
       return context.l10n
           .cardDetailScreenLatestSuccessInteraction(
-            attribute.relyingParty.displayName.l10nValue(context),
+            attribute.relyingParty.displayName,
             status,
             timeAgo,
           )
@@ -297,6 +312,23 @@ class CardDetailScreen extends StatelessWidget {
     );
   }
 
+  Future<void> _onCardDeletePressed(BuildContext context, WalletCard card) async {
+    final confirmed = await DeleteCardDialog.show(context, cardTitle: card.title.l10nValue(context));
+    if (!confirmed || !context.mounted) return;
+
+    final attestationId = card.attestationId;
+    if (attestationId == null) return;
+
+    await Navigator.pushNamed(
+      context,
+      WalletRoutes.cardDeleteRoute,
+      arguments: DeleteCardScreenArgument(
+        attestationId: attestationId,
+        cardTitle: card.title.l10nValue(context),
+      ).toMap(),
+    );
+  }
+
   void _onCardHistoryPressed(BuildContext context, String attestationId) {
     Navigator.pushNamed(
       context,
@@ -306,13 +338,13 @@ class CardDetailScreen extends StatelessWidget {
   }
 
   Widget _buildBottomSection(BuildContext context, CardDetailState state) {
-    final showRefreshButton = tryCast<CardDetailLoadSuccess>(state)?.showRenewOption ?? false;
+    final showRenewPidButton = tryCast<CardDetailLoadSuccess>(state)?.isPidCard ?? false;
     return Column(
       mainAxisSize: MainAxisSize.max,
       mainAxisAlignment: MainAxisAlignment.end,
       children: [
         const Divider(),
-        if (showRefreshButton)
+        if (showRenewPidButton)
           Padding(
             padding: const EdgeInsets.only(left: 16, right: 16, top: 24, bottom: 12),
             child: PrimaryButton(

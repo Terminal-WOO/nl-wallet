@@ -5,12 +5,9 @@ void main() {
   test(
     'serialize to and from Map<> yields identical object',
     () {
-      const expected = SignScreenArgument(
-        mockSessionId: '1aef7',
-        uri: 'https://example.org',
-      );
-      final serialized = expected.toMap();
-      final result = SignScreenArgument.fromMap(serialized);
+      const expected = SignScreenArgument(uri: 'https://example.org');
+      final serialized = expected.toJson();
+      final result = SignScreenArgument.fromJson(serialized);
       expect(result, expected);
     },
   );

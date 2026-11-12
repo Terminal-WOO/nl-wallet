@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
 
-import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/document.dart';
 import '../../../domain/model/organization.dart';
 import '../../../util/extension/build_context_extension.dart';
 import '../../../util/extension/string_extension.dart';
 import '../../../wallet_assets.dart';
 import '../../common/screen/placeholder_screen.dart';
-import '../../common/widget/app_image.dart';
 import '../../common/widget/button/confirm/confirm_buttons.dart';
 import '../../common/widget/button/list_button.dart';
 import '../../common/widget/button/primary_button.dart';
@@ -115,13 +113,11 @@ class CheckAgreementPage extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
         children: [
-          AppImage(asset: trustProvider.logo),
-          const SizedBox(width: 16),
           Expanded(
             child: Text(
               context.l10n.checkAgreementPageSignProvider(
-                organization.displayName.l10nValue(context),
-                trustProvider.displayName.l10nValue(context),
+                organization.displayName,
+                trustProvider.displayName,
               ),
               style: context.textTheme.bodyLarge,
             ),

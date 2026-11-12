@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+declare -A access_certificates=(
+    [(wptl,name)]='NL Wallet'
+    [(wptl,legal_name)]='Ministerie van Economische Zaken'
+    [(wptl,oid)]='NTRNL-52813150'
+
+    [(issuer,name)]='NL Wallet Issuer'
+    [(issuer,legal_name)]='Ministerie van Economische Zaken'
+    [(issuer,oid)]='NTRNL-52813150'
+
+    [(pid,name)]='RvIG'
+    [(pid,legal_name)]='Rijksdienst voor Identiteitsgegevens'
+    [(pid,oid)]='NTRNL-27373207'
+
+    [(mijn_amsterdam,name)]='Gemeente Amsterdam'
+    [(mijn_amsterdam,legal_name)]='Gemeente Amsterdam'
+    [(mijn_amsterdam,oid)]='NTRNL-34366966'
+
+    [(online_marketplace,name)]='Marktplek'
+    [(online_marketplace,legal_name)]='Marktplek B.V.'
+    [(online_marketplace,oid)]='NTRNL-98765432'
+
+    [(xyz_bank,name)]='XYZ Bank'
+    [(xyz_bank,legal_name)]='XYZ Bank N.V.'
+    [(xyz_bank,oid)]='NTRNL-12345678'
+
+    [(monkey_bike,name)]='MonkeyBike'
+    [(monkey_bike,legal_name)]='MonkeyBike Bezorgdiensten B.V.'
+    [(monkey_bike,oid)]='NTRNL-13572468'
+
+    [(job_finder,name)]='BaanVinder'
+    [(job_finder,serial_number)]='98765433'
+    [(job_finder,surname)]='Baan'
+    [(job_finder,given_name)]='Jan'
+
+    [(university,name)]='Holland University'
+    [(university,legal_name)]='Holland Universiteit'
+    [(university,oid)]='NTRNL-99876543'
+
+    [(insurance,name)]='VerzekerAar'
+    [(insurance,legal_name)]='VerzekerAar N.V.'
+    [(insurance,oid)]='NTRNL-99876544'
+
+    [(housing,name)]='DroomWoon'
+    [(housing,legal_name)]='DroomWoon N.V.'
+    [(housing,oid)]='NTRNL-99876545'
+
+    [(loyalty,name)]='Jum supermarkten'
+    [(loyalty,legal_name)]='Jum supermarkten N.V.'
+    [(loyalty,oid)]='NTRNL-99876546'
+
+    [(museum_maandkaart,name)]='Museum Demodam'
+    [(museum_maandkaart,legal_name)]='Museum Demodam B.V.'
+    [(museum_maandkaart,oid)]='NTRNL-99876547'
+
+    [(mdl,name)]='RDW Demo'
+    [(mdl,legal_name)]='Dienst Wegverkeer'
+    [(mdl,oid)]='NTRNL-99876548'
+
+    [(mvc,name)]='RDW Demo'
+    [(mvc,legal_name)]='Dienst Wegverkeer'
+    [(mvc,oid)]='NTRNL-99876548'
+
+    [(issuance_server,name)]='Demo Issuer (disclosure based)'
+    [(issuance_server,legal_name)]='Demo Issuer (disclosure based)'
+    [(issuance_server,oid)]='NTRNL-99876552'
+
+    [(acf_demo_issuer,name)]='Demo Issuer (authorization code)'
+    [(acf_demo_issuer,legal_name)]='Demo Issuer (authorization code)'
+    [(acf_demo_issuer,oid)]='NTRNL-99876550'
+
+    [(pacf_issuance_server,name)]='Demo Issuer (pre-authorized code)'
+    [(pacf_issuance_server,legal_name)]='Demo Issuer (pre-authorized code)'
+    [(pacf_issuance_server,oid)]='NTRNL-99876551'
+
+    [(dezi,name)]='CIBG'
+    [(dezi,legal_name)]='CIBG'
+    [(dezi,oid)]='NTRNL-50000535'
+)

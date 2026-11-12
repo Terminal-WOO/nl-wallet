@@ -1,29 +1,27 @@
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/card/wallet_card.dart';
 import '../../../domain/model/event/wallet_event.dart';
 import '../../../domain/model/organization.dart';
-import '../../../domain/model/policy/organization_policy.dart';
-import '../../../domain/model/policy/policy.dart';
+import '../../../theme/base_wallet_theme.dart';
 import '../../../util/extension/build_context_extension.dart';
 import '../../../util/extension/string_extension.dart';
 import '../../../util/extension/wallet_event_extension.dart';
-import '../../../util/mapper/context_mapper.dart';
+import '../../../util/formatter/country_code_formatter.dart';
+import '../../../util/launch_util.dart';
 import '../../check_attributes/check_attributes_screen.dart';
 import '../../history/detail/widget/wallet_event_status_header.dart';
 import '../../info/info_screen.dart';
 import '../../organization/detail/organization_detail_screen.dart';
-import '../../policy/policy_screen.dart';
 import '../screen/placeholder_screen.dart';
 import '../screen/request_details_screen.dart';
-import '../widget/app_image.dart';
 import '../widget/button/link_button.dart';
 import '../widget/button/list_button.dart';
 import '../widget/card/shared_attributes_card.dart';
 import '../widget/list/list_item.dart';
+import '../widget/menu_item.dart';
 
 class RequestDetailCommonBuilders {
   RequestDetailCommonBuilders._();
@@ -61,6 +59,26 @@ class RequestDetailCommonBuilders {
     );
   }
 
+  static Widget buildOrganizationSection(
+    BuildContext context, {
+    required Organization organization,
+    DividerSide side = DividerSide.none,
+  }) {
+    final countryLabel = CountryCodeFormatter.format(organization.countryCode);
+    return MenuItem(
+      dividerSide: side,
+      label: Text(
+        context.l10n.requestDetailScreenAboutOrganizationCta(organization.displayName),
+      ),
+      subtitle: countryLabel == null ? null : Text(countryLabel),
+      onPressed: () => OrganizationDetailScreen.showPreloaded(
+        context,
+        organization,
+        sharedDataWithOrganizationBefore: false,
+      ),
+    );
+  }
+
   static Widget buildPurpose(
     BuildContext context, {
     required LocalizedText purpose,
@@ -83,35 +101,44 @@ class RequestDetailCommonBuilders {
     final totalNrOfAttributes = cards.map((it) => it.attributes).flattened.length;
     final String title = context.l10n.historyDetailScreenSharedAttributesTitle;
     final subtitle = context.l10n.historyDetailScreenSharedAttributesSubtitle(totalNrOfAttributes);
-    return _buildAttributes(context, cards: cards, title: title, subtitle: subtitle, side: side);
+    final header = _buildAttributesHeader(context, title: title, subtitle: subtitle);
+    return _buildAttributes(context, cards: cards, header: header, side: side);
   }
 
   static Widget buildRequestedAttributes(
     BuildContext context, {
     required List<WalletCard> cards,
     DividerSide side = DividerSide.none,
+    bool interactive = true,
   }) {
     final totalNrOfAttributes = cards.map((it) => it.attributes).flattened.length;
     final String title = context.l10n.requestDetailsScreenAttributesTitle;
     final subtitle = context.l10n.requestDetailsScreenAttributesSubtitle(totalNrOfAttributes);
-    return _buildAttributes(context, cards: cards, title: title, subtitle: subtitle, side: side);
+    final header = _buildAttributesHeader(context, title: title, subtitle: subtitle);
+    return _buildAttributes(context, cards: cards, header: header, side: side, interactive: interactive);
   }
 
-  static Widget _buildAttributes(
+  static Widget _buildAttributesHeader(
     BuildContext context, {
-    required List<WalletCard> cards,
     required String title,
     required String subtitle,
-    DividerSide side = DividerSide.none,
   }) {
-    final header = ListItem(
+    return ListItem(
       label: Text.rich(title.toTextSpan(context)),
       subtitle: Text.rich(subtitle.toTextSpan(context)),
       icon: const Icon(Icons.credit_card_outlined),
       style: ListItemStyle.vertical,
       dividerSide: DividerSide.none /* handled below */,
     );
+  }
 
+  static Widget _buildAttributes(
+    BuildContext context, {
+    required List<WalletCard> cards,
+    required Widget header,
+    DividerSide side = DividerSide.none,
+    bool interactive = true,
+  }) {
     return Column(
       children: [
         if (side.top) const Divider(),
@@ -124,11 +151,14 @@ class RequestDetailCommonBuilders {
             final card = cards[i];
             return SharedAttributesCard(
               card: card,
-              onPressed: () => CheckAttributesScreen.show(
-                context,
-                card: card,
-                onDataIncorrectPressed: () => InfoScreen.showDetailsIncorrect(context),
-              ),
+              showCta: interactive,
+              onPressed: interactive
+                  ? () => CheckAttributesScreen.show(
+                      context,
+                      card: card,
+                      onDataIncorrectPressed: () => InfoScreen.showDetailsIncorrect(context),
+                    )
+                  : null,
             );
           },
           separatorBuilder: (c, i) => const SizedBox(height: 16),
@@ -143,21 +173,48 @@ class RequestDetailCommonBuilders {
   static Widget buildPolicy(
     BuildContext context, {
     required Organization organization,
-    required Policy policy,
     DividerSide side = DividerSide.none,
   }) {
-    final OrganizationPolicy orgPolicy = OrganizationPolicy(policy: policy, organization: organization);
-    final policyTextMapper = context.read<ContextMapper<OrganizationPolicy, String>>();
-    return ListItem(
-      label: Text.rich(context.l10n.historyDetailScreenTermsTitle.toTextSpan(context)),
-      subtitle: Text.rich(policyTextMapper.map(context, orgPolicy).toTextSpan(context)),
-      icon: const Icon(Icons.handshake_outlined),
-      button: LinkButton(
-        text: Text.rich(context.l10n.historyDetailScreenTermsCta.toTextSpan(context)),
-        onPressed: () => PolicyScreen.show(context, organization, policy),
-      ),
-      style: ListItemStyle.vertical,
-      dividerSide: side,
+    final privacyPolicyUrl = organization.privacyPolicyUri;
+    if (privacyPolicyUrl == null) return const SizedBox.shrink();
+    return Column(
+      mainAxisSize: .min,
+      children: [
+        if (side.top) const Divider(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+          child: Semantics(
+            explicitChildNodes: true /* make sure column's children are announced separately */,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Align(alignment: Alignment.centerLeft, child: Icon(Icons.handshake_outlined, size: 24)),
+                const SizedBox(height: 16),
+                Semantics(
+                  header: true,
+                  headingLevel: 1,
+                  child: DefaultTextStyle(
+                    style: BaseWalletTheme.headlineExtraSmallTextStyle.copyWith(
+                      color: context.textTheme.titleMedium?.color,
+                    ),
+                    child: Text.rich(context.l10n.privacySectionTitle.toTextSpan(context)),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                LinkButton(
+                  text: Text.rich(context.l10n.privacySectionCta.toTextSpan(context)),
+                  onPressed: () => launchUrlStringCatching(privacyPolicyUrl),
+                  icon: const Icon(Icons.north_east_outlined, size: 16),
+                  mainAxisAlignment: .spaceBetween,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (side.bottom) const Divider(),
+      ],
     );
   }
 
@@ -168,9 +225,7 @@ class RequestDetailCommonBuilders {
   }) {
     return ListButton(
       text: Text.rich(
-        context.l10n
-            .historyDetailScreenAboutOrganizationCta(organization.displayName.l10nValue(context))
-            .toTextSpan(context),
+        context.l10n.historyDetailScreenAboutOrganizationCta(organization.displayName).toTextSpan(context),
       ),
       onPressed: () => OrganizationDetailScreen.showPreloaded(
         context,
@@ -179,13 +234,6 @@ class RequestDetailCommonBuilders {
         onReportIssuePressed: () => PlaceholderScreen.showGeneric(context),
       ),
       dividerSide: side,
-      trailing: ExcludeSemantics(
-        child: SizedBox(
-          height: 36,
-          width: 36,
-          child: AppImage(asset: organization.logo),
-        ),
-      ),
     );
   }
 

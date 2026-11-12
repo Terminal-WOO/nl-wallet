@@ -1,5 +1,7 @@
 {
   "issuance_server_url": "http://localhost:3007",
+  "pacf_issuance_server_url": "http://localhost:3008/",
+  "acf_demo_issuer_url": "http://localhost:3030/",
   "help_base_url": "https://help.example.com/",
   "webserver": {
     "ip": "0.0.0.0",
@@ -14,46 +16,47 @@
     "key": "key"
   },
   "usecases": {
+    "insurance": {
+      "credential_configuration_ids": ["com.example.insurance"],
+      "issuer_state": "insurance"
+    },
+    "loyalty": {
+      "data": [
+        {
+          "format": "mso_mdoc",
+          "attestation_type": "com.example.loyalty",
+          "attributes": {
+            "com.example.loyalty": {
+              "type": "object",
+              "value": {
+                "branch": { "type": "text", "value": "Demodam" },
+                "loyalty_number": { "type": "text", "value": "123456789" }
+              }
+            }
+          }
+        }
+      ]
+    },
     "university": {
-      "client_id": "university.example.com",
+      "client_id": "x509_hash:example-university-reader-cert-hash",
       "data": {
         "9999999999": [
           {
+            "format": "dc+sd-jwt",
             "attestation_type": "com.example.degree",
             "attributes": {
-              "university": "Holland University",
-              "education": "MSc Economics",
-              "graduation_date": "1970-01-01",
-              "grade": null,
-              "cum_laude": false
+              "university": { "type": "text", "value": "Holland University" },
+              "education": { "type": "text", "value": "MSc Economics" },
+              "graduation_date": { "type": "text", "value": "1970-01-01" },
+              "grade": { "type": "null" },
+              "cum_laude": { "type": "bool", "value": false }
             }
           }
         ]
       },
       "disclosed": {
-        "credential_type": "urn:eudi:pid:nl:1",
-        "path": ["urn:eudi:pid:nl:1", "bsn"]
-      }
-    },
-    "insurance": {
-      "client_id": "insurance.example.com",
-      "data": {
-        "9999999999": [
-          {
-            "attestation_type": "com.example.insurance",
-            "attributes": {
-              "product": "Health Insurance",
-              "coverage": "Basic",
-              "start_date": "2025-01-01",
-              "duration": "365",
-              "customer_number": "283728"
-            }
-          }
-        ]
-      },
-      "disclosed": {
-        "credential_type": "urn:eudi:pid:nl:1",
-        "path": ["urn:eudi:pid:nl:1", "bsn"]
+        "credential_type": "eu.europa.ec.eudi.pid.1",
+        "path": ["eu.europa.ec.eudi.pid.nl.1", "bsn"]
       }
     }
   }

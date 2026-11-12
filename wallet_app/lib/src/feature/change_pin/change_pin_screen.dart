@@ -5,14 +5,16 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../data/service/announcement_service.dart';
 import '../../domain/model/flow_progress.dart';
+import '../../domain/model/result/application_error.dart';
 import '../../navigation/wallet_routes.dart';
-import '../../util/cast_util.dart';
 import '../../util/extension/build_context_extension.dart';
 import '../../wallet_assets.dart';
 import '../../wallet_constants.dart';
 import '../common/page/generic_loading_page.dart';
 import '../common/page/terminal_page.dart';
 import '../common/widget/button/animated_visibility_back_button.dart';
+import '../common/widget/button/primary_button.dart';
+import '../common/widget/button/tertiary_button.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
 import '../common/widget/page_illustration.dart';
 import '../common/widget/text/title_text.dart';
@@ -20,11 +22,11 @@ import '../common/widget/utility/scroll_offset_provider.dart';
 import '../common/widget/wallet_app_bar.dart';
 import '../error/error_page.dart';
 import '../error/error_screen.dart';
+import '../pin/pin_setup_page.dart';
 import '../pin_dialog/pin_confirmation_error_dialog.dart';
 import '../pin_dialog/pin_validation_error_dialog.dart';
 import 'bloc/change_pin_bloc.dart';
 import 'page/enter_current_pin_page.dart';
-import 'page/select_new_pin_page.dart';
 
 const kTotalNrOfPages = 4;
 const _kSelectNewPinPageKey = ValueKey('select_new_pin_page');
@@ -57,10 +59,8 @@ class ChangePinScreen extends StatelessWidget {
     final bloc = context.bloc;
     unawaited(_runAnnouncements(context, state));
     switch (state) {
-      case ChangePinGenericError():
-        ErrorScreen.showGeneric(context, secured: false, style: ErrorCtaStyle.retry);
-      case ChangePinNetworkError():
-        ErrorScreen.showNetwork(context, networkError: tryCast(state), secured: false);
+      case ChangePinError(:final error):
+        ErrorScreen.show(context, error, secured: false, style: ErrorCtaStyle.retry);
       case ChangePinSelectNewPinFailed():
         await PinValidationErrorDialog.show(
           context,
@@ -90,8 +90,7 @@ class ChangePinScreen extends StatelessWidget {
       ChangePinConfirmNewPinFailed() => _buildConfirmNewPinPage(context, enteredDigits: kPinDigits),
       ChangePinUpdating() => _buildChangePinUpdating(context),
       ChangePinCompleted() => _buildChangePinSuccess(context),
-      ChangePinGenericError() => _buildChangePinFailed(context),
-      ChangePinNetworkError() => _buildChangePinFailed(context),
+      ChangePinError(:final error) => _buildChangePinFailed(context, error),
     };
     return FakePagingAnimatedSwitcher(
       animateBackwards: state.didGoBack,
@@ -109,8 +108,7 @@ class ChangePinScreen extends StatelessWidget {
       ChangePinConfirmNewPinFailed() => const FlowProgress(currentStep: 3, totalSteps: kTotalNrOfPages),
       ChangePinUpdating() => const FlowProgress(currentStep: 3, totalSteps: kTotalNrOfPages),
       ChangePinCompleted() => const FlowProgress(currentStep: kTotalNrOfPages, totalSteps: kTotalNrOfPages),
-      ChangePinGenericError() => null,
-      ChangePinNetworkError() => null,
+      ChangePinError() => null,
     };
   }
 
@@ -140,7 +138,7 @@ class ChangePinScreen extends StatelessWidget {
   }
 
   Widget _buildSelectNewPinPage(BuildContext context, {required int enteredDigits}) {
-    return SelectNewPinPage(
+    return PinSetupPage(
       key: _kSelectNewPinPageKey,
       title: context.l10n.changePinScreenSelectNewPinTitle,
       enteredDigits: enteredDigits,
@@ -151,7 +149,7 @@ class ChangePinScreen extends StatelessWidget {
   }
 
   Widget _buildConfirmNewPinPage(BuildContext context, {required int enteredDigits}) {
-    return SelectNewPinPage(
+    return PinSetupPage(
       key: _kConfirmNewPinPageKey,
       title: context.l10n.changePinScreenConfirmNewPinTitle,
       enteredDigits: enteredDigits,
@@ -162,13 +160,14 @@ class ChangePinScreen extends StatelessWidget {
   }
 
   /// This is more a placeholder/fallback over anything else.
-  /// Whenever the user is hit with a [ChangePinGenericError] or [ChangePinNetworkError]
+  /// Whenever the user is hit with a [ChangePinError] or [ChangePinNetworkError]
   /// this is built, but the listener should trigger the [ErrorScreen] while the bloc resets
   /// the flow so the user can try again. That said, to be complete we need to build something
   /// in this state, hence this method is kept around.
-  Widget _buildChangePinFailed(BuildContext context) {
-    return ErrorPage.generic(
+  Widget _buildChangePinFailed(BuildContext context, ApplicationError error) {
+    return ErrorPage.fromError(
       context,
+      error,
       style: ErrorCtaStyle.retry,
       onPrimaryActionPressed: () => context.bloc.add(ChangePinRetryPressed()),
     );
@@ -185,15 +184,21 @@ class ChangePinScreen extends StatelessWidget {
     return TerminalPage(
       title: context.l10n.changePinScreenSuccessTitle,
       description: context.l10n.changePinScreenSuccessDescription,
-      primaryButtonCta: context.l10n.changePinScreenToOverviewCta,
-      secondaryButtonCta: context.l10n.changePinScreenToSettingsCta,
       illustration: const PageIllustration(asset: WalletAssets.svg_pin_set),
-      onPrimaryPressed: () => Navigator.pushNamedAndRemoveUntil(
-        context,
-        WalletRoutes.dashboardRoute,
-        ModalRoute.withName(WalletRoutes.splashRoute),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.changePinScreenToOverviewCta),
+        onPressed: () => Navigator.pushNamedAndRemoveUntil(
+          context,
+          WalletRoutes.dashboardRoute,
+          ModalRoute.withName(WalletRoutes.splashRoute),
+        ),
+        key: const Key('primaryButtonCta'),
       ),
-      onSecondaryButtonPressed: () => Navigator.pop(context),
+      secondaryButton: TertiaryButton(
+        text: Text(context.l10n.changePinScreenToSettingsCta),
+        onPressed: () => Navigator.pop(context),
+        key: const Key('secondaryButtonCta'),
+      ),
     );
   }
 
@@ -232,8 +237,7 @@ class ChangePinScreen extends StatelessWidget {
       case ChangePinConfirmNewPinInProgress():
       case ChangePinConfirmNewPinFailed():
       case ChangePinUpdating():
-      case ChangePinGenericError():
-      case ChangePinNetworkError():
+      case ChangePinError():
         return const TitleText('');
     }
   }

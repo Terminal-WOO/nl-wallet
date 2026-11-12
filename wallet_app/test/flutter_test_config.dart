@@ -1,18 +1,28 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'package:wallet/src/data/repository/disclosure/disclosure_repository.dart';
 import 'package:wallet/src/domain/model/attribute/attribute.dart';
+import 'package:wallet/src/domain/model/card/status/card_status.dart';
 import 'package:wallet/src/domain/model/card/wallet_card.dart';
+import 'package:wallet/src/domain/model/close_proximity/ble_connection_event.dart';
+import 'package:wallet/src/domain/model/configuration/flutter_app_configuration.dart';
+import 'package:wallet/src/domain/model/configuration/maintenance_window.dart';
 import 'package:wallet/src/domain/model/disclosure/disclosure_session_type.dart';
 import 'package:wallet/src/domain/model/event/wallet_event.dart';
+import 'package:wallet/src/domain/model/event/wallet_events_page.dart';
+import 'package:wallet/src/domain/model/help/help_category.dart';
+import 'package:wallet/src/domain/model/help/topic_block.dart';
+import 'package:wallet/src/domain/model/issuance/continue_issuance_result.dart';
 import 'package:wallet/src/domain/model/issuance/start_issuance_result.dart' as domain;
 import 'package:wallet/src/domain/model/navigation/navigation_request.dart';
+import 'package:wallet/src/domain/model/notification/app_notification.dart';
 import 'package:wallet/src/domain/model/organization.dart';
+import 'package:wallet/src/domain/model/pid/pid_attestation.dart';
 import 'package:wallet/src/domain/model/pin/check_pin_result.dart';
-import 'package:wallet/src/domain/model/policy/policy.dart';
 import 'package:wallet/src/domain/model/result/result.dart';
 import 'package:wallet/src/domain/model/start_sign_result/start_sign_result.dart';
 import 'package:wallet/src/domain/model/tour/tour_video.dart';
@@ -24,6 +34,7 @@ import 'package:wallet/src/util/helper/onboarding_helper.dart';
 import 'package:wallet/src/wallet_core/error/core_error.dart';
 import 'package:wallet_core/core.dart' as core;
 
+import 'src/mocks/core_mock_data.dart';
 import 'src/mocks/wallet_mock_data.dart';
 import 'src/mocks/wallet_mocks.dart';
 import 'src/test_util/font_utils.dart';
@@ -53,9 +64,16 @@ void _setupMockitoDummies() {
   provideDummy<DataAttribute>(DataAttribute.untranslated(key: '', label: '', value: stringValue));
   provideDummy<AttributeValue>(stringValue);
 
-  // Organization and policy dummies
+  // Configuration
+  provideDummy<FlutterAppConfiguration>(WalletMockData.flutterAppConfiguration);
+  provideDummy<PidAttestation>(const PidAttestation(attestationType: 'pid', format: .sdJwt));
+  provideDummy<MaintenanceWindow>(MaintenanceWindow(startDateTime: DateTime(2000), endDateTime: DateTime(2001)));
+
+  // Organization dummies
   provideDummy<Organization>(WalletMockData.organization);
-  provideDummy<Policy>(WalletMockData.policy);
+
+  // Card status dummies
+  provideDummy<CardStatus>(const CardStatusValid(validUntil: null));
 
   // Navigation request dummies
   provideDummy<NavigationRequest>(const GenericNavigationRequest('/mock_destination'));
@@ -63,45 +81,52 @@ void _setupMockitoDummies() {
   // Core wallet instruction result dummies
   provideDummy<core.WalletInstructionResult>(const core.WalletInstructionResult.ok());
 
+  // Core issuance result dummies
+  provideDummy<core.IssuanceContinueResult>(const core.IssuanceContinueResult.previews([]));
+
   // Disclosure-related dummies
   provideDummy<StartDisclosureResult>(
     StartDisclosureReadyToDisclose(
       relyingParty: WalletMockData.organization,
-      originUrl: 'http://origin.org',
       requestPurpose: 'requestPurpose'.untranslated,
       sessionType: DisclosureSessionType.crossDevice,
       type: DisclosureType.regular,
-      policy: WalletMockData.policy,
       sharedDataWithOrganizationBefore: false,
       cardRequests: [],
     ),
   );
   provideDummy<DisclosureType>(DisclosureType.login);
   provideDummy<DisclosureSessionType>(DisclosureSessionType.crossDevice);
+  provideDummy<core.RevocationCodeResult>(const core.RevocationCodeResult_Ok(revocationCode: '123456'));
   provideDummy<core.AcceptDisclosureResult>(const core.AcceptDisclosureResult_Ok());
   provideDummy<core.StartDisclosureResult>(
     const core.StartDisclosureResult.requestAttributesMissing(
-      relyingParty: core.Organization(legalName: [], displayName: [], description: [], category: []),
+      relyingParty: core.Organization(
+        legalName: '',
+        displayName: '',
+        serviceDescription: [],
+        identifier: '',
+        countryCode: '',
+        supportUri: 'https://example.org/support',
+        personType: core.PersonType.LegalPerson,
+      ),
       missingAttributes: [],
-      requestOriginBaseUrl: '',
       sharedDataWithRelyingPartyBefore: false,
       sessionType: core.DisclosureSessionType.CrossDevice,
       requestPurpose: [],
     ),
   );
-  provideDummy<core.DisclosureBasedIssuanceResult>(const core.DisclosureBasedIssuanceResult_Ok([]));
+  provideDummy<core.DisclosureBasedIssuanceInstructionResult>(
+    const core.DisclosureBasedIssuanceInstructionResult_Ok(core.DisclosureBasedIssuanceResult_NoIssuableAttestations()),
+  );
 
   // Issuance-related dummies
   provideDummy<domain.StartIssuanceResult>(
     domain.StartIssuanceReadyToDisclose(
       relyingParty: WalletMockData.organization,
-      policy: WalletMockData.policy,
       sessionType: DisclosureSessionType.sameDevice,
       cardRequests: [],
-      originUrl: '',
       requestPurpose: {},
-      type: DisclosureType.regular,
-      sharedDataWithOrganizationBefore: false,
     ),
   );
   provideDummy<core.PidIssuanceResult>(const core.PidIssuanceResult.ok(transferAvailable: true));
@@ -110,7 +135,6 @@ void _setupMockitoDummies() {
   provideDummy<StartSignResult>(
     StartSignReadyToSign(
       document: WalletMockData.document,
-      policy: WalletMockData.policy,
       relyingParty: WalletMockData.organization,
       trustProvider: WalletMockData.organization,
       requestedCards: [],
@@ -129,7 +153,7 @@ void _setupMockitoDummies() {
 
   // Wallet state dummies
   provideDummy<core.WalletState>(const core.WalletState_Ready());
-  provideDummy<WalletState>(WalletStateReady());
+  provideDummy<WalletState>(const WalletStateReady());
 
   // Pin-related dummies
   provideDummy<CheckPinResult>(CheckPinResultBlocked());
@@ -146,9 +170,12 @@ void _setupMockitoDummies() {
 
   // Result dummies - collections
   provideDummy<Result<List<WalletEvent>>>(const Result.success([]));
+  provideDummy<Result<WalletEventsPage>>(Result.success(WalletEventsPage(pages: SplayTreeMap(), hasNextPage: false)));
   provideDummy<Result<List<Attribute>>>(const Result.success([]));
   provideDummy<Result<List<WalletCard>>>(const Result.success([]));
   provideDummy<Result<List<TourVideo>>>(const Result.success([]));
+  provideDummy<Result<List<HelpCategory>>>(const Result.success([]));
+  provideDummy<Result<List<TopicBlock>>>(const Result.success([]));
 
   // Result dummies - specific objects
   provideDummy<Result<NavigationRequest>>(const Result.success(GenericNavigationRequest('/mock_destination')));
@@ -156,27 +183,23 @@ void _setupMockitoDummies() {
     Result.success(
       StartDisclosureReadyToDisclose(
         relyingParty: WalletMockData.organization,
-        originUrl: 'http://origin.org',
         requestPurpose: 'requestPurpose'.untranslated,
         sessionType: DisclosureSessionType.crossDevice,
         type: DisclosureType.login,
-        policy: WalletMockData.policy,
         sharedDataWithOrganizationBefore: false,
         cardRequests: [],
       ),
     ),
   );
+  provideDummy<ContinueIssuanceResult>(const ContinueIssuanceResult.previews([]));
+  provideDummy<Result<ContinueIssuanceResult>>(const Result.success(ContinueIssuanceResult.previews([])));
   provideDummy<Result<domain.StartIssuanceResult>>(
     Result.success(
       domain.StartIssuanceReadyToDisclose(
         relyingParty: WalletMockData.organization,
-        policy: WalletMockData.policy,
         sessionType: DisclosureSessionType.sameDevice,
         cardRequests: [],
-        originUrl: '',
         requestPurpose: {},
-        type: DisclosureType.regular,
-        sharedDataWithOrganizationBefore: false,
       ),
     ),
   );
@@ -184,7 +207,6 @@ void _setupMockitoDummies() {
     Result.success(
       StartSignReadyToSign(
         document: WalletMockData.document,
-        policy: WalletMockData.policy,
         relyingParty: WalletMockData.organization,
         trustProvider: WalletMockData.organization,
         requestedCards: [],
@@ -193,6 +215,18 @@ void _setupMockitoDummies() {
   );
   provideDummy<Result<WalletCard>>(Result.success(WalletMockData.card));
   provideDummy<Result<BiometricAuthenticationResult>>(const Result.success(BiometricAuthenticationResult.success));
+
+  // Result dummies - Notifications
+  provideDummy<AppNotification>(
+    AppNotification(
+      id: 0,
+      type: NotificationType.cardRevoked(card: WalletMockData.card),
+      displayTargets: [const .dashboard()],
+    ),
+  );
+  provideDummy<NotificationType>(.cardExpired(card: WalletMockData.card));
+  provideDummy<core.NotificationType>(const core.NotificationType.cardExpired(card: CoreMockData.attestation));
+  provideDummy<BleConnectionEvent>(const BleConnected());
 }
 
 /// Overrides the default [LocalFileComparator] with our [GoldenDiffComparator] that has

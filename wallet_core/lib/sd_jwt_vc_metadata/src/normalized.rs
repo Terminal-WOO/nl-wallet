@@ -2,11 +2,9 @@ use std::collections::HashMap;
 use std::mem;
 use std::num::NonZeroUsize;
 
+use attestation_types::claim_path::ClaimPath;
 use itertools::Either;
 use itertools::Itertools;
-use jsonschema::ValidationError;
-
-use attestation_types::claim_path::ClaimPath;
 use utils::vec_at_least::VecNonEmpty;
 
 use crate::chain::SortedTypeMetadata;
@@ -14,8 +12,6 @@ use crate::metadata::ClaimDisplayMetadata;
 use crate::metadata::ClaimMetadata;
 use crate::metadata::ClaimSelectiveDisclosureMetadata;
 use crate::metadata::DisplayMetadata;
-use crate::metadata::JsonSchema;
-use crate::metadata::SchemaOption;
 use crate::metadata::UncheckedTypeMetadata;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,35 +24,28 @@ pub enum NormalizedTypeMetadataError {
     InconsistentSelectiveDisclosure(String, VecNonEmpty<ClaimPath>),
 
     #[error(
+        "extending mandatory option is inconsistent for vct \"{}\" at path {}",
+        .0,
+        ClaimMetadata::path_to_string(.1.as_ref())
+    )]
+    InconsistentMandatory(String, VecNonEmpty<ClaimPath>),
+
+    #[error(
         "metadata extension for vct \"{}\" missing claim(s) at path(s) {}",
         .0,
         .1.iter().map(|path| ClaimMetadata::path_to_string(path.as_ref())).join(", ")
     )]
     ExtensionMissingClaims(String, Vec<VecNonEmpty<ClaimPath>>),
 
-    #[error("No display metadata present in any of the chain documents")]
-    NoDisplayMetadata,
-
-    #[error("JSON schema is not embedded for vct \"{0}\"")]
-    NoEmbeddedSchema(String),
-
-    #[error("No claim display metadata present for claim at path: {}", ClaimMetadata::path_to_string(.0.as_ref()))]
-    NoClaimDisplayMetadata(VecNonEmpty<ClaimPath>),
-
     #[error("found missing `svg_id`s: {}", .0.join(", "))]
     MissingSvgIds(Vec<String>),
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("JSON schema validation failed for vct \"{0}\": {1}")]
-pub struct TypeMetadataValidationError(String, #[source] Box<ValidationError<'static>>);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedTypeMetadata {
     vcts: VecNonEmpty<String>,
-    display: VecNonEmpty<DisplayMetadata>,
+    display: Vec<DisplayMetadata>,
     claims: Vec<ClaimMetadata>,
-    schemas: VecNonEmpty<JsonSchema>,
 }
 
 impl NormalizedTypeMetadata {
@@ -76,14 +65,12 @@ impl NormalizedTypeMetadata {
             vct: root_vct,
             display: root_display,
             claims: root_claims,
-            schema: root_schema,
             ..
         } = root.into_inner();
 
         // Extract some properties of each of the metadata documents into individual vectors, two of which cover the
         // entire chain while the other two skip the root document.
         let mut vcts = Vec::with_capacity(chain_length);
-        let mut schemas = Vec::with_capacity(chain_length);
 
         let (display_extensions, claims_extensions): (Vec<_>, Vec<_>) = chain
             .into_iter()
@@ -91,22 +78,18 @@ impl NormalizedTypeMetadata {
                 let metadata = metadata.into_inner();
 
                 vcts.push(metadata.vct);
-                schemas.push(metadata.schema);
 
                 (metadata.display, metadata.claims)
             })
             .unzip();
 
         vcts.push(root_vct);
-        schemas.push(root_schema);
 
         // Merge the display properties of all of the documents, going from the root to the leaf.
         let display = display_extensions
             .into_iter()
             .rev()
             .fold(root_display, extend_display_properties);
-
-        let display = VecNonEmpty::try_from(display).map_err(|_| NormalizedTypeMetadataError::NoDisplayMetadata)?;
 
         // Merge the claims of all of the documents, going from the root to the leaf.
         let claims = claims_extensions.into_iter().enumerate().rev().try_fold(
@@ -115,24 +98,6 @@ impl NormalizedTypeMetadata {
                 ClaimMetadata::extend_claims(normalized_claims, &vcts[index], extending_claims)
             },
         )?;
-
-        for claim in &claims {
-            if claim.display.is_empty() {
-                return Err(NormalizedTypeMetadataError::NoClaimDisplayMetadata(claim.path.clone()));
-            }
-        }
-
-        // Check if all of the JSON schemas are embedded and extract them.
-        let schemas = schemas
-            .into_iter()
-            .zip(vcts.iter())
-            .map(|(schema, vct)| match schema {
-                SchemaOption::Embedded { schema } => Ok(*schema),
-                _ => Err(NormalizedTypeMetadataError::NoEmbeddedSchema(vct.clone())),
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .try_into()
-            .unwrap();
 
         // Check if the `svg_id`s are still consistent after normalizing. Note that we do not have to check for
         // duplicate `svg_id`s here, as this is already checked for each metadata document individually and, because all
@@ -144,12 +109,7 @@ impl NormalizedTypeMetadata {
 
         let vcts = vcts.try_into().unwrap();
 
-        let normalized = Self {
-            vcts,
-            display,
-            claims,
-            schemas,
-        };
+        let normalized = Self { vcts, display, claims };
 
         Ok(normalized)
     }
@@ -174,34 +134,10 @@ impl NormalizedTypeMetadata {
         &self.claims
     }
 
-    pub fn into_presentation_components(
-        self,
-    ) -> (String, VecNonEmpty<DisplayMetadata>, Vec<ClaimMetadata>, JsonSchema) {
-        (
-            self.vcts.into_first(),
-            self.display,
-            self.claims,
-            self.schemas.into_first(),
-        )
-    }
-
-    pub fn validate(&self, attestation_json: &serde_json::Value) -> Result<(), TypeMetadataValidationError> {
-        for (vct, schema) in self.vcts.iter().zip(self.schemas.as_slice()) {
-            schema
-                .validate(attestation_json)
-                .map_err(|error| TypeMetadataValidationError(vct.clone(), error))?;
-        }
-
-        Ok(())
-    }
-
-    /// Returns all claim paths that only consist out of `SelectByKey` as a `VecNonEmpty` of `&str`
-    pub fn claim_key_paths(&self) -> Vec<VecNonEmpty<&str>> {
-        self.claims
-            .iter()
-            .map(|claim| claim.path.iter().filter_map(|path| path.try_key_path()).collect_vec())
-            .filter_map(|key_path| VecNonEmpty::try_from(key_path).ok())
-            .collect()
+    /// Consume this metadata and return its display properties and claims. Note that the display properties are
+    /// guaranteed to be present, as a type metadata chain is validated to contain them when it is normalized.
+    pub fn into_display_and_claims(self) -> (Vec<DisplayMetadata>, Vec<ClaimMetadata>) {
+        (self.display, self.claims)
     }
 }
 
@@ -242,20 +178,33 @@ impl ClaimMetadata {
                     let display = extend_display_properties(extended_claim.display, extending_claim.display);
 
                     // The selective disclosure option is updated, but only if the extended value is `allowed`.
-                    let sd = ClaimSelectiveDisclosureMetadata::extend(extended_claim.sd, extending_claim.sd).ok_or(
-                        NormalizedTypeMetadataError::InconsistentSelectiveDisclosure(
+                    let sd = match ClaimSelectiveDisclosureMetadata::extend(extended_claim.sd, extending_claim.sd) {
+                        Some(sd) => sd,
+                        None => {
+                            return Err(NormalizedTypeMetadataError::InconsistentSelectiveDisclosure(
+                                extending_vct.to_string(),
+                                extended_claim.path,
+                            ));
+                        }
+                    };
+
+                    // An extending type can set the mandatory property of a claim that is optional in the extended type
+                    // to true, but it MUST NOT change a claim that is mandatory in the extended type to false.
+                    let mandatory = (!extended_claim.mandatory || extending_claim.mandatory)
+                        .then_some(extending_claim.mandatory)
+                        .ok_or(NormalizedTypeMetadataError::InconsistentMandatory(
                             extending_vct.to_string(),
                             extended_claim.path,
-                        ),
-                    )?;
+                        ))?;
 
-                    // The `svg_id`` is simply overwritten by the extending claim.
+                    // The `svg_id` is simply overwritten by the extending claim.
                     let svg_id = extending_claim.svg_id;
 
                     let claim = Self {
                         path: extending_claim.path,
                         display,
                         sd,
+                        mandatory,
                         svg_id,
                     };
 
@@ -302,13 +251,13 @@ trait HasLanguage {
 
 impl HasLanguage for DisplayMetadata {
     fn language(&self) -> &str {
-        &self.lang
+        &self.locale
     }
 }
 
 impl HasLanguage for ClaimDisplayMetadata {
     fn language(&self) -> &str {
-        &self.lang
+        &self.locale
     }
 }
 
@@ -351,24 +300,18 @@ where
 
 #[cfg(any(test, feature = "example_constructors"))]
 mod example_constructors {
-    use crate::VerifiedTypeMetadataDocuments;
-    use crate::metadata::SchemaOption;
-    use crate::metadata::UncheckedTypeMetadata;
+    use utils::vec_nonempty;
 
     use super::NormalizedTypeMetadata;
+    use crate::VerifiedTypeMetadataDocuments;
+    use crate::metadata::UncheckedTypeMetadata;
 
     impl NormalizedTypeMetadata {
         pub fn from_single_example(metadata: UncheckedTypeMetadata) -> Self {
-            let schema = match metadata.schema {
-                SchemaOption::Embedded { schema } => *schema,
-                _ => panic!(),
-            };
-
             Self {
-                vcts: vec![metadata.vct].try_into().unwrap(),
-                display: metadata.display.try_into().unwrap(),
+                vcts: vec_nonempty![metadata.vct],
+                display: metadata.display,
                 claims: metadata.claims,
-                schemas: vec![schema].try_into().unwrap(),
             }
         }
 
@@ -394,31 +337,25 @@ mod example_constructors {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
-    use rstest::rstest;
-    use serde_json::json;
-    use ssri::Integrity;
+    use std::assert_matches;
 
     use attestation_types::claim_path::ClaimPath;
+    use rstest::rstest;
     use utils::vec_at_least::IntoNonEmptyIterator;
     use utils::vec_at_least::NonEmptyIterator;
     use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
 
+    use super::NormalizedTypeMetadata;
+    use super::NormalizedTypeMetadataError;
     use crate::chain::SortedTypeMetadata;
     use crate::metadata::ClaimDisplayMetadata;
     use crate::metadata::ClaimMetadata;
     use crate::metadata::ClaimSelectiveDisclosureMetadata;
     use crate::metadata::DisplayMetadata;
-    use crate::metadata::JsonSchema;
-    use crate::metadata::SchemaOption;
     use crate::metadata::SvgId;
     use crate::metadata::TypeMetadata;
     use crate::metadata::UncheckedTypeMetadata;
-
-    use super::NormalizedTypeMetadata;
-    use super::NormalizedTypeMetadataError;
-    use super::TypeMetadataValidationError;
 
     fn all_claim_paths(claims: &[ClaimMetadata]) -> Vec<&[ClaimPath]> {
         claims.iter().map(|claim| claim.path.as_ref()).collect()
@@ -445,7 +382,7 @@ mod tests {
         );
 
         // The metadata display values should be merged, with existing values being updated and new values appended.
-        assert_eq!(normalized.display.len().get(), 2);
+        assert_eq!(normalized.display.len(), 2);
         assert_ne!(normalized.display[0], metadata.display[0]);
         assert_eq!(normalized.display[0], metadata_v2.display[1]);
         assert_eq!(normalized.display[1], metadata_v2.display[0]);
@@ -489,67 +426,14 @@ mod tests {
                 .as_deref(),
             Some("nickname")
         );
-
-        // The JSON schemas should be ordered from leaf to root.
-        assert_eq!(normalized.schemas.len().get(), 3);
-        assert_eq!(
-            normalized.schemas,
-            vec_nonempty![metadata_v3.schema, metadata_v2.schema, metadata.schema]
-                .into_nonempty_iter()
-                .map(|schema_option| match schema_option {
-                    SchemaOption::Embedded { schema } => *schema,
-                    _ => unreachable!(),
-                })
-                .collect::<VecNonEmpty<_>>()
-        );
-    }
-
-    #[test]
-    fn test_normalized_type_metadata_validate() {
-        let normalized =
-            NormalizedTypeMetadata::try_from_sorted_metadata(SortedTypeMetadata::example_with_extensions())
-                .expect("normalizing SD-JWT VC type metadata chain should succeed");
-
-        normalized
-            .validate(&json!({
-                "vct": "https://sd_jwt_vc_metadata.example.com/example_credential_v3",
-                "iss": "https://example.com/issuer",
-                "nbf": 1683000000,
-                "iat": 1683000000,
-                "exp": 1883000000,
-                "attestation_qualification": "EAA",
-                "status": {
-                    "status_list": {
-                        "idx": 0,
-                        "uri": "https://example.com/statuslists/1"
-                    }
-                }
-            }))
-            .expect("all JSON schemas in chain should validate");
-    }
-
-    #[test]
-    fn test_normalized_type_metadata_validate_error() {
-        let normalized =
-            NormalizedTypeMetadata::try_from_sorted_metadata(SortedTypeMetadata::example_with_extensions())
-                .expect("normalizing SD-JWT VC type metadata chain should succeed");
-
-        let error = normalized
-            .validate(&json!({}))
-            .expect_err("first JSON schemas in chain should fail validation");
-
-        assert_matches!(
-            error,
-            TypeMetadataValidationError(vct, _)
-                if vct == "https://sd_jwt_vc_metadata.example.com/example_credential_v3"
-        )
     }
 
     fn claim_with_sd(sd: ClaimSelectiveDisclosureMetadata) -> ClaimMetadata {
         ClaimMetadata {
-            path: vec![ClaimPath::SelectByKey("path".to_string())].try_into().unwrap(),
+            path: vec_nonempty![ClaimPath::SelectByKey("path".to_string())],
             display: vec![],
             sd,
+            mandatory: false,
             svg_id: None,
         }
     }
@@ -605,7 +489,7 @@ mod tests {
         )
         .expect_err("extending claims should not succeed");
 
-        let expected_path = VecNonEmpty::try_from(vec![ClaimPath::SelectByKey("path".to_string())]).unwrap();
+        let expected_path = vec_nonempty![ClaimPath::SelectByKey("path".to_string())];
         assert_matches!(
             error,
             NormalizedTypeMetadataError::InconsistentSelectiveDisclosure(vct, path)
@@ -615,9 +499,10 @@ mod tests {
 
     fn claim_with_single_key_path(path: String) -> ClaimMetadata {
         ClaimMetadata {
-            path: vec![ClaimPath::SelectByKey(path)].try_into().unwrap(),
+            path: vec_nonempty![ClaimPath::SelectByKey(path)],
             display: vec![],
             sd: ClaimSelectiveDisclosureMetadata::default(),
+            mandatory: false,
             svg_id: None,
         }
     }
@@ -639,8 +524,8 @@ mod tests {
         .expect_err("extending claims should not succeed");
 
         let expected_paths = vec![
-            VecNonEmpty::try_from(vec![ClaimPath::SelectByKey("path1".to_string())]).unwrap(),
-            VecNonEmpty::try_from(vec![ClaimPath::SelectByKey("path3".to_string())]).unwrap(),
+            vec_nonempty![ClaimPath::SelectByKey("path1".to_string())],
+            vec_nonempty![ClaimPath::SelectByKey("path3".to_string())],
         ];
         assert_matches!(
             error,
@@ -656,85 +541,54 @@ mod tests {
             description: None,
             extends: None,
             display: vec![DisplayMetadata {
-                lang: "en".to_string(),
+                locale: "en".to_string(),
                 name: "attestation".to_string(),
                 description: None,
                 summary: None,
                 rendering: None,
             }],
             claims: vec![],
-            schema: SchemaOption::Embedded {
-                schema: Box::new(JsonSchema::example_with_claim_names(&[])),
-            },
         }
     }
 
-    fn normalized_type_metadata_error_from_unchecked_chain(
-        chain: Vec<UncheckedTypeMetadata>,
-    ) -> NormalizedTypeMetadataError {
+    fn normalized_type_metadata_from_unchecked_chain(
+        chain: VecNonEmpty<UncheckedTypeMetadata>,
+    ) -> Result<NormalizedTypeMetadata, NormalizedTypeMetadataError> {
         let chain = SortedTypeMetadata::new_mock(
             chain
-                .into_iter()
+                .into_nonempty_iter()
                 .map(|metadata| TypeMetadata::try_new(metadata).unwrap())
                 .collect(),
         );
 
         NormalizedTypeMetadata::try_from_sorted_metadata(chain)
-            .expect_err("normalizing SD-JWT VC type metadata chain should not succeed")
     }
 
     #[test]
-    fn test_normalized_type_metadata_error_no_display_metadata() {
+    fn test_normalized_type_metadata_optional_display_metadata() {
         let metadata = UncheckedTypeMetadata {
             display: vec![],
             ..create_basic_unchecked_metadata()
         };
 
-        let error = normalized_type_metadata_error_from_unchecked_chain(vec![metadata]);
-
-        assert_matches!(error, NormalizedTypeMetadataError::NoDisplayMetadata);
+        normalized_type_metadata_from_unchecked_chain(vec_nonempty![metadata]).expect("display metadata may be empty");
     }
 
     #[test]
-    fn test_normalized_type_metadata_error_no_claim_display_metadata() {
+    fn test_normalized_type_metadata_optional_claim_display_metadata() {
         let metadata = UncheckedTypeMetadata {
             claims: vec![ClaimMetadata {
-                path: vec![ClaimPath::SelectByKey("path".to_string())].try_into().unwrap(),
+                path: vec_nonempty![ClaimPath::SelectByKey("path".to_string())],
                 display: vec![],
                 sd: ClaimSelectiveDisclosureMetadata::Allowed,
+                mandatory: false,
                 svg_id: None,
             }],
             ..create_basic_unchecked_metadata()
         };
 
-        let error = normalized_type_metadata_error_from_unchecked_chain(vec![metadata]);
-
-        let expected_path = VecNonEmpty::try_from(vec![ClaimPath::SelectByKey("path".to_string())]).unwrap();
-        assert_matches!(error, NormalizedTypeMetadataError::NoClaimDisplayMetadata(path) if path == expected_path);
-    }
-
-    #[test]
-    fn test_normalized_type_metadata_error_no_embedded_schema() {
-        let metadata1 = UncheckedTypeMetadata {
-            vct: "metadata_1".to_string(),
-            ..create_basic_unchecked_metadata()
-        };
-        let metadata2 = UncheckedTypeMetadata {
-            vct: "metadata_2".to_string(),
-            schema: SchemaOption::Remote {
-                schema_uri: "https://example.com/schema.json".parse().unwrap(),
-                schema_uri_integrity: Integrity::from("").into(),
-            },
-            ..create_basic_unchecked_metadata()
-        };
-        let metadata3 = UncheckedTypeMetadata {
-            vct: "metadata_3".to_string(),
-            ..create_basic_unchecked_metadata()
-        };
-
-        let error = normalized_type_metadata_error_from_unchecked_chain(vec![metadata3, metadata2, metadata1]);
-
-        assert_matches!(error, NormalizedTypeMetadataError::NoEmbeddedSchema(vct) if vct == "metadata_2");
+        normalized_type_metadata_from_unchecked_chain(vec_nonempty![metadata])
+            .expect("claim display metadata may be empty");
     }
 
     #[test]
@@ -742,19 +596,20 @@ mod tests {
         // Create a metadata chain where the extension overwrites the `svg_id`,
         // but does not update the summary template accordingly.
         let claim = ClaimMetadata {
-            path: vec![ClaimPath::SelectByKey("path".to_string())].try_into().unwrap(),
+            path: vec_nonempty![ClaimPath::SelectByKey("path".to_string())],
             display: vec![ClaimDisplayMetadata {
-                lang: "en".to_string(),
+                locale: "en".to_string(),
                 label: "claim".to_string(),
                 description: None,
             }],
             sd: ClaimSelectiveDisclosureMetadata::Allowed,
+            mandatory: false,
             svg_id: None,
         };
         let metadata1 = UncheckedTypeMetadata {
             vct: "metadata_1".to_string(),
             display: vec![DisplayMetadata {
-                lang: "en".to_string(),
+                locale: "en".to_string(),
                 name: "attestation".to_string(),
                 description: None,
                 summary: Some("{{identifier}}".to_string()),
@@ -776,7 +631,8 @@ mod tests {
             ..create_basic_unchecked_metadata()
         };
 
-        let error = normalized_type_metadata_error_from_unchecked_chain(vec![metadata2, metadata1]);
+        let error = normalized_type_metadata_from_unchecked_chain(vec_nonempty![metadata2, metadata1])
+            .expect_err("normalizing SD-JWT VC type metadata chain should not succeed");
 
         assert_matches!(error, NormalizedTypeMetadataError::MissingSvgIds(svg_ids) if svg_ids == vec!["identifier"]);
     }

@@ -1,0 +1,13 @@
+name: nl_wallet_workspace
+
+environment:
+  sdk: ^3.13.0
+  flutter: ^3.47.0
+
+publish_to: none
+
+workspace:
+  - wallet_app
+  - wallet_app/plugins/bluetooth
+  - wallet_app/packages/wallet_core
+  - wallet_app/packages/wallet_mock

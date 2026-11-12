@@ -6,7 +6,7 @@ command="${1:-}"
 
 SCRIPTS_DIR="$(cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd -P)"
 
-. $SCRIPTS_DIR/configuration.sh
+. "$SCRIPTS_DIR/configuration.sh"
 
 DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/issuance_server" \
     cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin issuance_server_migrations -- $command
@@ -14,8 +14,17 @@ DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/issuance_se
 DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/pid_issuer" \
     cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin pid_issuer_migrations -- $command
 
+DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/pacf_issuance_server" \
+    cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin pacf_issuance_server_migrations -- $command
+
+DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/acf_demo_issuer" \
+    cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin acf_demo_issuer_migrations -- $command
+
 DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/verification_server" \
     cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin verification_server_migrations -- $command
 
 DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/wallet_provider" \
     cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin wallet_provider_migrations -- $command
+
+DATABASE_URL="postgres://$DB_USERNAME:$DB_PASSWORD@$DB_HOST:$DB_PORT/wallet_provider_audit_log" \
+    cargo run --manifest-path "$BASE_DIR/wallet_core/Cargo.toml" --bin audit_log_migrations -- $command

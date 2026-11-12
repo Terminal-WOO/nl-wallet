@@ -4,9 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../data/service/announcement_service.dart';
+import '../../domain/model/result/application_error.dart';
 import '../../domain/usecase/biometrics/get_available_biometrics_usecase.dart';
 import '../../navigation/wallet_routes.dart';
-import '../../util/cast_util.dart';
 import '../../util/extension/biometrics_extension.dart';
 import '../../util/extension/build_context_extension.dart';
 import '../../wallet_assets.dart';
@@ -15,6 +15,8 @@ import '../common/page/generic_loading_page.dart';
 import '../common/page/terminal_page.dart';
 import '../common/widget/button/animated_visibility_back_button.dart';
 import '../common/widget/button/icon/info_icon_button.dart';
+import '../common/widget/button/primary_button.dart';
+import '../common/widget/button/tertiary_button.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
 import '../common/widget/page_illustration.dart';
 import '../common/widget/text/title_text.dart';
@@ -77,9 +79,7 @@ class SetupSecurityScreen extends StatelessWidget {
           ),
           SetupSecurityPinConfirmationFailed() => _buildPinConfirmationPage(context, enteredDigits: kPinDigits),
           SetupSecurityCreatingWallet() => _buildCreatingWallet(context, state),
-          SetupSecurityGenericError() => _buildSetupFailed(context),
-          SetupSecurityNetworkError() => _buildSetupFailed(context),
-          SetupSecurityDeviceIncompatibleError() => _buildSetupFailed(context),
+          SetupSecurityError(:final error) => _buildSetupFailed(context, error),
           SetupSecurityConfigureBiometrics() => _buildConfigureBiometricsPage(context, state),
           SetupSecurityCompleted() => _buildSetupCompletedPage(context, state),
         };
@@ -115,18 +115,14 @@ class SetupSecurityScreen extends StatelessWidget {
   void _listenerForState(BuildContext context, SetupSecurityState state) {
     final bloc = context.bloc;
     switch (state) {
-      case SetupSecurityGenericError():
-        ErrorScreen.showGeneric(context, secured: false, style: ErrorCtaStyle.retry);
-      case SetupSecurityNetworkError():
-        ErrorScreen.showNetwork(context, networkError: tryCast(state), secured: false);
+      case SetupSecurityError(:final error):
+        ErrorScreen.show(context, error, secured: false, style: ErrorCtaStyle.retry);
       case SetupSecuritySelectPinFailed():
         PinValidationErrorDialog.show(context, state.reason).then((_) => bloc.add(PinBackspacePressed()));
       case SetupSecurityPinConfirmationFailed():
         PinConfirmationErrorDialog.show(context, retryAllowed: state.retryAllowed).then((_) {
           bloc.add(state.retryAllowed ? PinBackspacePressed() : SetupSecurityRetryPressed());
         });
-      case SetupSecurityDeviceIncompatibleError():
-        ErrorScreen.showDeviceIncompatible(context);
       default:
         break;
     }
@@ -148,8 +144,16 @@ class SetupSecurityScreen extends StatelessWidget {
   }
 
   Widget _buildAboutAction(BuildContext context, SetupSecurityState state) {
-    if (state is SetupSecurityCompleted) return const SizedBox.shrink();
-    return const InfoIconButton();
+    final showInfoIcon = switch (state) {
+      SetupSecuritySelectPinInProgress() => false,
+      SetupSecuritySelectPinFailed() => false,
+      SetupSecurityPinConfirmationInProgress() => false,
+      SetupSecurityPinConfirmationFailed() => false,
+      SetupSecurityConfigureBiometrics() => false,
+      SetupSecurityCompleted() => false,
+      _ => true,
+    };
+    return showInfoIcon ? const InfoIconButton() : const SizedBox.shrink();
   }
 
   Widget _buildSelectPinPage(BuildContext context, {required int enteredDigits}) {
@@ -191,13 +195,19 @@ class SetupSecurityScreen extends StatelessWidget {
     };
     return TerminalPage(
       title: title,
-      description: context.l10n.setupBiometricsPageDescription,
-      primaryButtonCta: context.l10n.setupBiometricsPageEnableCta,
+      description: context.l10n.setupBiometricsPageDescription(state.biometrics.prettyPrint(context)),
       illustration: PageIllustration(asset: illustration),
-      onPrimaryPressed: () => context.bloc.add(EnableBiometricsPressed()),
-      secondaryButtonCta: context.l10n.setupBiometricsPageSkipCta,
-      primaryButtonIcon: Icon(state.biometrics.icon),
-      onSecondaryButtonPressed: () => context.bloc.add(SkipBiometricsPressed()),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.setupBiometricsPageEnableCta),
+        icon: Icon(state.biometrics.icon(context)),
+        onPressed: () => context.bloc.add(EnableBiometricsPressed()),
+        key: const Key('primaryButtonCta'),
+      ),
+      secondaryButton: TertiaryButton(
+        text: Text(context.l10n.setupBiometricsPageSkipCta),
+        onPressed: () => context.bloc.add(SkipBiometricsPressed()),
+        key: const Key('secondaryButtonCta'),
+      ),
     );
   }
 
@@ -206,20 +216,21 @@ class SetupSecurityScreen extends StatelessWidget {
       key: const Key('setupSecurityCompletedPage'),
       enabledBiometrics: state.enabledBiometrics,
       onSetupWalletPressed: () => Navigator.of(context).restorablePushNamedAndRemoveUntil(
-        WalletRoutes.walletPersonalizeRoute,
+        WalletRoutes.revocationCodeRoute,
         ModalRoute.withName(WalletRoutes.splashRoute),
       ),
     );
   }
 
   /// This is more a placeholder/fallback over anything else.
-  /// Whenever the user is hit with a [SetupSecurityGenericError] or [SetupSecurityNetworkError]
+  /// Whenever the user is hit with a [SetupSecurityError] or [SetupSecurityNetworkError]
   /// this is built, but the listener should trigger the [ErrorScreen] while the bloc resets
   /// the flow so the user can try again. That said, to be complete we need to build something
   /// in this state, hence this method is kept around.
-  Widget _buildSetupFailed(BuildContext context) {
-    return ErrorPage.generic(
+  Widget _buildSetupFailed(BuildContext context, ApplicationError error) {
+    return ErrorPage.fromError(
       context,
+      error,
       style: ErrorCtaStyle.retry,
       onPrimaryActionPressed: () => context.bloc.add(SetupSecurityRetryPressed()),
     );
@@ -233,9 +244,7 @@ class SetupSecurityScreen extends StatelessWidget {
       SetupSecurityPinConfirmationFailed() => '',
       SetupSecurityCreatingWallet() => '',
       SetupSecurityCompleted() => context.l10n.setupSecurityCompletedPageTitle,
-      SetupSecurityGenericError() => '',
-      SetupSecurityNetworkError() => '',
-      SetupSecurityDeviceIncompatibleError() => '',
+      SetupSecurityError(:final error) => ErrorPage.titleFromError(context, error),
       SetupSecurityConfigureBiometrics() => context.l10n.setupBiometricsPageTitle(
         state.biometrics.prettyPrint(context),
       ),

@@ -1,9 +1,11 @@
-use assert_matches::assert_matches;
+use std::assert_matches;
+
+use attestation_types::credential_format::Format;
+use db_test::DbSetup;
+use hsm::test::HsmSetup;
+use openid4vc::disclosure_session::DisclosureUriSource;
 use serial_test::serial;
 use tempfile::TempDir;
-
-use dcql::CredentialFormat;
-use openid4vc::disclosure_session::DisclosureUriSource;
 use tests_integration::common::WalletWithStorage;
 use tests_integration::common::do_pid_issuance;
 use tests_integration::common::do_wallet_registration;
@@ -11,13 +13,14 @@ use tests_integration::common::setup_env_default;
 use tests_integration::common::setup_file_wallet;
 use tests_integration::common::universal_link;
 use tests_integration::common::wallet_attestations;
+use wallet::Pin;
 use wallet::TransferSessionState;
 use wallet::errors::ChangePinError;
 use wallet::errors::InstructionError;
 
 struct WalletData {
     pub wallet: WalletWithStorage,
-    pub pin: String,
+    pub pin: Pin,
     pub tempdir: TempDir,
 }
 
@@ -34,14 +37,15 @@ async fn assert_state(expected_state: TransferSessionState, wallet: &mut WalletW
     assert_eq!(wallet.get_transfer_status().await.unwrap(), expected_state);
 }
 
-async fn init_wallets() -> (WalletData, WalletData) {
-    let source_wallet_pin = "112233";
-    let destination_wallet_pin = "332211";
+async fn init_wallets(db_setup: &DbSetup, hsm_setup: &HsmSetup) -> (WalletData, WalletData) {
+    let source_wallet_pin: Pin = "112233".into();
+    let destination_wallet_pin: Pin = "332211".into();
 
     let source_tempdir = TempDir::new().unwrap();
     let destination_tempdir = TempDir::new().unwrap();
 
-    let (config_server_config, mock_device_config, wallet_config, issuance_url, _) = setup_env_default().await;
+    let (config_server_config, mock_device_config, wallet_config, issuance_data, _) =
+        setup_env_default(db_setup, hsm_setup).await;
 
     let mut source = setup_file_wallet(
         config_server_config.clone(),
@@ -50,20 +54,24 @@ async fn init_wallets() -> (WalletData, WalletData) {
         source_tempdir.path().to_path_buf(),
     )
     .await;
-    source = do_wallet_registration(source, source_wallet_pin).await;
-    source = do_pid_issuance(source, String::from(source_wallet_pin)).await;
+    source = do_wallet_registration(source, source_wallet_pin.clone()).await;
+    source = do_pid_issuance(source, source_wallet_pin.clone()).await;
     source
         .start_disclosure(
-            &universal_link(&issuance_url, CredentialFormat::SdJwt),
+            &universal_link(
+                issuance_data.issuance_server.public.as_base_url(),
+                &issuance_data.degree_client_ids,
+                Format::SdJwt,
+            ),
             DisclosureUriSource::Link,
         )
         .await
         .unwrap();
     source
-        .continue_disclosure_based_issuance(&[0], String::from(source_wallet_pin))
+        .continue_disclosure_based_issuance(&[0], source_wallet_pin.clone())
         .await
         .unwrap();
-    source.accept_issuance(String::from(source_wallet_pin)).await.unwrap();
+    source.accept_issuance(source_wallet_pin.clone()).await.unwrap();
 
     let mut destination = setup_file_wallet(
         config_server_config,
@@ -72,26 +80,28 @@ async fn init_wallets() -> (WalletData, WalletData) {
         destination_tempdir.path().to_path_buf(),
     )
     .await;
-    destination = do_wallet_registration(destination, destination_wallet_pin).await;
-    destination = do_pid_issuance(destination, String::from(destination_wallet_pin)).await;
+    destination = do_wallet_registration(destination, destination_wallet_pin.clone()).await;
+    destination = do_pid_issuance(destination, destination_wallet_pin.clone()).await;
 
     (
         WalletData {
             wallet: source,
-            pin: String::from(source_wallet_pin),
+            pin: source_wallet_pin,
             tempdir: source_tempdir,
         },
         WalletData {
             wallet: destination,
-            pin: String::from(destination_wallet_pin),
+            pin: destination_wallet_pin,
             tempdir: destination_tempdir,
         },
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_wallet_transfer() {
+async fn ltc62_test_wallet_transfer() {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
     let (
         WalletData {
             wallet: mut source,
@@ -103,7 +113,7 @@ async fn test_wallet_transfer() {
             pin: destination_wallet_pin,
             tempdir: _destination_tempdir,
         },
-    ) = init_wallets().await;
+    ) = init_wallets(&db_setup, &hsm_setup).await;
 
     let url = destination.init_transfer().await.unwrap();
 
@@ -115,7 +125,7 @@ async fn test_wallet_transfer() {
 
     // Other instructions are not allowed during transfer
     let err = destination
-        .begin_change_pin(destination_wallet_pin.clone(), String::from("565656"))
+        .begin_change_pin(destination_wallet_pin.clone(), "565656".into())
         .await
         .expect_err("should fail during transfer");
     assert_matches!(
@@ -123,7 +133,7 @@ async fn test_wallet_transfer() {
         ChangePinError::Instruction(InstructionError::InstructionValidation)
     );
     let err = source
-        .begin_change_pin(source_wallet_pin.clone(), String::from("565656"))
+        .begin_change_pin(source_wallet_pin.clone(), "565656".into())
         .await
         .expect_err("should fail during transfer");
     assert_matches!(
@@ -152,10 +162,12 @@ async fn test_wallet_transfer() {
     assert!(attestations.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_wallet_transfer_canceled_from_source() {
-    let (mut source_data, mut destination_data) = init_wallets().await;
+async fn ltc63_test_wallet_transfer_canceled_from_source() {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let (mut source_data, mut destination_data) = init_wallets(&db_setup, &hsm_setup).await;
 
     let url = destination_data.wallet.init_transfer().await.unwrap();
 
@@ -175,9 +187,11 @@ async fn test_wallet_transfer_canceled_from_source() {
     assert_state(TransferSessionState::Canceled, &mut destination_data.wallet).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_wallet_transfer_canceled_from_destination() {
+async fn ltc64_test_wallet_transfer_canceled_from_destination() {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
     let (
         WalletData {
             wallet: mut source,
@@ -189,7 +203,7 @@ async fn test_wallet_transfer_canceled_from_destination() {
             tempdir: _destination_tempdir,
             ..
         },
-    ) = init_wallets().await;
+    ) = init_wallets(&db_setup, &hsm_setup).await;
 
     let url = destination.init_transfer().await.unwrap();
 
@@ -212,10 +226,12 @@ async fn test_wallet_transfer_canceled_from_destination() {
     assert_state(TransferSessionState::Canceled, &mut source).await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_retry_transfer_after_canceled() {
-    let (mut source_data, mut destination_data) = init_wallets().await;
+async fn ltc63_test_retry_transfer_after_canceled() {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let (mut source_data, mut destination_data) = init_wallets(&db_setup, &hsm_setup).await;
 
     let url = destination_data.wallet.init_transfer().await.unwrap();
 

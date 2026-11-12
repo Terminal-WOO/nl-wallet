@@ -1,13 +1,12 @@
 pub mod key_attestation;
 pub mod key_description;
 
-use x509_parser::certificate::X509Certificate;
-use x509_parser::der_parser::Oid;
-use x509_parser::der_parser::oid;
-
 use key_attestation::KeyAttestation;
 use key_attestation::KeyDescriptionFieldError;
 use key_description::KeyDescription;
+use x509_parser::certificate::X509Certificate;
+use x509_parser::der_parser::Oid;
+use x509_parser::der_parser::oid;
 
 #[rustfmt::skip]
 pub const KEY_ATTESTATION_EXTENSION_OID: Oid = oid!(1.3.6.1.4.1.11129.2.1.17);
@@ -61,10 +60,10 @@ mod tests {
     use super::key_attestation::KeyPurpose;
     use super::key_attestation::OsVersion;
     use super::key_attestation::PatchLevel;
+    use super::key_attestation::PatchLevelWithDay;
     use super::key_description::RootOfTrust;
     use super::key_description::SecurityLevel;
     use super::key_description::VerifiedBootState;
-
     use super::*;
 
     // This cert was exported from the emulator
@@ -123,7 +122,7 @@ mod tests {
                     verified_boot_hash: OctetString::copy_from_slice(b"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"),
                 }.into(),
                 os_version: OsVersion::new(13, 0, 0).into(),
-                os_patch_level: PatchLevel::new(2024, 3, None).into(),
+                os_patch_level: PatchLevel::new(2024, 3).into(),
                 attestation_application_id: Some(
                     AttestationApplicationId {
                         package_infos: SetOf::from_vec(vec![
@@ -139,8 +138,8 @@ mod tests {
                         ]),
                     },
                 ),
-                vendor_patch_level: PatchLevel::new(0, 0, None).into(),
-                boot_patch_level: PatchLevel::new(2024, 3, 1.into()).into(),
+                vendor_patch_level: PatchLevelWithDay::new(0, 0, None).into(),
+                boot_patch_level: PatchLevelWithDay::new(2024, 3, 1.into()).into(),
                 ..Default::default()
             },
             hardware_enforced: AuthorizationList {
@@ -245,9 +244,9 @@ mod tests {
                 }
                 .into(),
                 os_version: OsVersion::new(0, 0, 0).into(),
-                os_patch_level: PatchLevel::new(2019, 7, None).into(),
-                vendor_patch_level: PatchLevel::new(2019, 7, 5.into()).into(),
-                boot_patch_level: PatchLevel::new(2019, 7, 0.into()).into(),
+                os_patch_level: PatchLevel::new(2019, 7).into(),
+                vendor_patch_level: PatchLevelWithDay::new(2019, 7, 5.into()).into(),
+                boot_patch_level: PatchLevelWithDay::new(2019, 7, 0.into()).into(),
                 ..Default::default()
             },
         }
@@ -350,9 +349,9 @@ mod tests {
                 }
                 .into(),
                 os_version: OsVersion::new(0, 0, 0).into(),
-                os_patch_level: PatchLevel::new(2019, 7, None).into(),
-                vendor_patch_level: PatchLevel::new(2019, 7, None).into(),
-                boot_patch_level: PatchLevel::new(2019, 7, None).into(),
+                os_patch_level: PatchLevel::new(2019, 7).into(),
+                vendor_patch_level: PatchLevelWithDay::new(2019, 7, None).into(),
+                boot_patch_level: PatchLevelWithDay::new(2019, 7, None).into(),
                 ..Default::default()
             },
         }

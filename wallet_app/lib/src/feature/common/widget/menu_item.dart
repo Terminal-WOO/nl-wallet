@@ -40,6 +40,9 @@ class MenuItem extends StatefulWidget {
   /// Specifies which sides of the menu item should have a divider.
   final DividerSide dividerSide;
 
+  /// Color override for the label text.
+  final Color? labelColor;
+
   const MenuItem({
     this.label,
     this.subtitle,
@@ -50,6 +53,7 @@ class MenuItem extends StatefulWidget {
     this.onPressed,
     this.largeIcon = false,
     this.dividerSide = DividerSide.none,
+    this.labelColor,
     super.key,
   });
 
@@ -59,16 +63,21 @@ class MenuItem extends StatefulWidget {
 
 class _MenuItemState extends State<MenuItem> {
   late WidgetStatesController _statesController;
+  bool _disposed = false;
 
   @override
   void initState() {
     super.initState();
     _statesController = WidgetStatesController();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _statesController.addListener(() => setState(() {})));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_disposed) return; // Fixes issue with fast scrolling in long list (context.mounted was insufficient)
+      _statesController.addListener(() => setState(() {}));
+    });
   }
 
   @override
   void dispose() {
+    _disposed = true;
     _statesController.dispose();
     super.dispose();
   }
@@ -108,44 +117,9 @@ class _MenuItemState extends State<MenuItem> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        if (widget.label != null)
-                          DefaultTextAndFocusStyle(
-                            textStyle: context.textTheme.titleMedium!,
-                            statesController: _statesController,
-                            pressedOrFocusedColor: textPressedColor,
-                            child: widget.label!,
-                          ),
-                        if (widget.subtitle != null)
-                          Row(
-                            children: [
-                              if (widget.errorIcon != null) ...[
-                                SizedBox(
-                                  height: 16,
-                                  width: 16,
-                                  child: IconTheme(
-                                    data: IconThemeData(color: context.colorScheme.error, size: 16),
-                                    child: widget.errorIcon!,
-                                  ),
-                                ),
-                                const SizedBox(width: 4),
-                              ],
-                              Expanded(
-                                child: DefaultTextAndFocusStyle(
-                                  textStyle: context.textTheme.bodyMedium!,
-                                  statesController: _statesController,
-                                  pressedOrFocusedColor: textPressedColor,
-                                  child: widget.subtitle!,
-                                ),
-                              ),
-                            ],
-                          ),
-                        if (widget.underline != null)
-                          DefaultTextAndFocusStyle(
-                            textStyle: context.textTheme.bodySmall!,
-                            statesController: _statesController,
-                            pressedOrFocusedColor: textPressedColor,
-                            child: widget.underline!,
-                          ),
+                        if (widget.label != null) _buildLabel(context, textPressedColor),
+                        if (widget.subtitle != null) _buildSubtitle(context, textPressedColor),
+                        if (widget.underline != null) _buildUnderline(context, textPressedColor),
                       ],
                     ),
                   ),
@@ -161,6 +135,50 @@ class _MenuItemState extends State<MenuItem> {
         ),
         if (widget.dividerSide.bottom) const Divider(),
       ],
+    );
+  }
+
+  Widget _buildLabel(BuildContext context, Color? textPressedColor) {
+    return DefaultTextAndFocusStyle(
+      textStyle: context.textTheme.titleMedium!.copyWith(color: widget.labelColor),
+      statesController: _statesController,
+      pressedOrFocusedColor: textPressedColor,
+      child: widget.label!,
+    );
+  }
+
+  Widget _buildSubtitle(BuildContext context, Color? textPressedColor) {
+    return Row(
+      children: [
+        if (widget.errorIcon != null) ...[
+          SizedBox(
+            height: 16,
+            width: 16,
+            child: IconTheme(
+              data: IconThemeData(color: context.colorScheme.error, size: 16),
+              child: widget.errorIcon!,
+            ),
+          ),
+          const SizedBox(width: 4),
+        ],
+        Expanded(
+          child: DefaultTextAndFocusStyle(
+            textStyle: context.textTheme.bodyMedium!,
+            statesController: _statesController,
+            pressedOrFocusedColor: textPressedColor,
+            child: widget.subtitle!,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUnderline(BuildContext context, Color? textPressedColor) {
+    return DefaultTextAndFocusStyle(
+      textStyle: context.textTheme.bodySmall!,
+      statesController: _statesController,
+      pressedOrFocusedColor: textPressedColor,
+      child: widget.underline!,
     );
   }
 

@@ -1,8 +1,16 @@
-pub mod hsm;
+pub mod admin_portal_session;
+pub mod admin_task;
 pub mod pin_policy;
+pub mod wallet_flag;
 pub mod wallet_user;
 
 #[cfg(feature = "mock")]
 pub use self::pin_policy::mock::FailingPinPolicy;
 #[cfg(feature = "mock")]
 pub use self::pin_policy::mock::TimeoutPinPolicy;
+
+#[derive(Debug, derive_more::Unwrap)]
+pub enum QueryResult<T> {
+    Found(Box<T>),
+    NotFound,
+}

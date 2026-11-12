@@ -1,7 +1,7 @@
-use crypto::x509::CertificateError;
+use cose::CoseKeyConversionError;
+use crypto::x509::CertificateNameError;
 use error_category::ErrorCategory;
 
-use crate::holder::HolderError;
 use crate::utils::cose::CoseError;
 use crate::utils::cose::KeysError;
 use crate::utils::crypto::CryptoError;
@@ -13,6 +13,10 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(thiserror::Error, Debug, ErrorCategory)]
 #[category(defer)]
 pub enum Error {
+    #[error("reader authentication is missing")]
+    #[category(critical)]
+    MissingReaderAuthentication,
+
     #[error("cryptographic error: {0}")]
     Crypto(#[from] CryptoError),
 
@@ -22,16 +26,18 @@ pub enum Error {
     #[error("CBOR error: {0}")]
     Cbor(#[from] CborError),
 
-    #[error("holder error: {0}")]
-    Holder(#[from] HolderError),
-
     #[error("verification error: {0}")]
-    #[category(unexpected)]
     Verification(#[from] VerificationError),
 
     #[error("keys error: {0}")]
     KeysError(#[from] KeysError),
 
-    #[error("certificate error: {0}")]
-    CertificateError(#[from] CertificateError),
+    #[error("certificate name error: {0}")]
+    CertificateNameError(#[source] CertificateNameError),
+}
+
+impl From<CoseKeyConversionError> for Error {
+    fn from(value: CoseKeyConversionError) -> Self {
+        Self::Crypto(value.into())
+    }
 }

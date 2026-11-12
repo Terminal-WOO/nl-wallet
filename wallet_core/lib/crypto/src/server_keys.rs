@@ -1,10 +1,23 @@
 use derive_more::Debug;
 use p256::ecdsa::Signature;
 use p256::ecdsa::SigningKey;
+use p256::ecdsa::VerifyingKey;
 
 use crate::keys::EcdsaKey;
+use crate::keys::PublicKey;
 use crate::x509::BorrowingCertificate;
-use crate::x509::CertificateError;
+
+#[derive(Debug, thiserror::Error)]
+pub enum KeyPairError {
+    #[error("private key does not belong to public key from certificate")]
+    KeyMismatch,
+
+    #[error("unsupported key algorithm")]
+    UnsupportedKeyAlgorithm,
+
+    #[error("failed to get public key from private key: {0}")]
+    PublicKeyFromPrivate(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
 
 #[derive(Debug, Clone)]
 pub struct KeyPair<S = SigningKey> {
@@ -17,28 +30,35 @@ impl KeyPair {
     pub fn new_from_signing_key(
         private_key: SigningKey,
         certificate: BorrowingCertificate,
-    ) -> Result<KeyPair, CertificateError> {
-        if certificate.public_key() != private_key.verifying_key() {
-            return Err(CertificateError::KeyMismatch);
-        }
+    ) -> Result<KeyPair, KeyPairError> {
+        Self::check_verifying_key(private_key.verifying_key(), &certificate)?;
 
         Ok(KeyPair {
             private_key,
             certificate,
         })
     }
+
+    fn check_verifying_key(public_key: &VerifyingKey, certificate: &BorrowingCertificate) -> Result<(), KeyPairError> {
+        let PublicKey::ESP256(cert_public_key) = certificate.public_key() else {
+            return Err(KeyPairError::UnsupportedKeyAlgorithm);
+        };
+
+        if public_key != cert_public_key {
+            return Err(KeyPairError::KeyMismatch);
+        }
+
+        Ok(())
+    }
 }
 
 impl<S: EcdsaKey> KeyPair<S> {
-    pub async fn new(private_key: S, certificate: BorrowingCertificate) -> Result<KeyPair<S>, CertificateError> {
-        if certificate.public_key()
-            != &private_key
-                .verifying_key()
-                .await
-                .map_err(|e| CertificateError::PublicKeyFromPrivate(Box::new(e)))?
-        {
-            return Err(CertificateError::KeyMismatch);
-        }
+    pub async fn new(private_key: S, certificate: BorrowingCertificate) -> Result<KeyPair<S>, KeyPairError> {
+        let public_key_from_private = private_key
+            .verifying_key()
+            .await
+            .map_err(|e| KeyPairError::PublicKeyFromPrivate(Box::new(e)))?;
+        KeyPair::check_verifying_key(&public_key_from_private, &certificate)?;
 
         Ok(KeyPair {
             private_key,
@@ -66,185 +86,470 @@ impl<S> From<KeyPair<S>> for BorrowingCertificate {
 impl<S: EcdsaKey> EcdsaKey for KeyPair<S> {
     type Error = S::Error;
 
-    async fn verifying_key(&self) -> std::result::Result<p256::ecdsa::VerifyingKey, Self::Error> {
+    async fn verifying_key(&self) -> Result<VerifyingKey, Self::Error> {
         self.private_key.verifying_key().await
     }
 
-    async fn try_sign(&self, msg: &[u8]) -> std::result::Result<Signature, Self::Error> {
+    async fn try_sign(&self, msg: &[u8]) -> Result<Signature, Self::Error> {
         self.private_key.try_sign(msg).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use p256::elliptic_curve::Generate;
+    use p256::pkcs8::DecodePrivateKey;
+    use rcgen::CertificateParams;
+    use rcgen::PKCS_ECDSA_P384_SHA384;
+
+    use super::KeyPair;
+    use crate::server_keys::KeyPairError;
+    use crate::x509::BorrowingCertificate;
+
+    #[test]
+    fn test_keypair_new() {
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+
+        let certificate = CertificateParams::default().self_signed(&key_pair).unwrap();
+        let certificate = BorrowingCertificate::from_certificate_der(certificate.der().clone()).unwrap();
+
+        let private_key = p256::ecdsa::SigningKey::from_pkcs8_der(key_pair.serialized_der()).unwrap();
+
+        let result = KeyPair::new_from_signing_key(private_key.clone(), certificate.clone()).unwrap();
+        assert_eq!(result.certificate, certificate);
+        assert_eq!(result.private_key, private_key);
+    }
+
+    #[test]
+    fn test_keypair_new_mismatch() {
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+
+        let certificate = CertificateParams::default().self_signed(&key_pair).unwrap();
+        let certificate = BorrowingCertificate::from_certificate_der(certificate.der().clone()).unwrap();
+
+        let private_key = p256::ecdsa::SigningKey::generate();
+
+        let err = KeyPair::new_from_signing_key(private_key.clone(), certificate.clone()).unwrap_err();
+        assert_matches!(err, KeyPairError::KeyMismatch);
+    }
+
+    #[test]
+    fn test_keypair_new_unsupported() {
+        let key_pair = rcgen::KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+
+        let certificate = CertificateParams::default().self_signed(&key_pair).unwrap();
+        let certificate = BorrowingCertificate::from_certificate_der(certificate.der().clone()).unwrap();
+
+        let private_key = p256::ecdsa::SigningKey::generate();
+
+        let err = KeyPair::new_from_signing_key(private_key.clone(), certificate.clone()).unwrap_err();
+        assert_matches!(err, KeyPairError::UnsupportedKeyAlgorithm);
     }
 }
 
 #[cfg(any(test, feature = "generate"))]
 pub mod generate {
+    use der::Encode;
+    use der::Sequence;
+    use der::asn1::Ia5StringRef;
+    use der::asn1::OctetStringRef;
+    use der::oid::ObjectIdentifier;
     use p256::ecdsa::SigningKey;
     use p256::pkcs8::DecodePrivateKey;
-    use p256::pkcs8::ObjectIdentifier;
-    use p256::pkcs8::der::Encode;
-    use p256::pkcs8::der::asn1::SequenceOf;
     use rcgen::BasicConstraints;
     use rcgen::CertificateParams;
+    use rcgen::CertificateRevocationList;
+    use rcgen::CertificateRevocationListParams;
+    use rcgen::CrlDistributionPoint;
     use rcgen::CustomExtension;
-    use rcgen::DnType;
     use rcgen::IsCa;
+    use rcgen::Issuer;
+    use rcgen::KeyIdMethod;
+    use rcgen::KeyUsagePurpose;
     use rcgen::PKCS_ECDSA_P256_SHA256;
     use rcgen::PublicKeyData;
-    use rcgen::SanType;
+    use rcgen::RevokedCertParams;
+    use rcgen::SerialNumber;
     use rcgen::SubjectPublicKeyInfo;
+    use ring::digest;
     use rustls_pki_types::CertificateDer;
     use rustls_pki_types::TrustAnchor;
+    use time::Duration;
     use time::OffsetDateTime;
+    use url::Url;
+    use x509_parser::error::X509Error;
     use x509_parser::prelude::FromDer;
     use x509_parser::prelude::X509Certificate;
 
     use crate::server_keys::KeyPair;
     use crate::trust_anchor::BorrowingTrustAnchor;
+    use crate::trust_anchor::TrustAnchors;
+    use crate::utils::random_bytes;
     use crate::x509::BorrowingCertificate;
     use crate::x509::CertificateConfiguration;
-    use crate::x509::CertificateError;
-    use crate::x509::CertificateUsage;
+    use crate::x509::CertificateParseError;
+    use crate::x509::CertificateProfile;
+    use crate::x509::DistinguishedName;
 
-    fn rcgen_cert_privkey(keypair: &rcgen::KeyPair) -> Result<SigningKey, CertificateError> {
-        SigningKey::from_pkcs8_der(keypair.serialized_der()).map_err(CertificateError::GeneratingPrivateKey)
+    #[derive(thiserror::Error, Debug)]
+    pub enum CertificateGenerationError {
+        #[error("certificate private key generation failed: {0}")]
+        GeneratingPrivateKey(#[source] Box<p256::pkcs8::Error>),
+
+        #[error("certificate creation failed: {0}")]
+        GeneratingFailed(#[source] rcgen::Error),
+
+        #[error("parsed X.509 certificate is not a root CA")]
+        NotRootCa,
+
+        #[error("the basic constraint of this CA does not allow generating an intermediate CA")]
+        BasicConstraintViolation,
+
+        #[error("certificate parsing failed: {0}")]
+        CertificateParsing(#[source] Box<webpki::Error>),
+
+        #[error("certificate content parsing failed: {0}")]
+        X509CertificateParsing(#[source] x509_parser::nom::Err<X509Error>),
+
+        #[error("certificate parse: {0}")]
+        CertificateParse(#[source] CertificateParseError),
+
+        #[error("certificate extension encoding failed: {0}")]
+        ExtensionEncoding(#[source] der::Error),
+    }
+
+    /// Key usages for CA certificates, which sign other certificates and CRLs.
+    ///
+    /// - RFC 5280, section 4.2.1.3: CAs must include the key usage extension.
+    /// - ISO/IEC 18013-5:2021, Table B.1: only keyCertSign and cRLSign.
+    const CA_KEY_USAGES: [KeyUsagePurpose; 2] = [KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+
+    /// RFC 5280, section 4.2.1.2: id-ce-subjectKeyIdentifier.
+    const OID_SUBJECT_KEY_IDENTIFIER: &[u64] = &[2, 5, 29, 14];
+
+    /// RFC 5280, section 4.2.1.4: id-ce-certificatePolicies.
+    const OID_CERTIFICATE_POLICIES: &[u64] = &[2, 5, 29, 32];
+
+    /// RFC 5280, section 4.2.2.1: id-pe-authorityInfoAccess, which is { id-pe 1 }.
+    const OID_AUTHORITY_INFO_ACCESS: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 1, 1];
+
+    /// RFC 5280, section 4.2.2.1: id-ad-caIssuers, which is { id-ad 2 } with id-ad from RFC 5280, appendix A.1.
+    const ID_AD_CA_ISSUERS: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.48.2");
+
+    /// RFC 5280, section 4.2.2.1: AccessDescription, where the access location is a GeneralName of the
+    /// uniformResourceIdentifier choice.
+    #[derive(Sequence)]
+    struct AccessDescription<'a> {
+        access_method: ObjectIdentifier,
+        #[asn1(context_specific = "6", tag_mode = "IMPLICIT")]
+        access_location: Ia5StringRef<'a>,
+    }
+
+    /// RFC 3739, section 3.2.6: id-pe-qcStatements, which is { id-pe 3 } with id-pe from RFC 5280, appendix A.1.
+    const OID_QC_STATEMENTS: &[u64] = &[1, 3, 6, 1, 5, 5, 7, 1, 3];
+
+    /// ETSI EN 319 412-5, Annex B: id-etsi-qcs-QcType.
+    const ID_ETSI_QCS_QC_TYPE: ObjectIdentifier = ObjectIdentifier::new_unwrap("0.4.0.1862.1.6");
+
+    /// RFC 3739, section 3.2.6: QCStatement, with the statementInfo of a QcType statement (ETSI EN 319 412-5,
+    /// section 4.2.3).
+    #[derive(Sequence)]
+    struct QcTypeStatement {
+        statement_id: ObjectIdentifier,
+        statement_info: Vec<ObjectIdentifier>,
+    }
+
+    /// Subject key identifier extension for end-entity certificates, computed as the SHA-1 hash of the subjectPublicKey
+    /// BIT STRING value (RFC 5280, section 4.2.1.2, method 1).
+    ///
+    /// ISO/IEC 18013-5, Tables B.3 and B.6 require this exact method, and ETSI TS 119 412-6, PID-4.4.2-01 requires a
+    /// subject key identifier as defined in RFC 5280. We don't let rcgen write it for two reasons:
+    /// - rcgen only writes it for `IsCa::ExplicitNoCa`, which also writes a critical basic constraints extension, while
+    ///   ISO/IEC 18013-5 only allows additional non-critical extensions;
+    /// - rcgen computes it as a truncated SHA-256 hash of the whole SubjectPublicKeyInfo.
+    fn subject_key_identifier_extension(
+        pk: &impl PublicKeyData,
+    ) -> Result<CustomExtension, CertificateGenerationError> {
+        // `der_bytes()` is the subjectPublicKey BIT STRING value, excluding tag, length and number of unused bits.
+        let key_identifier = digest::digest(&digest::SHA1_FOR_LEGACY_USE_ONLY, pk.der_bytes());
+        let content = OctetStringRef::new(key_identifier.as_ref())
+            .and_then(|octet_string| octet_string.to_der())
+            .map_err(CertificateGenerationError::ExtensionEncoding)?;
+
+        Ok(CustomExtension::from_oid_content(OID_SUBJECT_KEY_IDENTIFIER, content))
+    }
+
+    /// QCStatements extension (RFC 3739, section 3.2.6) with a single QcType statement (ETSI EN 319 412-5, section
+    /// 4.2.3) of `qc_type`. It does not contain QcCompliance, as we don't issue EU qualified certificates.
+    ///
+    /// ETSI EN 319 412-5, QCS-4.1-02 requires this extension to be non-critical.
+    fn qc_statements_extension(qc_type: ObjectIdentifier) -> Result<CustomExtension, CertificateGenerationError> {
+        let content = vec![QcTypeStatement {
+            statement_id: ID_ETSI_QCS_QC_TYPE,
+            statement_info: vec![qc_type],
+        }]
+        .to_der()
+        .map_err(CertificateGenerationError::ExtensionEncoding)?;
+
+        Ok(CustomExtension::from_oid_content(OID_QC_STATEMENTS, content))
+    }
+
+    /// Authority information access extension (RFC 5280, section 4.2.2.1) with an id-ad-caIssuers access description
+    /// for each of `ca_issuers`.
+    ///
+    /// ETSI EN 319 412-2, GEN-4.4.1-2 and GEN-4.4.1-3 require it, which applies to wallet provider certificates through
+    /// ETSI TS 119 412-6, WAL-5.1-01 and PID-4.4.3. RFC 5280 requires it to be non-critical.
+    fn authority_info_access_extension(ca_issuers: &[Url]) -> Result<CustomExtension, CertificateGenerationError> {
+        let content = ca_issuers
+            .iter()
+            .map(|ca_issuer| {
+                Ia5StringRef::new(ca_issuer.as_str()).map(|access_location| AccessDescription {
+                    access_method: ID_AD_CA_ISSUERS,
+                    access_location,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|access_descriptions| access_descriptions.to_der())
+            .map_err(CertificateGenerationError::ExtensionEncoding)?;
+
+        Ok(CustomExtension::from_oid_content(OID_AUTHORITY_INFO_ACCESS, content))
+    }
+
+    fn rcgen_cert_privkey(keypair: &rcgen::KeyPair) -> Result<SigningKey, CertificateGenerationError> {
+        SigningKey::from_pkcs8_der(keypair.serialized_der())
+            .map_err(|error| CertificateGenerationError::GeneratingPrivateKey(Box::new(error)))
     }
 
     pub struct Ca {
-        certificate: rcgen::Certificate,
-        key_pair: rcgen::KeyPair,
+        issuer: Issuer<'static, rcgen::KeyPair>,
+        certificate: CertificateDer<'static>,
         borrowing_trust_anchor: BorrowingTrustAnchor,
+        intermediate_count: u8,
     }
 
     impl Ca {
-        fn new(certificate: rcgen::Certificate, key_pair: rcgen::KeyPair) -> Result<Self, CertificateError> {
-            let borrowing_trust_anchor = BorrowingTrustAnchor::from_der(certificate.der().as_ref())?;
+        fn new(
+            issuer: Issuer<'static, rcgen::KeyPair>,
+            certificate: CertificateDer<'static>,
+            intermediate_count: u8,
+        ) -> Result<Self, CertificateGenerationError> {
+            let borrowing_trust_anchor = BorrowingTrustAnchor::from_der(certificate.as_ref())
+                .map_err(|error| CertificateGenerationError::CertificateParsing(Box::new(error)))?;
 
-            let key_pair_ca = Self {
+            let ca = Self {
+                issuer,
                 certificate,
-                key_pair,
                 borrowing_trust_anchor,
+                intermediate_count,
             };
 
-            Ok(key_pair_ca)
+            Ok(ca)
+        }
+
+        pub fn create_from_keypair(
+            keypair: rcgen::KeyPair,
+            distinguished_name: DistinguishedName,
+            configuration: CertificateConfiguration,
+            intermediate_count: u8,
+        ) -> Result<Self, CertificateGenerationError> {
+            let mut params = CertificateParams::from(configuration);
+            params.is_ca = IsCa::Ca(BasicConstraints::Constrained(intermediate_count));
+            params.key_usages = CA_KEY_USAGES.to_vec();
+            params.distinguished_name = distinguished_name
+                .try_into()
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+
+            let certificate = params
+                .self_signed(&keypair)
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+            let issuer: Issuer<'static, _> = Issuer::new(params, keypair);
+            Self::new(issuer, certificate.into(), intermediate_count)
         }
 
         /// Generate a new self-signed CA key pair, constrained to the specified number of intermediates CAs.
         pub fn generate_with_intermediate_count(
-            common_name: &str,
+            distinguished_name: DistinguishedName,
             configuration: CertificateConfiguration,
             intermediate_count: u8,
-        ) -> Result<Self, CertificateError> {
-            let mut params = CertificateParams::from(configuration);
-            params.is_ca = IsCa::Ca(BasicConstraints::Constrained(intermediate_count));
-            params.distinguished_name.push(DnType::CommonName, common_name);
-
-            let key_pair = rcgen::KeyPair::generate()?;
-            let certificate = params.self_signed(&key_pair)?;
-
-            Self::new(certificate, key_pair)
+        ) -> Result<Self, CertificateGenerationError> {
+            let key_pair = rcgen::KeyPair::generate().map_err(CertificateGenerationError::GeneratingFailed)?;
+            Self::create_from_keypair(key_pair, distinguished_name, configuration, intermediate_count)
         }
 
         /// Generate a new self-signed CA key pair, constrained to having no intermediate CAs.
-        pub fn generate(common_name: &str, configuration: CertificateConfiguration) -> Result<Self, CertificateError> {
-            Self::generate_with_intermediate_count(common_name, configuration, 0)
+        pub fn generate(
+            distinguished_name: DistinguishedName,
+            configuration: CertificateConfiguration,
+        ) -> Result<Self, CertificateGenerationError> {
+            Self::generate_with_intermediate_count(distinguished_name, configuration, 0)
         }
 
         pub fn from_der(
             certificate_der: impl AsRef<[u8]>,
             signing_key_der: impl AsRef<[u8]>,
-        ) -> Result<Self, CertificateError> {
-            let (_, x509_certificate) = X509Certificate::from_der(certificate_der.as_ref())?;
+        ) -> Result<Self, CertificateGenerationError> {
+            let (_, x509_certificate) = X509Certificate::from_der(certificate_der.as_ref())
+                .map_err(CertificateGenerationError::X509CertificateParsing)?;
 
             // Check if the parsed certificate is actually a root CA.
             if !x509_certificate.is_ca() || x509_certificate.issuer() != x509_certificate.subject() {
-                return Err(CertificateError::NotRootCa);
+                return Err(CertificateGenerationError::NotRootCa);
             }
 
-            let params = CertificateParams::from_ca_cert_der(&certificate_der.as_ref().into())?;
-            let key_pair = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
-                &signing_key_der.as_ref().into(),
-                &PKCS_ECDSA_P256_SHA256,
-            )?;
-            let certificate = params.self_signed(&key_pair)?;
+            let key_pair =
+                rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&signing_key_der.as_ref().into(), &PKCS_ECDSA_P256_SHA256)
+                    .map_err(CertificateGenerationError::GeneratingFailed)?;
+            let certificate = CertificateDer::from(certificate_der.as_ref()).into_owned();
+            let issuer = Issuer::from_ca_cert_der(&certificate, key_pair)
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
 
-            Self::new(certificate, key_pair)
+            // Unfortunately `x509_parser` does not parse the intermediate count from
+            // the basic constraint, so we should assume the worst, which is 0.
+            Self::new(issuer, certificate, 0)
         }
 
-        pub fn as_certificate_der(&self) -> &CertificateDer<'static> {
-            self.certificate.der()
+        pub fn certificate(&self) -> &CertificateDer<'static> {
+            &self.certificate
         }
 
-        pub fn as_borrowing_trust_anchor(&self) -> &BorrowingTrustAnchor {
+        pub fn as_borrowing_certificate(&self) -> Result<BorrowingCertificate, CertificateGenerationError> {
+            BorrowingCertificate::from_der(self.certificate().as_ref())
+                .map_err(CertificateGenerationError::CertificateParse)
+        }
+
+        pub fn borrowing_trust_anchor(&self) -> &BorrowingTrustAnchor {
             &self.borrowing_trust_anchor
         }
 
-        pub fn to_signing_key(&self) -> Result<SigningKey, CertificateError> {
-            rcgen_cert_privkey(&self.key_pair)
+        pub fn to_borrowing_trust_anchor(&self) -> BorrowingTrustAnchor {
+            self.borrowing_trust_anchor.clone()
+        }
+
+        pub fn to_signing_key(&self) -> Result<SigningKey, CertificateGenerationError> {
+            rcgen_cert_privkey(self.issuer.key())
         }
 
         pub fn to_trust_anchor(&self) -> TrustAnchor<'_> {
             self.borrowing_trust_anchor.as_trust_anchor().clone()
         }
 
+        pub fn to_trust_anchors(&self) -> TrustAnchors {
+            TrustAnchors::try_from_trust_anchors([self.to_borrowing_trust_anchor()])
+                .expect("cannot create trust anchors")
+        }
+
+        /// Generate a signed CRL from this CA, revoking the given certificates.
+        pub fn generate_crl(
+            &self,
+            revoked_certs: Vec<RevokedCertParams>,
+            crl_number: u64,
+        ) -> Result<CertificateRevocationList, CertificateGenerationError> {
+            let now = OffsetDateTime::now_utc();
+            self.generate_crl_with_validity(revoked_certs, now, now + Duration::days(7), crl_number)
+        }
+
+        /// Generate a signed CRL from this CA with explicit `thisUpdate`, `nextUpdate`, and `crlNumber` fields.
+        /// The caller is responsible for increasing `crl_number` for every CRL issued by this CA.
+        pub fn generate_crl_with_validity(
+            &self,
+            revoked_certs: Vec<RevokedCertParams>,
+            this_update: OffsetDateTime,
+            next_update: OffsetDateTime,
+            crl_number: u64,
+        ) -> Result<CertificateRevocationList, CertificateGenerationError> {
+            let params = CertificateRevocationListParams {
+                this_update,
+                next_update,
+                crl_number: SerialNumber::from(crl_number),
+                issuing_distribution_point: None,
+                revoked_certs,
+                key_identifier_method: KeyIdMethod::Sha256,
+            };
+            params
+                .signed_by(&self.issuer)
+                .map_err(CertificateGenerationError::GeneratingFailed)
+        }
+
         /// Generate a new intermediate CA key pair, with any constraint
         /// on the amount of intermediates it can have decremented by one.
         pub fn generate_intermediate(
             &self,
-            common_name: &str,
-            extension: CustomExtension,
+            distinguished_name: DistinguishedName,
             configuration: CertificateConfiguration,
-        ) -> Result<Self, CertificateError> {
-            let constraint = match self.certificate.params().is_ca {
-                IsCa::Ca(BasicConstraints::Unconstrained) => BasicConstraints::Unconstrained,
-                IsCa::Ca(BasicConstraints::Constrained(count)) if count > 0 => BasicConstraints::Constrained(count - 1),
-                _ => return Err(CertificateError::BasicConstraintViolation),
-            };
+        ) -> Result<Self, CertificateGenerationError> {
+            if self.intermediate_count < 1 {
+                return Err(CertificateGenerationError::BasicConstraintViolation);
+            }
+
+            let intermediate_count = self.intermediate_count - 1;
+            let constraint = BasicConstraints::Constrained(intermediate_count);
 
             let mut params = CertificateParams::from(configuration);
             params.is_ca = IsCa::Ca(constraint);
-            params.distinguished_name.push(DnType::CommonName, common_name);
-            params.custom_extensions.push(extension);
+            params.key_usages = CA_KEY_USAGES.to_vec();
+            params.distinguished_name = distinguished_name
+                .try_into()
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
 
-            let key_pair = rcgen::KeyPair::generate()?;
-            let certificate = params.signed_by(&key_pair, &self.certificate, &self.key_pair)?;
+            let key_pair = rcgen::KeyPair::generate().map_err(CertificateGenerationError::GeneratingFailed)?;
+            let certificate = params
+                .signed_by(&key_pair, &self.issuer)
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+            let issuer = Issuer::new(params, key_pair);
 
-            Self::new(certificate, key_pair)
+            Self::new(issuer, certificate.into(), intermediate_count)
         }
 
-        fn certificate_for<EX>(
+        fn certificate_for(
             &self,
             pk: &impl PublicKeyData,
-            common_name: &str,
-            extensions: EX,
+            distinguished_name: DistinguishedName,
             configuration: CertificateConfiguration,
-        ) -> Result<BorrowingCertificate, CertificateError>
-        where
-            EX: TryInto<Vec<CustomExtension>, Error = CertificateError>,
-        {
-            let custom_extensions: Vec<CustomExtension> = extensions.try_into()?;
+        ) -> Result<BorrowingCertificate, CertificateGenerationError> {
+            let certificate_policies = configuration.profile.and_then(CertificateProfile::certificate_policies);
+            let qc_type = configuration.profile.and_then(CertificateProfile::qc_type);
+            let authority_info_access = (!configuration.ca_issuers.is_empty())
+                .then(|| authority_info_access_extension(&configuration.ca_issuers))
+                .transpose()?;
+
             let mut params = CertificateParams::from(configuration);
             params.is_ca = IsCa::NoCa;
-            params.distinguished_name.push(DnType::CommonName, common_name);
-            params.subject_alt_names.push(SanType::DnsName(common_name.try_into()?));
-            params.custom_extensions.extend(custom_extensions);
+            params.custom_extensions.push(subject_key_identifier_extension(pk)?);
+            if let Some(certificate_policies) = certificate_policies {
+                // ETSI EN 319 412-2, GEN-4.3.3-1 recommends this extension to be non-critical, and ETSI TS 119 412-6,
+                // PID-4.1-02 requires it.
+                params.custom_extensions.push(CustomExtension::from_oid_content(
+                    OID_CERTIFICATE_POLICIES,
+                    certificate_policies.to_vec(),
+                ));
+            }
+            if let Some(qc_type) = qc_type {
+                params.custom_extensions.push(qc_statements_extension(qc_type)?);
+            }
+            params.custom_extensions.extend(authority_info_access);
+            params.distinguished_name = distinguished_name
+                .try_into()
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
 
-            let certificate = params.signed_by(pk, &self.certificate, &self.key_pair)?;
-            let certificate = BorrowingCertificate::from_certificate_der(certificate.into())?;
+            let certificate = params
+                .signed_by(pk, &self.issuer)
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+            let certificate = BorrowingCertificate::from_certificate_der(certificate.into())
+                .map_err(CertificateGenerationError::CertificateParse)?;
             Ok(certificate)
         }
 
         /// Generate a new key pair signed with the specified CA.
-        pub fn generate_key_pair<EX>(
+        pub fn generate_key_pair(
             &self,
-            common_name: &str,
-            extensions: EX,
+            distinguished_name: DistinguishedName,
             configuration: CertificateConfiguration,
-        ) -> Result<KeyPair, CertificateError>
-        where
-            EX: TryInto<Vec<CustomExtension>, Error = CertificateError>,
-        {
-            let key_pair = rcgen::KeyPair::generate()?;
+        ) -> Result<KeyPair, CertificateGenerationError> {
+            let key_pair = rcgen::KeyPair::generate().map_err(CertificateGenerationError::GeneratingFailed)?;
             let private_key = rcgen_cert_privkey(&key_pair)?;
-            let certificate = self.certificate_for(&key_pair, common_name, extensions, configuration)?;
+            let certificate = self.certificate_for(&key_pair, distinguished_name, configuration)?;
 
             let key_pair = KeyPair {
                 private_key,
@@ -255,18 +560,53 @@ pub mod generate {
         }
 
         /// Generate a new key pair signed with the specified CA.
-        pub fn generate_certificate<EX>(
+        pub fn generate_certificate(
             &self,
             public_key: &[u8],
-            common_name: &str,
-            extensions: EX,
+            distinguished_name: DistinguishedName,
             configuration: CertificateConfiguration,
-        ) -> Result<BorrowingCertificate, CertificateError>
-        where
-            EX: TryInto<Vec<CustomExtension>, Error = CertificateError>,
-        {
-            let public_key = SubjectPublicKeyInfo::from_der(public_key)?;
-            self.certificate_for(&public_key, common_name, extensions, configuration)
+        ) -> Result<BorrowingCertificate, CertificateGenerationError> {
+            let public_key =
+                SubjectPublicKeyInfo::from_der(public_key).map_err(CertificateGenerationError::GeneratingFailed)?;
+            self.certificate_for(&public_key, distinguished_name, configuration)
+        }
+
+        /// Generate a new key pair and return both a self-signed root `Ca` for it and a
+        /// cross-signed certificate DER where the same key pair is signed by `self`.
+        /// The cross-cert carries the given `usage` EKU so that webpki can validate chains
+        /// that use it as an intermediate.
+        pub fn generate_root_and_cross_cert(
+            &self,
+            distinguished_name: DistinguishedName,
+            configuration: CertificateConfiguration,
+        ) -> Result<(Self, CertificateDer<'static>), CertificateGenerationError> {
+            let key_pair = rcgen::KeyPair::generate().map_err(CertificateGenerationError::GeneratingFailed)?;
+
+            let mut self_signed_params = CertificateParams::from(configuration.clone());
+            self_signed_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+            self_signed_params.key_usages = CA_KEY_USAGES.to_vec();
+            self_signed_params.distinguished_name = distinguished_name
+                .clone()
+                .try_into()
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+            let self_signed_cert = self_signed_params
+                .self_signed(&key_pair)
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+
+            let mut cross_params = CertificateParams::from(configuration);
+            cross_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+            cross_params.key_usages = CA_KEY_USAGES.to_vec();
+            cross_params.distinguished_name = distinguished_name
+                .try_into()
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+            let cross_cert = cross_params
+                .signed_by(&key_pair, &self.issuer)
+                .map_err(CertificateGenerationError::GeneratingFailed)?;
+
+            let issuer = Issuer::new(self_signed_params, key_pair);
+            let root_ca = Self::new(issuer, self_signed_cert.into(), 0)?;
+
+            Ok((root_ca, cross_cert.into()))
         }
     }
 
@@ -274,73 +614,204 @@ pub mod generate {
         fn from(source: CertificateConfiguration) -> Self {
             let mut result = CertificateParams::default();
             if let Some(not_before) = source.not_before.and_then(|ts| ts.timestamp_nanos_opt()) {
-                result.not_before = OffsetDateTime::from_unix_timestamp_nanos(not_before as i128).unwrap();
+                result.not_before = OffsetDateTime::from_unix_timestamp_nanos(i128::from(not_before)).unwrap();
             }
             if let Some(not_after) = source.not_after.and_then(|ts| ts.timestamp_nanos_opt()) {
-                result.not_after = OffsetDateTime::from_unix_timestamp_nanos(not_after as i128).unwrap();
+                result.not_after = OffsetDateTime::from_unix_timestamp_nanos(i128::from(not_after)).unwrap();
             }
+            result.serial_number = Some(random_serial_number());
+            result.use_authority_key_identifier_extension = !source.exclude_aki;
+            if let Some(profile) = source.profile {
+                result.key_usages = profile.key_usages();
+                if let Some(usage) = profile.extended_key_usage() {
+                    result.extended_key_usages.push(usage.to_key_usage_purpose());
+                }
+            }
+            result.crl_distribution_points = source
+                .crl_distribution_points
+                .into_iter()
+                .map(|uri| CrlDistributionPoint { uris: vec![uri.into()] })
+                .collect();
+            result.subject_alt_names = source.subject_alt_names.iter().map(Into::into).collect();
+
             result
         }
     }
 
-    impl From<CertificateUsage> for CustomExtension {
-        fn from(value: CertificateUsage) -> Self {
-            const OID_EXT_KEY_USAGE: &[u64] = &[2, 5, 29, 37];
-
-            // The spec requires that we add mdoc-specific OIDs to the extended key usage extension, but
-            // [`CertificateParams`] only supports a whitelist of key usages that it is aware of. So we
-            // DER-serialize it manually and add it to the custom extensions.
-            // We unwrap in these functions because they have fixed input for which they always succeed.
-            let mut seq = SequenceOf::<ObjectIdentifier, 1>::new();
-            seq.add(ObjectIdentifier::from_bytes(value.eku()).unwrap()).unwrap();
-            let mut ext = CustomExtension::from_oid_content(OID_EXT_KEY_USAGE, seq.to_der().unwrap());
-            ext.set_criticality(true);
-            ext
-        }
+    /// RFC 5280, section 4.1.2.2 requires a positive serial number of at most 20 octets that is unique per issuer.
+    /// rcgen derives the serial number from the public key by default, which repeats when a certificate is reissued
+    /// for the same key. A random serial number avoids that. It also makes the content to be signed unpredictable,
+    /// which protects against hash collision attacks.
+    fn random_serial_number() -> SerialNumber {
+        let mut serial_number = random_bytes(20);
+        // Clear the sign bit, so that the serial number is positive and fits in 20 octets.
+        serial_number[0] &= 0x7f;
+        SerialNumber::from(serial_number)
     }
 
     #[cfg(any(test, feature = "mock"))]
     pub mod mock {
+
+        use std::sync::LazyLock;
+
+        use rcgen::DnType;
+        use rcgen::SanType;
+
         use super::*;
+        use crate::x509::crl::mock::MOCK_CRL_DISTRIBUTION_POINT;
 
-        pub const ISSUANCE_CA_CN: &str = "ca.issuer.example.com";
-        pub const ISSUANCE_CERT_CN: &str = "cert.issuer.example.com";
-        pub const PID_ISSUER_CERT_CN: &str = "pid.example.com";
+        pub static ISSUER_CA_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_mock("CA issuer"));
+        pub static ISSUER_CERT_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_legal_person_mock("Cert issuer"));
+        pub static PID_ISSUER_CERT_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_legal_person_mock("PID"));
 
-        pub const RP_CA_CN: &str = "ca.rp.example.com";
-        pub const RP_CERT_CN: &str = "cert.rp.example.com";
+        pub static WPTL_CA_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_mock("WPTL issuer"));
+        pub static WIA_CERT_DN: LazyLock<DistinguishedName> = LazyLock::new(|| DistinguishedName::create_mock("WIA"));
+        pub static KEY_ATTESTATION_CERT_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_mock("Key Attestation"));
+
+        pub static WRPAC_CA_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_mock("CA wrpac"));
+        pub static VERIFIER_CERT_DN: LazyLock<DistinguishedName> =
+            LazyLock::new(|| DistinguishedName::create_legal_person_mock("Cert verifier"));
 
         impl Ca {
-            pub fn generate_issuer_mock_ca() -> Result<Self, CertificateError> {
-                Self::generate(ISSUANCE_CA_CN, Default::default())
+            pub fn generate_mock() -> Self {
+                Self::generate(
+                    DistinguishedName::create_mock("myca"),
+                    CertificateConfiguration::default(),
+                )
+                .unwrap()
             }
 
-            pub fn generate_reader_mock_ca() -> Result<Self, CertificateError> {
-                Self::generate(RP_CA_CN, Default::default())
+            pub fn generate_issuer_mock_ca() -> Result<Self, CertificateGenerationError> {
+                Self::generate(ISSUER_CA_DN.clone(), Default::default())
             }
 
-            pub fn generate_pid_issuer_mock(&self) -> Result<KeyPair, CertificateError> {
-                self.generate_key_pair(PID_ISSUER_CERT_CN, CertificateUsage::Mdl, Default::default())
-            }
-
-            pub fn generate_issuer_mock(&self) -> Result<KeyPair, CertificateError> {
-                self.generate_key_pair(ISSUANCE_CERT_CN, CertificateUsage::Mdl, Default::default())
-            }
-
-            pub fn generate_reader_mock(&self) -> Result<KeyPair, CertificateError> {
-                self.generate_key_pair(RP_CERT_CN, CertificateUsage::ReaderAuth, Default::default())
-            }
-
-            pub fn generate_status_list_mock(&self) -> Result<KeyPair, CertificateError> {
-                self.generate_key_pair(
-                    ISSUANCE_CERT_CN,
-                    CertificateUsage::OAuthStatusSigning,
-                    Default::default(),
+            pub fn generate_issuer_mock_ca_without_aki() -> Result<Self, CertificateGenerationError> {
+                Self::generate(
+                    ISSUER_CA_DN.clone(),
+                    CertificateConfiguration {
+                        exclude_aki: true,
+                        ..Default::default()
+                    },
                 )
             }
 
-            pub fn generate_status_list_mock_with_dn(&self, dn: &str) -> Result<KeyPair, CertificateError> {
-                self.generate_key_pair(dn, CertificateUsage::OAuthStatusSigning, Default::default())
+            pub fn generate_issuer_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    ISSUER_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::Issuer),
+                )
+            }
+
+            pub fn generate_wrpac_issuer_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(ISSUER_CERT_DN.clone(), Default::default())
+            }
+
+            pub fn generate_wrpac_issuer_mock_with_crl(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    ISSUER_CERT_DN.clone(),
+                    CertificateConfiguration {
+                        crl_distribution_points: vec![MOCK_CRL_DISTRIBUTION_POINT.clone()],
+                        ..Default::default()
+                    },
+                )
+            }
+
+            pub fn generate_issuer_status_list_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    ISSUER_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::StatusListSigning),
+                )
+            }
+
+            pub fn generate_pid_issuer_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    PID_ISSUER_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::PidIssuer),
+                )
+            }
+
+            pub fn generate_pid_issuer_status_list_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    PID_ISSUER_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::StatusListSigning),
+                )
+            }
+
+            pub fn generate_wptl_mock_ca() -> Result<Self, CertificateGenerationError> {
+                Self::generate(WPTL_CA_DN.clone(), Default::default())
+            }
+
+            pub fn generate_wia_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    WIA_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::Wia),
+                )
+            }
+
+            pub fn generate_key_attestation_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    KEY_ATTESTATION_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::KeyAttestation),
+                )
+            }
+
+            pub fn generate_key_storage_status_list_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    KEY_ATTESTATION_CERT_DN.clone(),
+                    CertificateConfiguration::with_profile(CertificateProfile::StatusListSigning),
+                )
+            }
+
+            pub fn generate_wrpac_mock_ca() -> Result<Self, CertificateGenerationError> {
+                Self::generate(WRPAC_CA_DN.clone(), Default::default())
+            }
+
+            pub fn generate_wrpac_verifier_mock(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(VERIFIER_CERT_DN.clone(), Default::default())
+            }
+
+            pub fn generate_wrpac_verifier_mock_with_crl(&self) -> Result<KeyPair, CertificateGenerationError> {
+                self.generate_key_pair(
+                    VERIFIER_CERT_DN.clone(),
+                    CertificateConfiguration {
+                        crl_distribution_points: vec![MOCK_CRL_DISTRIBUTION_POINT.clone()],
+                        ..Default::default()
+                    },
+                )
+            }
+
+            /// Generate a TLS server key pair with the given hostname as the DNS SAN.
+            /// No custom extended key usage extensions are added, which allows webpki to accept
+            /// the certificate for TLS server authentication.
+            pub fn generate_tls_mock(&self, hostname: &str) -> Result<KeyPair, CertificateGenerationError> {
+                let key_pair = rcgen::KeyPair::generate().map_err(CertificateGenerationError::GeneratingFailed)?;
+                let private_key = rcgen_cert_privkey(&key_pair)?;
+
+                let mut params = CertificateParams::default();
+                params.is_ca = IsCa::NoCa;
+                params.distinguished_name.push(DnType::CommonName, hostname);
+                params.subject_alt_names.push(SanType::DnsName(
+                    hostname
+                        .try_into()
+                        .map_err(CertificateGenerationError::GeneratingFailed)?,
+                ));
+
+                let certificate = params
+                    .signed_by(&key_pair, &self.issuer)
+                    .map_err(CertificateGenerationError::GeneratingFailed)?;
+                let certificate = BorrowingCertificate::from_certificate_der(certificate.into())
+                    .map_err(CertificateGenerationError::CertificateParse)?;
+
+                Ok(KeyPair {
+                    private_key,
+                    certificate,
+                })
             }
         }
     }

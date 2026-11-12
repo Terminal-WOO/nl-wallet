@@ -1,0 +1,66 @@
+use db_test::DbSetup;
+use hsm::test::HsmSetup;
+use http_utils::reqwest::tls_reqwest_client_builder;
+use http_utils::urls::BaseUrl;
+use reqwest::Client;
+use serde_json::Value;
+use serde_json::json;
+use serial_test::serial;
+use tests_integration::common::start_wallet_provider;
+use tests_integration::common::wallet_provider_settings;
+
+async fn setup_wallet_provider(db_setup: &DbSetup, hsm_setup: &HsmSetup) -> (Client, BaseUrl) {
+    let (settings, root_ca) = wallet_provider_settings(db_setup.wallet_provider_url(), db_setup.audit_log_url());
+    let hsm = hsm_setup
+        .pkcs11_hsm(settings.hsm.clone())
+        .expect("Could not initialize HSM");
+    let port = start_wallet_provider(settings, hsm, root_ca.clone()).await;
+
+    let client = tls_reqwest_client_builder([root_ca.into_certificate()])
+        .build()
+        .unwrap();
+    let url = format!("https://localhost:{}", port).parse().unwrap();
+    (client, url)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(hsm)]
+async fn test_wallet_provider_health() {
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let (client, url) = setup_wallet_provider(&db_setup, &hsm_setup).await;
+
+    let response = client.get(url.join("health/live")).send().await.unwrap();
+    assert!(response.status().is_success());
+
+    let body = serde_json::from_slice::<Value>(response.bytes().await.unwrap().as_ref()).unwrap();
+    assert_eq!(body, json!({"status": "UP", "checks": []}));
+
+    for path in ["health", "health/started", "health/ready"] {
+        let response = client.get(url.join(path)).send().await.unwrap();
+        assert!(response.status().is_success());
+
+        let body = serde_json::from_slice::<Value>(response.bytes().await.unwrap().as_ref()).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "status": "UP",
+                "checks": [{"name": "db", "status": "UP" }, {"name": "hsm", "status": "UP" }]
+            })
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(hsm)]
+async fn test_wallet_provider_metrics() {
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let (client, url) = setup_wallet_provider(&db_setup, &hsm_setup).await;
+
+    let response = client.get(url.join("metrics")).send().await.unwrap();
+    assert!(response.status().is_success());
+
+    let body: String = response.text().await.unwrap();
+    assert!(body.contains("nlwallet_metrics_endpoint_count"));
+}

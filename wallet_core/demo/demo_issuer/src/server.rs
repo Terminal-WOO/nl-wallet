@@ -1,7 +1,6 @@
 use anyhow::Result;
 use tokio::net::TcpListener;
 use tracing::info;
-
 use utils::built_info::version_string;
 
 use crate::app::create_routers;
@@ -38,14 +37,15 @@ pub async fn serve(settings: Settings) -> Result<()> {
                 tls_config
                     .clone()
                     .into_rustls_config()
-                    .await
                     .expect("TLS config should be valid"),
             )
+            .expect("TCP listener should not be in blocking mode")
             .serve(issuance_router.into_make_service())
             .await
             .expect("issuance server should be started");
         } else {
             axum_server::from_tcp(issuance_listener)
+                .expect("TCP listener should not be in blocking mode")
                 .serve(issuance_router.into_make_service())
                 .await
                 .expect("issuance server should be started");

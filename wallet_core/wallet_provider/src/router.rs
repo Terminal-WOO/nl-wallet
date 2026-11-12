@@ -1,4 +1,6 @@
+use std::result::Result as StdResult;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -11,19 +13,25 @@ use axum::response::Json;
 use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
-use futures::TryFutureExt;
-use futures::try_join;
+use health_checkers::hsm::HsmChecker;
+use health_checkers::postgres::DatabaseChecker;
+use hsm::service::Pkcs11Hsm;
+use http::HeaderMap;
+use http_utils::health::create_health_router;
+use metrics::counter;
+use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_with::base64::Base64;
-use serde_with::serde_as;
-use tower_http::decompression::RequestDecompressionLayer;
+use status_lists::serve::add_status_list_middleware;
+use status_lists::serve::http_response_for_status_list_jwt;
+use tokio::sync::Semaphore;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing::warn;
-
-use crypto::keys::EcdsaKey;
-use crypto::p256_der::DerVerifyingKey;
+use utils::generator::TimeGenerator;
+use utils::generator::UuidV4AndTimeGenerator;
+use utoipa::OpenApi;
 use wallet_account::messages::instructions::CancelTransfer;
 use wallet_account::messages::instructions::ChangePinCommit;
 use wallet_account::messages::instructions::ChangePinRollback;
@@ -31,6 +39,7 @@ use wallet_account::messages::instructions::ChangePinStart;
 use wallet_account::messages::instructions::CheckPin;
 use wallet_account::messages::instructions::CompleteTransfer;
 use wallet_account::messages::instructions::ConfirmTransfer;
+use wallet_account::messages::instructions::DeleteKeys;
 use wallet_account::messages::instructions::DiscloseRecoveryCode;
 use wallet_account::messages::instructions::DiscloseRecoveryCodePinRecovery;
 use wallet_account::messages::instructions::GetTransferStatus;
@@ -39,10 +48,11 @@ use wallet_account::messages::instructions::Instruction;
 use wallet_account::messages::instructions::InstructionAndResult;
 use wallet_account::messages::instructions::InstructionChallengeRequest;
 use wallet_account::messages::instructions::InstructionResultMessage;
+use wallet_account::messages::instructions::IssueWia;
 use wallet_account::messages::instructions::PairTransfer;
 use wallet_account::messages::instructions::PerformIssuance;
-use wallet_account::messages::instructions::PerformIssuanceWithWua;
 use wallet_account::messages::instructions::ReceiveWalletPayload;
+use wallet_account::messages::instructions::RefreshWalletCertificate;
 use wallet_account::messages::instructions::ResetTransfer;
 use wallet_account::messages::instructions::SendWalletPayload;
 use wallet_account::messages::instructions::Sign;
@@ -53,15 +63,22 @@ use wallet_account::messages::registration::Challenge;
 use wallet_account::messages::registration::Registration;
 use wallet_account::messages::registration::WalletCertificate;
 use wallet_account::signed::ChallengeResponse;
+use wallet_provider_persistence::repositories::Repositories;
 use wallet_provider_service::account_server::GoogleCrlProvider;
 use wallet_provider_service::account_server::IntegrityTokenDecoder;
+use wallet_provider_service::account_server::UserState;
 use wallet_provider_service::instructions::HandleInstruction;
 use wallet_provider_service::instructions::PinChecks;
 use wallet_provider_service::instructions::ValidateInstruction;
-use wallet_provider_service::wua_issuer::WuaIssuer;
 
+use crate::admin_portal;
+use crate::admin_portal::AdminPortalState;
 use crate::errors::WalletProviderError;
+use crate::internal;
 use crate::router_state::RouterState;
+use crate::settings::AdminPortalSettings;
+
+pub(crate) const KEY_STORAGE_TSL_PATH: &str = "/key_storage_status";
 
 /// All handlers should return this result. The [`WalletProviderError`] wraps
 /// a [`StatusCode`] and JSON body, all top-level errors should be convertible
@@ -74,17 +91,38 @@ use crate::router_state::RouterState;
 /// and this is not a public API, having error responses in that do not contain
 /// the custom JSON body in those cases is acceptable. The client should still
 /// be able to handle these errors appropriately.
-type Result<T> = std::result::Result<T, WalletProviderError>;
+type Result<T> = StdResult<T, WalletProviderError>;
 
-pub fn router<GRC, PIC>(router_state: RouterState<GRC, PIC>) -> Router
+#[derive(OpenApi)]
+#[openapi(info(title = "Wallet provider API"))]
+struct ApiDocs;
+
+pub fn router<GRC, PIC>(
+    router_state: RouterState<GRC, PIC>,
+    revoke_solution_enabled: bool,
+    admin_portal: AdminPortalSettings,
+) -> StdResult<Router, reqwest::Error>
 where
     GRC: GoogleCrlProvider + Send + Sync + 'static,
     PIC: IntegrityTokenDecoder + Send + Sync + 'static,
 {
     let state = Arc::new(router_state);
-
-    Router::new()
-        .merge(health_router())
+    let admin_portal_state = Arc::new(AdminPortalState::try_new(
+        admin_portal,
+        state.user_state.repositories.clone(),
+        state.audit_log.clone(),
+        Arc::clone(&state.user_state),
+    )?);
+    let wallet_transfer_permits = Arc::new(Semaphore::new(state.wallet_transfer_concurrency_limit));
+    let router = Router::new()
+        .merge(health_router(&state.user_state))
+        .merge(metrics_router())
+        .merge(add_status_list_middleware(
+            Router::new()
+                .route(KEY_STORAGE_TSL_PATH, get(key_storage_tsl))
+                .with_state(Arc::clone(&state)),
+        ))
+        .nest("/admin-portal", admin_portal::router(admin_portal_state))
         .nest(
             "/api/v1",
             Router::new()
@@ -110,15 +148,28 @@ where
                 .route(
                     &format!("/instructions/hw_signed/{}", SendWalletPayload::NAME),
                     post(handle_hw_signed_instruction::<SendWalletPayload, _, _, _>)
-                        .layer(DefaultBodyLimit::max(state.max_transfer_upload_size_in_bytes)),
+                        .layer(DefaultBodyLimit::max(state.max_transfer_upload_size_in_bytes))
+                        .layer(middleware::from_fn_with_state(
+                            Arc::clone(&wallet_transfer_permits),
+                            wallet_transfer_concurrency_gate,
+                        )),
                 )
                 .route(
                     &format!("/instructions/hw_signed/{}", ReceiveWalletPayload::NAME),
-                    post(handle_hw_signed_instruction::<ReceiveWalletPayload, _, _, _>),
+                    post(handle_hw_signed_instruction::<ReceiveWalletPayload, _, _, _>).layer(
+                        middleware::from_fn_with_state(
+                            Arc::clone(&wallet_transfer_permits),
+                            wallet_transfer_concurrency_gate,
+                        ),
+                    ),
                 )
                 .route(
                     &format!("/instructions/hw_signed/{}", CompleteTransfer::NAME),
                     post(handle_hw_signed_instruction::<CompleteTransfer, _, _, _>),
+                )
+                .route(
+                    &format!("/instructions/hw_signed/{}", IssueWia::NAME),
+                    post(handle_hw_signed_instruction::<IssueWia, _, _, _>),
                 )
                 .route(
                     &format!("/instructions/{}", ChangePinStart::NAME),
@@ -127,6 +178,10 @@ where
                 .route(
                     &format!("/instructions/{}", ChangePinRollback::NAME),
                     post(change_pin_rollback),
+                )
+                .route(
+                    &format!("/instructions/{}", RefreshWalletCertificate::NAME),
+                    post(refresh_wallet_certificate),
                 )
                 .route(
                     &format!("/instructions/{}", StartPinRecovery::NAME),
@@ -149,10 +204,6 @@ where
                     post(handle_instruction::<PerformIssuance, _, _, _>),
                 )
                 .route(
-                    &format!("/instructions/{}", PerformIssuanceWithWua::NAME),
-                    post(handle_instruction::<PerformIssuanceWithWua, _, _, _>),
-                )
-                .route(
                     &format!("/instructions/{}", DiscloseRecoveryCode::NAME),
                     post(handle_instruction::<DiscloseRecoveryCode, _, _, _>),
                 )
@@ -164,22 +215,56 @@ where
                     &format!("/instructions/{}", ConfirmTransfer::NAME),
                     post(handle_instruction::<ConfirmTransfer, _, _, _>),
                 )
-                .layer(RequestDecompressionLayer::new().zstd(true))
+                .route(
+                    &format!("/instructions/{}", DeleteKeys::NAME),
+                    post(handle_instruction::<DeleteKeys, _, _, _>),
+                )
                 .layer(TraceLayer::new_for_http())
                 .layer(middleware::from_fn(log_headers))
                 .with_state(Arc::clone(&state)),
-        )
-        .nest(
-            "/config",
-            Router::new()
-                .route("/public-keys", get(public_keys))
-                .layer(TraceLayer::new_for_http())
-                .with_state(Arc::clone(&state)),
-        )
+        );
+
+    let (internal_router, internal_openapi) = internal::internal_router(state, revoke_solution_enabled);
+    let router = router.nest("/internal", internal_router.layer(TraceLayer::new_for_http()));
+    let openapi = ApiDocs::openapi().nest("/internal", internal_openapi);
+
+    #[cfg(feature = "test_internal_ui")]
+    let router = router.merge(
+        utoipa_swagger_ui::SwaggerUi::new("/api-docs")
+            .config(utoipa_swagger_ui::Config::default().validator_url("none"))
+            .url("/openapi.json", openapi),
+    );
+
+    #[cfg(not(feature = "test_internal_ui"))]
+    let router = router.route("/openapi.json", get(Json(openapi)));
+
+    Ok(router)
 }
 
-fn health_router() -> Router {
-    Router::new().route("/health", get(|| async {}))
+fn health_router<F, W, S>(user_state: &UserState<Repositories, F, Pkcs11Hsm, W, S>) -> Router {
+    let checkers = [
+        Box::new(DatabaseChecker::new("db", user_state.repositories.as_ref().as_ref())) as Box<_>,
+        Box::new(HsmChecker::new(&user_state.wallet_user_hsm)) as Box<_>,
+    ];
+    create_health_router(checkers)
+}
+
+/// Prometheus Handle can only be installed once
+static PROMETHEUS_HANDLE: LazyLock<PrometheusHandle> = LazyLock::new(|| {
+    PrometheusBuilder::new()
+        .install_recorder()
+        .expect("failed to install Prometheus recorder")
+});
+
+fn metrics_router() -> Router {
+    Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(PROMETHEUS_HANDLE.clone())
+}
+
+async fn metrics_handler(State(handle): State<PrometheusHandle>) -> String {
+    counter!("nlwallet_metrics_endpoint_count", "service" => "http").increment(1);
+    handle.render()
 }
 
 async fn log_headers(req: Request, next: Next) -> Response {
@@ -187,12 +272,45 @@ async fn log_headers(req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
+/// Bounds concurrent in-flight `SendWalletPayload`/`ReceiveWalletPayload` requests. Both
+/// buffer up to `max_transfer_upload_size_in_bytes` in memory, so a caller could otherwise
+/// open enough concurrent requests to exceed the pod's memory limit regardless of that
+/// per-request cap.
+///
+/// Sharing one semaphore between both routes bounds worst-case concurrent memory use to
+/// roughly `wallet_transfer_concurrency_limit * max_transfer_upload_size_in_bytes` combined,
+/// regardless of the send/receive mix; the container memory limit must be sized to cover
+/// that.
+async fn wallet_transfer_concurrency_gate(State(permits): State<Arc<Semaphore>>, req: Request, next: Next) -> Response {
+    let _permit = permits.acquire().await.expect("semaphore is never closed");
+    next.run(req).await
+}
+
+async fn key_storage_tsl<GRC, PIC>(
+    headers: HeaderMap,
+    State(state): State<Arc<RouterState<GRC, PIC>>>,
+) -> StdResult<Response, StatusCode> {
+    let token = state
+        .user_state
+        .key_storage_status_list
+        .status_list_token(&TimeGenerator)
+        .await
+        .map_err(|error| {
+            warn!("generating key storage status list failed: {}", error);
+
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let ttl = state.user_state.key_storage_status_list.token_ttl;
+    http_response_for_status_list_jwt(&headers, token, Some(ttl))
+}
+
 async fn enroll<GRC, PIC>(State(state): State<Arc<RouterState<GRC, PIC>>>) -> Result<(StatusCode, Json<Challenge>)> {
     info!("Received enroll request, creating registration challenge");
 
     let challenge = state
         .account_server
-        .registration_challenge(&state.certificate_signing_key)
+        .registration_challenge(&state.certificate_signing_key, &state.user_state)
         .await
         .inspect_err(|error| warn!("generating wallet registration challenge failed: {}", error))?;
 
@@ -213,13 +331,21 @@ where
 {
     info!("Received create wallet request, registering with account server");
 
-    let cert = state
+    let (certificate, revocation_code) = state
         .account_server
-        .register(&state.certificate_signing_key, payload, &state.user_state)
+        .register(
+            &state.certificate_signing_key,
+            payload,
+            &state.user_state,
+            &TimeGenerator,
+        )
         .await
         .inspect_err(|error| warn!("wallet registration failed: {}", error))?;
 
-    let body = Certificate { certificate: cert };
+    let body = Certificate {
+        certificate,
+        revocation_code,
+    };
 
     info!("Replying with the created wallet certificate");
 
@@ -234,7 +360,7 @@ async fn instruction_challenge<GRC, PIC>(
 
     let challenge = state
         .account_server
-        .instruction_challenge(payload, state.as_ref(), &state.user_state)
+        .instruction_challenge(payload, &UuidV4AndTimeGenerator, &state.user_state)
         .await
         .inspect_err(|error| warn!("generating instruction challenge failed: {}", error))?;
 
@@ -290,12 +416,35 @@ async fn change_pin_start<GRC, PIC>(
         .handle_change_pin_start_instruction(
             payload,
             (&state.instruction_result_signing_key, &state.certificate_signing_key),
-            state.as_ref(),
+            &UuidV4AndTimeGenerator,
             &state.pin_policy,
             &state.user_state,
         )
         .await
         .inspect_err(|error| warn!("handling ChangePinStart instruction failed: {}", error))?;
+
+    let body = InstructionResultMessage { result };
+
+    Ok((StatusCode::OK, body.into()))
+}
+
+async fn refresh_wallet_certificate<GRC, PIC>(
+    State(state): State<Arc<RouterState<GRC, PIC>>>,
+    Json(payload): Json<Instruction<RefreshWalletCertificate>>,
+) -> Result<(StatusCode, Json<InstructionResultMessage<WalletCertificate>>)> {
+    info!("Received RefreshWalletCertificate instruction");
+
+    let result = state
+        .account_server
+        .handle_refresh_wallet_certificate_instruction(
+            payload,
+            (&state.instruction_result_signing_key, &state.certificate_signing_key),
+            &UuidV4AndTimeGenerator,
+            &state.pin_policy,
+            &state.user_state,
+        )
+        .await
+        .inspect_err(|error| warn!("handling RefreshWalletCertificate instruction failed: {}", error))?;
 
     let body = InstructionResultMessage { result };
 
@@ -313,7 +462,7 @@ async fn change_pin_rollback<GRC, PIC>(
         .handle_change_pin_rollback_instruction(
             payload,
             &state.instruction_result_signing_key,
-            state.as_ref(),
+            &UuidV4AndTimeGenerator,
             &state.pin_policy,
             &state.user_state,
         )
@@ -338,53 +487,13 @@ async fn start_pin_recovery<GRC, PIC>(
         .handle_start_pin_recovery_instruction(
             payload,
             (&state.instruction_result_signing_key, &state.certificate_signing_key),
-            state.as_ref(),
+            &UuidV4AndTimeGenerator,
             &state.user_state,
         )
         .await
         .inspect_err(|error| warn!("handling ChangePinStart instruction failed: {}", error))?;
 
     let body = InstructionResultMessage { result };
-
-    Ok((StatusCode::OK, body.into()))
-}
-
-#[serde_as]
-#[derive(Serialize)]
-struct PublicKeys {
-    #[serde_as(as = "Base64")]
-    certificate_public_key: DerVerifyingKey,
-    #[serde_as(as = "Base64")]
-    instruction_result_public_key: DerVerifyingKey,
-    #[serde_as(as = "Base64")]
-    wua_signing_key: DerVerifyingKey,
-}
-
-async fn public_keys<GRC, PIC>(
-    State(state): State<Arc<RouterState<GRC, PIC>>>,
-) -> Result<(StatusCode, Json<PublicKeys>)> {
-    let (certificate_public_key, instruction_result_public_key, wua_signing_key) = try_join!(
-        state
-            .certificate_signing_key
-            .verifying_key()
-            .map_err(WalletProviderError::Hsm),
-        state
-            .instruction_result_signing_key
-            .verifying_key()
-            .map_err(WalletProviderError::Hsm),
-        state
-            .user_state
-            .wua_issuer
-            .public_key()
-            .map_err(WalletProviderError::Wua)
-    )
-    .inspect_err(|error| warn!("getting wallet provider public keys failed: {}", error))?;
-
-    let body = PublicKeys {
-        certificate_public_key: certificate_public_key.into(),
-        instruction_result_public_key: instruction_result_public_key.into(),
-        wua_signing_key: wua_signing_key.into(),
-    };
 
     Ok((StatusCode::OK, body.into()))
 }

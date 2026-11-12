@@ -1,0 +1,189 @@
+package feature.issuance
+
+import helper.IssuanceDataHelper
+import helper.PortraitImageHelper
+import helper.TasDataHelper
+import helper.TestBase
+import navigator.MenuNavigator
+import navigator.screen.MenuNavigatorScreen
+import org.junit.jupiter.api.Assertions.assertAll
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.MethodOrderer
+import org.junit.jupiter.api.TestInfo
+import org.junit.jupiter.api.TestMethodOrder
+import org.junitpioneer.jupiter.RetryingTest
+import screen.dashboard.DashboardScreen
+import screen.issuance.CardIssuanceScreen
+import screen.menu.MenuScreen
+import screen.security.PinScreen
+import screen.web.demo.DemoIndexWebPage
+import screen.web.demo.issuer.IssuerConsentWebPage
+import screen.web.demo.issuer.IssuerWebPage
+
+@TestMethodOrder(MethodOrderer.DisplayName::class)
+@DisplayName("Use Case 4.1 Obtain one or more cards from a (Q)EAA Issuer")
+class GenericIssuanceTests : TestBase() {
+
+    private lateinit var indexWebPage: DemoIndexWebPage
+    private lateinit var issuerWebPage: IssuerWebPage
+    private lateinit var issuerConsentWebPage: IssuerConsentWebPage
+    private lateinit var cardIssuanceScreen: CardIssuanceScreen
+    private lateinit var pinScreen: PinScreen
+    private lateinit var tasData: TasDataHelper
+    private lateinit var issuanceData: IssuanceDataHelper
+    private lateinit var dashboardScreen: DashboardScreen
+
+    fun setUp(testInfo: TestInfo) {
+        startDriver(testInfo)
+        indexWebPage = DemoIndexWebPage()
+        issuerWebPage = IssuerWebPage()
+        issuerConsentWebPage = IssuerConsentWebPage()
+        cardIssuanceScreen = CardIssuanceScreen()
+        pinScreen = PinScreen()
+        tasData = TasDataHelper()
+        issuanceData = IssuanceDataHelper()
+        dashboardScreen = DashboardScreen()
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC83 Authorization code flow issuance")
+    fun verifyAuthorizationCodeFlow(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickLoyaltyButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        issuerWebPage.acceptOpenWalletDialog()
+
+        cardIssuanceScreen.switchToNativeContext()
+        cardIssuanceScreen.captureA11ySnapshot("CardIssuanceLoyalty")
+        cardIssuanceScreen.continueIssuance()
+        pinScreen.enterPin(DEFAULT_PIN)
+
+        cardIssuanceScreen.clickToDashboardButton()
+        assertTrue(dashboardScreen.cardVisible(tasData.getLoyaltyDisplayName()), "Loyalty card not visible on dashboard")
+        dashboardScreen.scrollToEndOfScreen()
+        assertTrue(dashboardScreen.cardVisible(tasData.getLoyaltyDisplayName()), "Loyalty card not visible on dashboard")
+        dashboardScreen.captureA11ySnapshot("DashboardWithLoyaltyCard")
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC84 Authorization code flow issuance with consent")
+    fun verifyAuthorizationCodeFlowWithConsent(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickInsuranceButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        issuerWebPage.acceptOpenWalletDialog()
+
+        issuerConsentWebPage.switchToConsentPage()
+        assertTrue(issuerConsentWebPage.visible(), "Issuer consent page not visible")
+        issuerConsentWebPage.clickGiveConsentButton()
+
+        cardIssuanceScreen.switchToNativeContext()
+        cardIssuanceScreen.captureA11ySnapshot("ContinueIssuance")
+        cardIssuanceScreen.continueIssuance()
+        pinScreen.enterPin(DEFAULT_PIN)
+
+        cardIssuanceScreen.clickToDashboardButton()
+        dashboardScreen.scrollToEndOfScreen()
+        assertTrue(dashboardScreen.cardVisible(tasData.getInsuranceDisplayName()), "Insurance card not visible on dashboard")
+        dashboardScreen.captureA11ySnapshot("DashboardWithInsuranceCard")
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC82 Pre-authorized code flow issuance")
+    fun verifyPreauthorizedCodeFlow(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickMuseumMaandkaartButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        issuerWebPage.acceptOpenWalletDialog()
+
+        cardIssuanceScreen.switchToNativeContext()
+        cardIssuanceScreen.captureA11ySnapshot("CardIssuanceMuseumMaandkaart")
+        cardIssuanceScreen.clickAddCardButton()
+        pinScreen.enterPin(DEFAULT_PIN)
+
+        cardIssuanceScreen.clickToDashboardButton()
+        dashboardScreen.scrollToEndOfScreen()
+        assertTrue(
+            dashboardScreen.cardVisible(tasData.getMuseumMaandkaartDisplayName()),
+            "Museum maandkaart card not visible on dashboard"
+        )
+        dashboardScreen.captureA11ySnapshot("DashboardWithMuseumMaandkaartCard")
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("Pre-authorized code flow Driving License")
+    fun verifyDrivingLicenseIssuance(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickDrivingLicenseButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        issuerWebPage.acceptOpenWalletDialog()
+
+        cardIssuanceScreen.switchToNativeContext()
+        cardIssuanceScreen.viewDetailsOfCard(tasData.getDrivingLicenseDisplayName())
+        val portraitImage = cardIssuanceScreen.portraitImageElement()
+        assertTrue(
+            PortraitImageHelper().hasPortraitImage(portraitImage),
+            "Driving license portrait is not present"
+        )
+        assertAll(
+            { assertTrue(cardIssuanceScreen.labelVisible(tasData.getDrivingLicenseClaimLabel("family_name")), "Label familiy name is not visible") },
+            { assertTrue(cardIssuanceScreen.labelVisible(tasData.getDrivingLicenseClaimLabel("birth_date")), "Label birth date is not visible") },
+            { assertTrue(cardIssuanceScreen.dataVisible(issuanceData.getAttributeValues("mdl", "family_name").first()), "Data familiy name is not visible") }
+        )
+        cardIssuanceScreen.clickBackButton()
+        cardIssuanceScreen.clickAddCardButton()
+        pinScreen.enterPin(DEFAULT_PIN)
+
+        cardIssuanceScreen.clickToDashboardButton()
+        dashboardScreen.scrollToEndOfScreen()
+        assertTrue(
+            dashboardScreen.cardVisible(tasData.getDrivingLicenseDisplayName()),
+            "Driving license card not visible on dashboard"
+        )
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("Pre-authorized code flow Registration Certificate")
+    fun verifyRegistrationCertificateIssuance(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickRegistrationCertificateButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        issuerWebPage.acceptOpenWalletDialog()
+
+        cardIssuanceScreen.switchToNativeContext()
+        cardIssuanceScreen.viewDetailsOfCard(tasData.getRegistrationCertificateDisplayName())
+        assertAll(
+            { assertTrue(cardIssuanceScreen.labelVisible(tasData.getRegistrationCertificateClaimLabel("registration_number")), "Label registration number is not visible") },
+            { assertTrue(cardIssuanceScreen.labelVisible(tasData.getRegistrationCertificateClaimLabel("issue_date")), "Label issue date is not visible") },
+        )
+        cardIssuanceScreen.clickBackButton()
+        cardIssuanceScreen.clickAddCardButton()
+        pinScreen.enterPin(DEFAULT_PIN)
+
+        cardIssuanceScreen.clickToDashboardButton()
+        dashboardScreen.scrollToEndOfScreen()
+        assertTrue(
+            dashboardScreen.cardVisible(tasData.getRegistrationCertificateDisplayName()),
+            "Registration certificate card not visible on dashboard"
+        )
+    }
+}

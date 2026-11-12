@@ -1,7 +1,19 @@
-pub const EUDI_PID_ATTESTATION_TYPE: &str = "urn:eudi:pid:1";
+use crate::credential_format::Format;
 
-pub const PID_ATTESTATION_TYPE: &str = "urn:eudi:pid:nl:1";
-pub const ADDRESS_ATTESTATION_TYPE: &str = "urn:eudi:pid-address:nl:1";
+pub const ROOT_PID_ATTESTATION_TYPE: &str = "urn:example:pid:1";
+
+pub const PID_ATTESTATION_TYPE: &str = "urn:example:pid:nl:1";
+pub const PID_MDOC_DOCTYPE: &str = "com.example.nl.pid.1";
+
+/// The example PID's attestation type for `format`: its mdoc doctype or its SD-JWT `vct`.
+pub const fn pid_attestation_type(format: Format) -> &'static str {
+    match format {
+        Format::MsoMdoc => PID_MDOC_DOCTYPE,
+        Format::SdJwt => PID_ATTESTATION_TYPE,
+    }
+}
+
+pub const ADDRESS_ATTESTATION_TYPE: &str = "urn:example:pid-address:nl:1";
 
 pub const PID_FAMILY_NAME: &str = "family_name";
 pub const PID_GIVEN_NAME: &str = "given_name";

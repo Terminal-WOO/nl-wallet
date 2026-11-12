@@ -4,25 +4,27 @@ use std::time::Duration;
 use chrono::DateTime;
 use chrono::Utc;
 use chrono::serde::ts_seconds;
+use crypto::keys::CredentialEcdsaKey;
+use crypto::keys::EcdsaKey;
+use crypto::wscd::DisclosureWscd;
 use derive_more::Display;
 use derive_more::FromStr;
-use jsonwebtoken::Algorithm;
-use jsonwebtoken::Validation;
-use serde::Deserialize;
-use serde::Serialize;
-
-use crypto::CredentialEcdsaKey;
-use crypto::EcdsaKey;
-use crypto::wscd::DisclosureWscd;
-use crypto::wscd::WscdPoa;
-use jwt::EcdsaDecodingKey;
+use jwt::Algorithm;
+use jwt::JwtDecodingKey;
 use jwt::JwtTyp;
+use jwt::JwtValidation;
 use jwt::SignedJwt;
 use jwt::UnverifiedJwt;
+use jwt::ValidationWrapper;
 use jwt::VerifiedJwt;
+use jwt::nonce::Nonce;
+use serde::Deserialize;
+use serde::Serialize;
 use utils::generator::Generator;
+use utils::vec_at_least::IntoNonEmptyIterator;
 use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
+use utils::vec_nonempty;
 
 use crate::error::KeyBindingError;
 use crate::error::SigningError;
@@ -40,11 +42,11 @@ impl JwtTyp for KeyBindingJwtClaims {
 /// Verification options for KB-JWT verification:
 /// - `expected_aud`: audience to enforce,
 /// - `expected_nonce`: nonce to match,
-/// - `iat_leeway`: allowed leeway around the lower bound of `iat`,
+/// - `iat_leeway`: allowed leeway when verifying `iat` with the current time,
 /// - `iat_acceptance_window`: allowed duration after `iat`.
 pub struct KbVerificationOptions<'a> {
     pub expected_aud: &'a str,
-    pub expected_nonce: &'a str,
+    pub expected_nonce: &'a Nonce,
     pub iat_leeway: Duration,
     pub iat_acceptance_window: Duration,
 }
@@ -72,26 +74,28 @@ impl UnverifiedKeyBindingJwt {
     /// <https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-12.html#section-8.3-4.5.1>
     pub fn into_verified(
         self,
-        pubkey: &EcdsaDecodingKey,
+        pubkey: &JwtDecodingKey,
         kb_verification_options: &KbVerificationOptions,
         time: &impl Generator<DateTime<Utc>>,
     ) -> Result<VerifiedKeyBindingJwt, KeyBindingError> {
-        let validation_options = kb_jwt_validation(kb_verification_options.expected_aud);
-        let verified = self.0.into_verified(pubkey, &validation_options)?;
+        let validation = kb_jwt_validation(kb_verification_options.expected_aud);
+        let verified = self.0.into_verified(pubkey, validation)?;
 
         let payload = verified.payload();
-        if payload.nonce != kb_verification_options.expected_nonce {
+        if payload.nonce != *kb_verification_options.expected_nonce {
             return Err(KeyBindingError::NonceMismatch(payload.nonce.clone()));
         };
 
         let now = time.generate();
         let leeway = kb_verification_options.iat_leeway;
-        if !(payload.iat <= now + leeway && now <= payload.iat + kb_verification_options.iat_acceptance_window) {
-            return Err(KeyBindingError::InvalidSignatureTimestamp(
-                payload.iat,
-                kb_verification_options.iat_acceptance_window,
-                now,
-            ));
+        let acceptance_window = kb_verification_options.iat_acceptance_window;
+        if !(payload.iat - leeway <= now && now <= payload.iat + leeway + acceptance_window) {
+            return Err(KeyBindingError::InvalidSignatureTimestamp {
+                iat: payload.iat,
+                acceptance_window,
+                leeway,
+                current_time: now,
+            });
         };
 
         Ok(verified)
@@ -102,18 +106,17 @@ impl UnverifiedKeyBindingJwt {
     }
 }
 
-fn kb_jwt_validation(expected_aud: &str) -> Validation {
+fn kb_jwt_validation(expected_aud: &str) -> ValidationWrapper {
     let mut validation = BASE_KB_JWT_VALIDATION.to_owned();
-    validation.set_audience(&[expected_aud]);
+    validation.require_aud(expected_aud);
     validation
+        .try_into_validation()
+        .expect("should be a single algorithm family")
 }
 
-static BASE_KB_JWT_VALIDATION: LazyLock<Validation> = LazyLock::new(|| {
-    let mut validation = Validation::new(Algorithm::ES256);
-    validation.validate_aud = true;
-    validation.validate_exp = false;
-    validation.validate_nbf = false;
-    validation.set_required_spec_claims(&["aud"]);
+static BASE_KB_JWT_VALIDATION: LazyLock<JwtValidation> = LazyLock::new(|| {
+    let mut validation = JwtValidation::default_with_algorithms([Algorithm::ES256]);
+    validation.dont_validate_exp();
     validation
 });
 
@@ -121,11 +124,11 @@ static BASE_KB_JWT_VALIDATION: LazyLock<Validation> = LazyLock::new(|| {
 #[derive(Debug, Clone)]
 pub struct KeyBindingJwtBuilder {
     aud: String,
-    nonce: String,
+    nonce: Nonce,
 }
 
 impl KeyBindingJwtBuilder {
-    pub fn new(aud: String, nonce: String) -> Self {
+    pub fn new(aud: String, nonce: Nonce) -> Self {
         Self { aud, nonce }
     }
 
@@ -158,18 +161,16 @@ impl KeyBindingJwtBuilder {
     }
 
     /// Builds several [`KeyBindingJwt`]s from the data provided by one builder, using the WSCD.
-    pub(crate) async fn finish_multiple<C, H, K, W, P>(
+    pub(crate) async fn finish_multiple<C, H, K, W>(
         self,
         sd_jwts_and_keys: &VecNonEmpty<(VerifiedSdJwt<C, H>, K)>,
         wscd: &W,
-        poa_input: P::Input,
         time: &impl Generator<DateTime<Utc>>,
-    ) -> Result<(VecNonEmpty<SignedKeyBindingJwt>, Option<P>), SigningError>
+    ) -> Result<VecNonEmpty<SignedKeyBindingJwt>, SigningError>
     where
         C: SdJwtClaims,
-        W: DisclosureWscd<Key = K, Poa = P>,
+        W: DisclosureWscd<Key = K>,
         K: CredentialEcdsaKey,
-        P: WscdPoa,
     {
         // Create a `KeyBindingJwtClaims` for each `SdJwt`, based on the contents of the builder and combine it with the
         // provided key.
@@ -177,8 +178,8 @@ impl KeyBindingJwtBuilder {
 
         let sd_jwt_count = sd_jwts_and_keys.len().get();
         let payloads_and_keys: VecNonEmpty<_> = sd_jwts_and_keys
-            .into_iter()
-            .zip(itertools::repeat_n(self, sd_jwt_count))
+            .into_nonempty_iter()
+            .zip(vec_nonempty![self; sd_jwt_count])
             .map(|((sd_jwt, key), builder)| {
                 let KeyBindingJwtBuilder { aud, nonce } = builder;
                 let sd_hash = Self::sd_hash_for_sd_jwt(sd_jwt)?;
@@ -192,64 +193,59 @@ impl KeyBindingJwtBuilder {
 
                 Ok((claims, key))
             })
-            .collect::<Result<Vec<_>, KeyBindingError>>()?
-            .try_into()
-            .unwrap();
+            .collect::<Result<VecNonEmpty<_>, KeyBindingError>>()?;
 
         // Create JWTs from all of these by having the WSCD sign the `KeyBindingJwtClaims` values.
-        let (signed_jwts, poa) = SignedJwt::sign_multiple(
+        let signed_jwts = SignedJwt::sign_multiple(
             payloads_and_keys.nonempty_iter().map(|(payload, key)| (payload, *key)),
             wscd,
-            poa_input,
         )
         .await?;
 
-        Ok((signed_jwts, poa))
+        Ok(signed_jwts)
     }
 }
 
 /// Claims set for key binding JWT.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct KeyBindingJwtClaims {
     #[serde(with = "ts_seconds")]
     pub iat: DateTime<Utc>,
     pub aud: String,
-    pub nonce: String,
+    pub nonce: Nonce,
     pub sd_hash: String,
 }
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
+    use std::assert_matches;
+
     use base64::Engine;
     use base64::prelude::*;
     use chrono::TimeZone;
     use chrono::Utc;
+    use crypto::keys::PublicKeyRef;
+    use crypto::mock_remote::DisclosureMockRemoteWscd;
+    use crypto::mock_remote::MockRemoteEcdsaKey;
+    use crypto::server_keys::generate::Ca;
     use futures::FutureExt;
     use itertools::Itertools;
-    use jsonwebtoken::Algorithm;
+    use jwt::SignedJwt;
+    use jwt::error::JwtVerifyError;
     use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use rstest::rstest;
     use serde_json::json;
-
-    use crypto::mock_remote::MockRemoteEcdsaKey;
-    use crypto::mock_remote::MockRemoteWscd;
-    use crypto::server_keys::generate::Ca;
-    use jwt::EcdsaDecodingKey;
-    use jwt::SignedJwt;
-    use jwt::error::JwtError;
     use utils::generator::mock::MockTimeGenerator;
     use utils::vec_at_least::IntoNonEmptyIterator;
     use utils::vec_at_least::NonEmptyIterator;
     use utils::vec_nonempty;
 
+    use super::*;
     use crate::builder::SdJwtBuilder;
     use crate::hasher::Hasher;
     use crate::hasher::Sha256Hasher;
     use crate::sd_jwt::SdJwtVcClaims;
-
-    use super::*;
 
     async fn example_kb_jwt(signing_key: &SigningKey) -> SignedJwt<KeyBindingJwtClaims> {
         example_kb_jwt_with_iat(
@@ -264,7 +260,7 @@ mod test {
             &KeyBindingJwtClaims {
                 iat,
                 aud: String::from("aud"),
-                nonce: String::from("abc123"),
+                nonce: Nonce::from(String::from("abc123")),
                 sd_hash: String::from("sd_hash"),
             },
             signing_key,
@@ -293,12 +289,12 @@ mod test {
     fn test_key_binding_jwt_builder() {
         let sd_jwt = VerifiedSdJwt::spec_sd_jwt_vc();
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
         let hasher = Sha256Hasher;
 
         let time = MockTimeGenerator::new(Utc::now());
 
-        let kb_jwt = KeyBindingJwtBuilder::new(String::from("receiver"), String::from("abc123"))
+        let kb_jwt = KeyBindingJwtBuilder::new(String::from("receiver"), Nonce::from(String::from("abc123")))
             .finish(&sd_jwt, &signing_key, &time)
             .now_or_never()
             .unwrap()
@@ -329,7 +325,7 @@ mod test {
         let issuer_keypair = ca.generate_issuer_mock().unwrap();
         let key1 = MockRemoteEcdsaKey::new_random("key1".to_string());
         let key2 = MockRemoteEcdsaKey::new_random("key2".to_string());
-        let wscd = MockRemoteWscd::new(vec![key1.clone(), key2.clone()]);
+        let wscd = DisclosureMockRemoteWscd::new(vec![key1.clone(), key2.clone()]);
 
         let iat = Utc::now();
         let mock_time = MockTimeGenerator::new(iat);
@@ -353,13 +349,11 @@ mod test {
             })
             .collect();
 
-        let (kb_jwts, poa) = KeyBindingJwtBuilder::new(String::from("receiver"), String::from("abc123"))
-            .finish_multiple(&sd_jwts_and_keys, &wscd, (), &mock_time)
+        let kb_jwts = KeyBindingJwtBuilder::new(String::from("receiver"), Nonce::from(String::from("abc123")))
+            .finish_multiple(&sd_jwts_and_keys, &wscd, &mock_time)
             .now_or_never()
             .unwrap()
             .expect("signing multiple KeyBindingJwt values using WSCD should succeed");
-
-        assert!(poa.is_some());
 
         let hasher = Sha256Hasher;
 
@@ -390,11 +384,11 @@ mod test {
 
     #[tokio::test]
     async fn test_parse_should_validate() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let kb_verification_options = KbVerificationOptions {
             expected_aud: "aud",
-            expected_nonce: "abc123",
+            expected_nonce: &Nonce::from("abc123".to_string()),
             iat_leeway: Duration::ZERO,
             iat_acceptance_window: Duration::from_secs(3 * 24 * 60 * 60),
         };
@@ -404,7 +398,7 @@ mod test {
             .parse::<UnverifiedKeyBindingJwt>()
             .unwrap()
             .into_verified(
-                &EcdsaDecodingKey::from(signing_key.verifying_key()),
+                &PublicKeyRef::from(signing_key.verifying_key()).into(),
                 &kb_verification_options,
                 &MockTimeGenerator::default(),
             )
@@ -415,17 +409,17 @@ mod test {
     #[case::not_yet_valid(1000, Duration::from_secs(5), 994, Duration::from_secs(500), false)]
     #[case::valid_in_leeway(1000, Duration::from_secs(5), 995, Duration::from_secs(500), true)]
     #[case::valid(1000, Duration::from_secs(5), 1200, Duration::from_secs(500), true)]
-    #[case::valid_atwindow_boundary(1000, Duration::from_secs(5), 1500, Duration::from_secs(500), true)]
-    #[case::expired(1000, Duration::from_secs(5), 1501, Duration::from_secs(500), false)]
+    #[case::valid_atwindow_boundary(1000, Duration::from_secs(5), 1505, Duration::from_secs(500), true)]
+    #[case::expired(1000, Duration::from_secs(5), 1506, Duration::from_secs(500), false)]
     #[tokio::test]
     async fn test_parse_and_verify_iat(
         #[case] iat_epoch: i64,
-        #[case] leeway: Duration,
+        #[case] iat_leeway: Duration,
         #[case] now_epoch: i64,
         #[case] iat_acceptance_window: Duration,
         #[case] expected_valid: bool,
     ) {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let iat_generator = MockTimeGenerator::new(Utc.timestamp_opt(iat_epoch, 0).unwrap());
         let iat = iat_generator.generate();
@@ -434,21 +428,22 @@ mod test {
 
         let jwt_str = example_kb_jwt_with_iat(&signing_key, iat).await.to_string();
 
-        let verify_timestamp = |iat: DateTime<Utc>, window: Duration, current_time: DateTime<Utc>| {
+        let verify_timestamp = |iat: DateTime<Utc>, window: Duration, leeway: Duration, current_time: DateTime<Utc>| {
             window == iat_acceptance_window
+                && leeway == iat_leeway
                 && iat == iat_generator.generate()
                 && current_time == now_generator.generate()
         };
 
         let kb_verification_options = KbVerificationOptions {
             expected_aud: "aud",
-            expected_nonce: "abc123",
-            iat_leeway: leeway,
+            expected_nonce: &Nonce::from("abc123".to_string()),
+            iat_leeway,
             iat_acceptance_window,
         };
 
         let result = jwt_str.parse::<UnverifiedKeyBindingJwt>().unwrap().into_verified(
-            &EcdsaDecodingKey::from(signing_key.verifying_key()),
+            &PublicKeyRef::from(signing_key.verifying_key()).into(),
             &kb_verification_options,
             &now_generator,
         );
@@ -457,20 +452,20 @@ mod test {
             let _verified_jwt = result.unwrap();
         } else {
             let err = result.unwrap_err();
-            assert_matches!(err, KeyBindingError::InvalidSignatureTimestamp(iat, window, now)
-                        if verify_timestamp(iat, window, now));
+            assert_matches!(err, KeyBindingError::InvalidSignatureTimestamp{ iat, acceptance_window, leeway, current_time }
+                        if verify_timestamp(iat, acceptance_window, leeway, current_time));
         }
     }
 
     #[tokio::test]
     async fn test_parse_should_error_for_wrong_nonce() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let jwt_str = example_kb_jwt(&signing_key).await.to_string();
 
         let kb_verification_options = KbVerificationOptions {
             expected_aud: "aud",
-            expected_nonce: "def456",
+            expected_nonce: &Nonce::from("def456".to_string()),
             iat_leeway: Duration::ZERO,
             iat_acceptance_window: Duration::from_secs(3 * 24 * 60 * 60),
         };
@@ -479,24 +474,24 @@ mod test {
             .parse::<UnverifiedKeyBindingJwt>()
             .unwrap()
             .into_verified(
-                &EcdsaDecodingKey::from(signing_key.verifying_key()),
+                &PublicKeyRef::from(signing_key.verifying_key()).into(),
                 &kb_verification_options,
                 &MockTimeGenerator::default(),
             )
             .expect_err("should fail validation");
         assert_matches!(
             err,
-            KeyBindingError::NonceMismatch(actual) if &actual == "abc123"
+            KeyBindingError::NonceMismatch(actual) if actual.as_ref() == "abc123"
         );
     }
 
     #[tokio::test]
     async fn test_parse_should_error_for_invalid_audience() {
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::generate();
 
         let kb_verification_options = KbVerificationOptions {
             expected_aud: "other_aud",
-            expected_nonce: "abc123",
+            expected_nonce: &Nonce::from("abc123".to_string()),
             iat_leeway: Duration::ZERO,
             iat_acceptance_window: Duration::from_secs(3 * 24 * 60 * 60),
         };
@@ -506,14 +501,14 @@ mod test {
             .parse::<UnverifiedKeyBindingJwt>()
             .unwrap()
             .into_verified(
-                &EcdsaDecodingKey::from(signing_key.verifying_key()),
+                &PublicKeyRef::from(signing_key.verifying_key()).into(),
                 &kb_verification_options,
                 &MockTimeGenerator::default(),
             )
             .expect_err("should fail validation");
         assert_matches!(
             err,
-            KeyBindingError::Jwt(JwtError::Validation(error))
+            KeyBindingError::JwtVerify(JwtVerifyError::Validation(error))
                 if *error.kind() == jsonwebtoken::errors::ErrorKind::InvalidAudience
         );
     }

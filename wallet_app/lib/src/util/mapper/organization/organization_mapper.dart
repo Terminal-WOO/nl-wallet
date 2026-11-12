@@ -1,31 +1,47 @@
-import 'package:wallet_core/core.dart' as core show Organization;
-import 'package:wallet_core/core.dart' hide Organization;
+import 'package:wallet_core/core.dart' as core show Organization, PersonType;
+import 'package:wallet_core/core.dart' hide Organization, PersonType;
 
-import '../../../domain/model/app_image_data.dart';
 import '../../../domain/model/localized_text.dart';
 import '../../../domain/model/organization.dart';
-import '../../../wallet_assets.dart';
+import '../../../domain/model/person_type.dart';
+import '../../extension/locale_extension.dart';
 import '../mapper.dart';
 
 class OrganizationMapper extends Mapper<core.Organization, Organization> {
-  final Mapper<List<LocalizedString>, LocalizedText> _localizedStringMapper;
-  final Mapper<Image, AppImageData> _imageMapper;
-
-  OrganizationMapper(this._localizedStringMapper, this._imageMapper);
-
   @override
   Organization map(core.Organization input) => Organization(
     id: input.hashCode.toString(),
-    legalName: _localizedStringMapper.map(input.legalName),
-    displayName: _localizedStringMapper.map(input.displayName),
-    description: _localizedStringMapper.map(input.description),
-    department: input.department == null ? null : _localizedStringMapper.map(input.department!),
-    logo: input.image == null ? const AppAssetImage(WalletAssets.logo_rp_placeholder) : _imageMapper.map(input.image!),
-    category: _localizedStringMapper.map(input.category),
-    kvk: input.kvk,
+    legalName: input.legalName,
+    displayName: input.displayName,
+    publicBody: input.publicBody,
+    personType: _mapPersonType(input.personType),
+    description: _mapDescription(input.serviceDescription),
+    organizationId: input.identifier,
     countryCode: input.countryCode,
-    city: input.city == null ? null : _localizedStringMapper.map(input.city!),
-    webUrl: input.webUrl,
-    privacyPolicyUrl: input.privacyPolicyUrl,
+    webUri: input.webUrl,
+    supportUri: _mapSupportUri(input.supportUri),
+    privacyPolicyUri: input.privacyPolicyUrl,
   );
+
+  PersonType _mapPersonType(core.PersonType personType) => switch (personType) {
+    core.PersonType.LegalPerson => PersonType.legalPerson,
+    core.PersonType.NaturalPerson => PersonType.naturalPerson,
+  };
+
+  /// The registration certificate allows a bare email address as support_uri, which can't be launched as is.
+  String _mapSupportUri(String supportUri) {
+    final trimmed = supportUri.trim();
+    if (Uri.tryParse(trimmed)?.hasScheme ?? false) return trimmed;
+    if (trimmed.contains('@')) return Uri(scheme: 'mailto', path: trimmed).toString();
+    throw const FormatException('Support URI must be a URI or email address');
+  }
+
+  LocalizedText? _mapDescription(List<ServiceDescription> descriptions) {
+    final result = <Locale, String>{};
+    for (final translation in descriptions.expand((description) => description.translations)) {
+      final locale = LocaleExtension.parseLocale(translation.language);
+      result.update(locale, (value) => '$value\n${translation.value}', ifAbsent: () => translation.value);
+    }
+    return result.isEmpty ? null : result;
+  }
 }

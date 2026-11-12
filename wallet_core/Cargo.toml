@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "configuration_server",
     "demo/demo_index",
     "demo/demo_issuer",
     "demo/demo_relying_party",
@@ -12,21 +11,34 @@ members = [
     "lib/apple_app_attest",
     "lib/attestation_data",
     "lib/attestation_types",
+    "lib/cose",
     "lib/crypto",
+    "lib/db_test",
     "lib/dcql",
     "lib/error_category",
     "lib/error_category/error_category_derive",
+    "lib/health_checkers",
     "lib/hsm",
     "lib/http_utils",
+    "lib/jwe",
     "lib/jwt",
     "lib/mdoc",
+    "lib/mdoc/mdoc_derive",
+    "lib/measure",
+    "lib/oauth",
     "lib/openid4vc",
     "lib/openid4vc_server",
     "lib/sd_jwt",
     "lib/sd_jwt_vc_metadata",
+    "lib/svg_sanitize",
+    "lib/status_lists",
+    "lib/status_lists/migrations",
     "lib/token_status_list",
     "lib/utils",
+    "lib/web_utils",
     "lib/wscd",
+    "revocation_portal",
+    "static_server",
     "tests_integration",
     "update_policy/model",
     "update_policy/server",
@@ -37,31 +49,37 @@ members = [
     "wallet/platform_support",
     "wallet_ca",
     "wallet_provider",
-    "wallet_provider/database_settings",
+    "wallet_provider/audit_log",
+    "wallet_provider/audit_log/audit_log_macros",
+    "wallet_provider/audit_log/migrations",
     "wallet_provider/domain",
     "wallet_provider/migrations",
     "wallet_provider/persistence",
+    "wallet_provider/readable_identifier",
     "wallet_provider/service",
     "wallet_provider/wallet_account",
+    "wallet_server/acf_demo_issuer",
+    "wallet_server/acf_demo_issuer/migrations",
     "wallet_server/issuance_server",
     "wallet_server/issuance_server/migrations",
-    "wallet_server/issuer_settings",
+    "wallet_server/pacf_issuance_server",
+    "wallet_server/pacf_issuance_server/migrations",
+    "wallet_server/issuer_common",
+    "wallet_server/issuer_common/migrations",
     "wallet_server/pid_issuer",
     "wallet_server/pid_issuer/migrations",
     "wallet_server/server_utils",
     "wallet_server/server_utils/migrations",
-    "wallet_server/status_lists",
-    "wallet_server/status_lists/migrations",
     "wallet_server/verification_server",
     "wallet_server/verification_server/migrations",
 ]
 exclude = ["uniffi-bindgen"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
-version = "0.4.0-dev"
+version = "0.8.0-dev"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.98"
 
 [workspace.lints.rust]
 async_fn_in_trait = "allow"
@@ -69,6 +87,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }
 
 [workspace.lints.clippy]
 allow_attributes = "deny"
+cast_lossless = "warn"
 cloned_instead_of_copied = "warn"
 expl_impl_clone_on_copy = "warn"
 explicit_into_iter_loop = "warn"
@@ -84,150 +103,174 @@ unused_self = "warn"
 
 [workspace.dependencies]
 accept-language = "3.1.0"
-aes-gcm = "0.10.3"
+aes = "0.9.4"
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+# android_logger version 0.15.x and above is held back because PlatformLogWriter was made private.
 android_logger = { version = "0.14.1", default-features = false }
-anyhow = "1.0.95"
-askama = "0.14.0"
-askama_web = "0.14.0"
+anyhow = "1.0.100"
+askama = { version = "0.14.0", default-features = false, features = ["derive", "std"] }
+askama_web = "0.14.6"
+asn1-rs = "0.7.1"
 assert-json-diff = "2.0.2"
-assert_cmd = "2.0.16"
-assert_fs = "1.1.2"
-assert_matches = "1.5.0"
-async-dropper = "0.3.1"
-async-trait = "0.1.86"
-axum = { version = "0.8.1", default-features = false }
-axum-extra = "0.10.0"
-axum-server = "0.7.1"
+assert_cmd = "2.1.1"
+assert_fs = "1.1.3"
+async-dropper = { version = "0.3.1", features = ["tokio"] }
+async-trait = "0.1.89"
+axum = { version = "0.8.7", default-features = false, features = ["http1", "query", "tokio", "tower-log", "tracing"] }
+axum-extra = "0.12.2"
+axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 axum_csrf = "0.11.0"
-backtrace = "0.3.74"
-base64 = "0.22.1"
-biscuit = "0.7.0"
-bitflags = "2.8.0"
-built = "0.7.5"
-bytes = "1.10.1"
-cfg-if = "1.0.0"
+backtrace = "0.3.76"
+base64 = "0.23.1"
+bitflags = "2.10.0"
+# bollard version is same as testcontainers
+bollard = "0.20.0"
+built = "0.8.1"
+bytes = "1.11.0"
 cfg_eval = "0.1.2"
-chrono = { version = "0.4.39", default-features = false }
+chrono = { version = "0.4.42", default-features = false, features = ["std"] }
 ciborium = "0.2.2"
-clap = "4.5.28"
+clap = "4.5.53"
 clio = "0.3.5"
-config = { version = "0.15.7", default-features = false }
+cmac = "0.8.0"
+config = { version = "0.15.19", default-features = false }
 const-decoder = "0.4.0"
-coset = "0.3.8"
-cryptoki = "0.10.0"
-crypto-common = "0.1.6"
+cookie = "0.18.1"
+coset = { version = "0.4.2", features = ["std"] }
+cryptoki = "0.12.0"
+cryptoki-sys = "0.5.0"
 cstr = "0.2.12"
-csv = "1.3.1"
-ctor = "0.2.9"
+csv = "1.4.0"
+ctor = "0.6.3"
+ctr = "0.10.1"
 dashmap = "6.1.0"
-data-url = "0.3.1"
-der = "0.7.9"
-derive_more = "2.0.1"
+data-url = "0.3.2"
+der = { version = "0.8.2", features = ["std"] }
+derive_more = "2.1.0"
 dotenvy = "0.15.7"
+ecdsa = "0.17.0"
 etag = "4.0.0"
-flate2 = "1.1.2"
-flutter_rust_bridge = { version = "2.11.1", default-features = false }
-futures = { version = "0.3.31", default-features = false }
-gcloud-auth = { version = "1.0.0", default-features = false }
+flate2 = "1.1.5"
+futures = { version = "0.3.31", default-features = false, features = ["std"] }
+gcloud-auth = { version = "1.2.0", default-features = false, features = ["jwt-rust-crypto", "rustls-tls"] }
+hayro-jpeg2000 = "0.4.1"
 hex = "0.4.3"
-hex-literal = "0.4.1"
-http = "1.2.0"
-http-cache-reqwest = { version = "0.15.1", default-features = false }
-hmac = "0.12.1"
-indexmap = "2.7.1"
-int-enum = "1.1.2"
+hex-literal = "1.1.0"
+http = "1.4.0"
+http-cache-reqwest = { version = "0.16.0", default-features = false }
+httpmock = { version = "0.8.3", default-features = false, features = ["headers", "https"] }
+hmac = "0.13.0"
+image = { version = "0.25.10", default-features = false, features = ["rayon"] }
+indexmap = "2.12.1"
+int-enum = "1.2.0"
 itertools = "0.14.0"
 jni = "0.21.1"
-josekit = "0.10.1"
-jsonschema = { version = "0.29.0", default-features = false }
-jsonwebtoken = { version = "9.3.0", default-features = false }
-libc = "0.2.174"
+josekit = "0.10.3"
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
+jwk-simple = "0.2.0"
+language-tags = "0.3.2"
+libc = "0.2.178"
 # held back by sea-orm / sqlx
 libsqlite3-sys = { version = "0.30.1", default-features = false }
-log = "0.4.25"
+# The lightningcss crate has a 1.0.0 version as well as an `alpha` label, meaning they don't use the semver
+# strategy. However, since this should only be used as a build dependency, we accept the `alpha` label.
+lightningcss = { version = "1.0.0-alpha.70", default-features = false }
+log = "0.4.29"
 mediatype = "0.21.0"
+metrics = "0.24.3"
+metrics-exporter-prometheus = { version = "0.18.1", default-features = false, features = ["http-listener"] }
 mime = "0.3.17"
-mockall = "0.13.1"
+mockall = "0.14.0"
 moka = "0.12.11"
 nom = "8.0.0"
-nonempty-collections = "1.0.0"
+nonempty-collections = "1.2.1"
 num-bigint = "0.4.6"
 num-traits = "0.2.19"
-nutype = "0.6.0"
+nutype = "0.8.0"
 oslog = { version = "0.2.0", default-features = false }
-p256 = { version = "0.13.2", default-features = false }
-passkey-types = "0.4.0"
-parking_lot = "0.12.3"
-pem = "3.0.4"
-postcard = { version = "1.1.1", default-features = false }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
+p384 = { version = "0.14.0", default-features = false, features = ["ecdsa", "std"] }
+passkey-crypto = { version = "0.1.1", default-features = false }
+passkey-types = "0.6.0"
+parking_lot = "0.12.5"
+pem = "3.0.6"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 predicates = { version = "3.1.3", default-features = false }
-proc-macro2 = "1.0.93"
-quick-xml = "0.38.0"
-quote = "1.0.38"
-r2d2-cryptoki = "0.4.0-rc.0"
-# these two crates are held back by p256
-rand = "0.8.5"
-rand_core = "0.6.4"
-rasn = "0.24.0"
-rcgen = { version = "0.13.2", default-features = false }
-regex = "1.11.1"
-reqwest = { version = "0.12.12", default-features = false }
-reqwest-middleware = { version = "0.4.0", default-features = false }
-ring = "0.17.12"
-rpassword = "7.3.1"
-rsa = { version = "0.9.7", default-features = false }
-rstest = "0.24.0"
+proc-macro2 = "1.0.103"
+quick-xml = "0.41.0"
+quote = "1.0.42"
+r2d2-cryptoki = "0.5.0"
+rand = "0.10.3"
+rand_core = "0.10.1"
+# rasn 0.27.x or higher is held back, as OctetString in those versions does not implement Serialize.
+rasn = { version = "0.26.6", features = ["std"] }
+rcgen = { version = "0.14.5", default-features = false }
+regex = "1.13.1"
+reqwest = { version = "0.12.26", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+reqwest-middleware = { version = "0.4.2", default-features = false }
+ring = { version = "0.17.14", features = ["std"] }
+rpassword = "7.4.0"
+rsa = { version = "0.10.0", default-features = false, features = ["std"] }
+rstest = "0.28.0"
 # held back by sea-orm / sqlx via libsqlite3-sys
 rusqlite = "0.32.1"
 rustix = "1.1.2"
-rustls = { version = "0.23.22", default-features = false }
-rustls-pki-types = "1.11.0"
-rustls-webpki = "0.102.8"
+rustls = { version = "0.23.35", default-features = false, features = ["logging", "std", "ring"] }
+rustls-pki-types = { version = "1.13.1", features = ["std"] }
+rustls-webpki = { version = "0.103.8", features = ["ring"] }
 sanitize-filename = "0.6.0"
-sea-orm = { version = "1.1.16", default-features = false }
-sea-orm-migration = { version = "1.1.16", default-features = false }
-sea-query = { version = "0.32.7", default-features = false }
-sec1 = "0.7.3"
-semver = "1.0.25"
-sentry = { version = "0.36.0", default-features = false }
-serde = "1.0.227"
-serde-aux = "4.5.0"
-serde_bytes = "0.11.15"
-serde_json = { version = "1.0.138", default-features = false }
-serde_repr = "0.1.19"
-serde_urlencoded = "0.7.1"
-serde_valid = "1.0.5"
-serde_with = "3.12.0"
+scraper = "0.25.0"
+sea-orm = { version = "1.1.19", default-features = false }
+sea-orm-migration = { version = "1.1.19", default-features = false }
+sec1 = "0.8.1"
+semver = "1.0.27"
+sentry = { version = "0.46.0", default-features = false }
+serde = "1.0.228"
+serde-aux = "4.7.0"
+serde_bytes = "0.11.19"
+serde_json = "1.0.145"
+serde_repr = "0.1.20"
+serde_qs = { version = "1.1.2", features = ["default_to_form_encoding"] }
+serde_valid = "2.0.0"
+serde_with = "3.16.1"
 serial_test = "3.2.0"
-sha2 = "0.10.8"
-spki = "0.7.3"
+subtle = "2.6.0"
+sha2 = "0.11.1"
+spki = { version = "0.8.1", features = ["std"] }
 ssri = "9.2.0"
-strfmt = "0.2.4"
-strum = "0.26.3"
-syn = "2.0.98"
-tempfile = "3.16.0"
-thiserror = "2.0.11"
-time = "0.3.37"
-tokio = { version = "1.44.2", default-features = false }
+strfmt = "0.2.5"
+strum = "0.28.0"
+syn = "2.0.111"
+tempfile = "3.23.0"
+testcontainers = "0.27.2"
+testcontainers-modules = "0.15.0"
+thiserror = "2.0.17"
+time = "0.3.44"
+tokio = { version = "1.48.0", default-features = false, features = ["parking_lot"] }
 tokio-test = "0.4.4"
-toml = "0.8.22"
-tower = { version = "0.5.2", default-features = false }
-tower-http = { version = "0.6.2", default-features = false }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", default-features = false }
+toml = "0.9.8"
+tower.version = "0.5.2"
+tower-http.version = "0.6.2"
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", default-features = false, features = [
+    "fmt",
+    "smallvec",
+    "std",
+    "tracing-log",
+    "parking_lot",
+] }
 tracing-test = "0.2.5"
 trait-variant = "0.1.2"
-trybuild = "1.0.103"
-ts-rs = "11.0.1"
-uniffi = { version = "0.29.3", default-features = false }
-url = "2.5.4"
-uuid = "1.15.1"
-wiremock = "0.6.2"
-x509-cert = { version = "0.2.5", default-features = false }
-x509-parser = "0.17.0"
-yoke = "0.7.5"
-zstd = "0.13.3"
-
-[patch.crates-io]
-# Pin on newer version due to https://github.com/parallaxsecond/rust-cryptoki/pull/291
-cryptoki = { git = "https://github.com/parallaxsecond/rust-cryptoki.git", rev = "2765af619ed245f8787e46987483bf96179e30cd"  }
+ts-rs = "11.1.0"
+uniffi = { version = "0.31.0", default-features = false }
+url = "2.5.7"
+utoipa = "6.0.0"
+utoipa-axum = "0.3.0"
+utoipa-swagger-ui = "10.0.0"
+uuid = "1.19.0"
+x509-cert = { version = "0.2.5", default-features = false, features = ["std"] }
+x509-parser = "0.18.0"
+xxhash-rust = "0.8.15"
+yoke = "0.8.1"
+zstd = "0.14.3"
+zeroize = "1.9.0"

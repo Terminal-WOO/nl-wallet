@@ -11,18 +11,25 @@ workspace = true
 [lib]
 doctest = false
 
+[[test]]
+name = "issuance"
+path = "tests/issuance.rs"
+required-features = ["issuance"]
+
 [features]
 # Enable issuance
-issuance = ["axum-extra/typed-header"]
+issuance = ["axum-extra/typed-header", "dep:sd_jwt_vc_metadata", "jwt/axum", "dep:wscd"]
 # Enable disclosure
 disclosure = ["dep:ring"]
 
 [dependencies]
-axum = { workspace = true, features = ["form", "http1", "json", "query", "tower-log", "tracing"] }
+axum = { workspace = true, features = ["form", "json"] }
+derive_more = { workspace = true, features = ["from"] }
 http.workspace = true
+mediatype.workspace = true
 rustls-pki-types.workspace = true
 serde = { workspace = true, features = ["derive"] }
-tower-http = { workspace = true, features = ["auth", "cors", "set-header", "trace"] }
+tower-http = { workspace = true, features = ["cors"] }
 tracing.workspace = true
 
 axum-extra = { workspace = true, optional = true }
@@ -33,6 +40,31 @@ crypto.path = "../crypto"
 dcql.path = "../dcql"
 http_utils = { path = "../http_utils", features = ["server"] }
 jwt.path = "../jwt"
+oauth.path = "../oauth"
 openid4vc = { path = "../openid4vc", features = ["axum"] }
 token_status_list = { path = "../token_status_list" }
-utils = { path = "../utils" }
+utils.path = "../utils"
+
+sd_jwt_vc_metadata = { path = "../sd_jwt_vc_metadata", optional = true }
+wscd = { path = "../wscd", optional = true }
+
+[dev-dependencies]
+axum-server.workspace = true
+indexmap.workspace = true
+itertools.workspace = true
+p256.workspace = true
+rand_core.workspace = true
+reqwest.workspace = true
+rstest.workspace = true
+serde_qs.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros", "net"] }
+tower = { workspace = true, features = ["util"] }
+url = { workspace = true, features = ["serde"] }
+
+attestation_types.path = "../attestation_types"
+http_utils = { path = "../http_utils", features = ["client"] }
+jwe.path = "../jwe"
+openid4vc = { path = "../openid4vc", features = ["mock", "test"] }
+sd_jwt_vc_metadata.path = "../sd_jwt_vc_metadata"
+wscd = { path = "../wscd", features = ["mock"] }

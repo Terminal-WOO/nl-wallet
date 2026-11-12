@@ -13,10 +13,10 @@ use etag::EntityTag;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::header;
+use http_utils::health::create_health_router;
 use tokio::net::TcpListener;
 use tracing::debug;
 use tracing::info;
-
 use utils::built_info::version_string;
 use utils::generator::TimeGenerator;
 
@@ -42,7 +42,7 @@ pub async fn serve_with_listener(listener: TcpListener, settings: Settings) -> R
         update_policy: settings.update_policy,
     });
 
-    let app = Router::new().merge(health_router()).nest(
+    let app = Router::new().merge(create_health_router([])).nest(
         "/update/v1",
         Router::new()
             .route("/update-policy", get(get_policy))
@@ -50,18 +50,18 @@ pub async fn serve_with_listener(listener: TcpListener, settings: Settings) -> R
     );
 
     if let Some(tls_config) = settings.tls_config.clone() {
-        axum_server::from_tcp_rustls(listener, tls_config.into_rustls_config().await?)
+        axum_server::from_tcp_rustls(listener, tls_config.into_rustls_config()?)
+            .expect("TCP listener should not be in blocking mode")
             .serve(app.into_make_service())
             .await?;
     } else {
-        axum_server::from_tcp(listener).serve(app.into_make_service()).await?;
+        axum_server::from_tcp(listener)
+            .expect("TCP listener should not be in blocking mode")
+            .serve(app.into_make_service())
+            .await?;
     }
 
     Ok(())
-}
-
-fn health_router() -> Router {
-    Router::new().route("/health", get(|| async {}))
 }
 
 async fn get_policy(State(state): State<Arc<ApplicationState>>, headers: HeaderMap) -> Result<Response, StatusCode> {

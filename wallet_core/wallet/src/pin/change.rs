@@ -1,18 +1,23 @@
+use std::collections::HashMap;
 use std::future::Future;
 
+use crypto::kid::Kid;
+use crypto::utils::KeyBytes;
 use derive_more::Constructor;
+use error_category::ErrorCategory;
+use jwt::error::JwtVerifyError;
 use p256::ecdsa::VerifyingKey;
 use serde::Deserialize;
 use serde::Serialize;
-
-use error_category::ErrorCategory;
-use jwt::error::JwtError;
 use wallet_account::messages::registration::WalletCertificate;
+use wallet_configuration::wallet_config::CertificatePublicKey;
 
+use crate::errors::CheckPreconditionsError;
 use crate::errors::InstructionError;
 use crate::errors::PinValidationError;
 use crate::errors::StorageError;
 use crate::errors::UpdatePolicyError;
+use crate::pin::key::Pin;
 use crate::pin::key::{self as pin_key};
 use crate::storage::RegistrationData;
 use crate::validate_pin;
@@ -37,12 +42,12 @@ pub trait ChangePinClient {
     type Error: ChangePinClientError;
     async fn start_new_pin(
         &self,
-        old_pin: &str,
-        new_pin: &str,
-        new_pin_salt: &[u8],
+        old_pin: &Pin,
+        new_pin: &Pin,
+        new_pin_salt: &KeyBytes,
     ) -> Result<WalletCertificate, Self::Error>;
-    async fn commit_new_pin(&self, new_pin: &str) -> Result<(), Self::Error>;
-    async fn rollback_new_pin(&self, old_pin: &str) -> Result<(), Self::Error>;
+    async fn commit_new_pin(&self, new_pin: &Pin) -> Result<(), Self::Error>;
+    async fn rollback_new_pin(&self, old_pin: &Pin) -> Result<(), Self::Error>;
 }
 
 #[cfg_attr(any(test, feature = "test"), mockall::automock)]
@@ -54,7 +59,7 @@ pub trait ChangePinStorage {
     async fn change_pin(
         &self,
         current_registration_data: RegistrationData,
-        new_pin_salt: Vec<u8>,
+        new_pin_salt: KeyBytes,
         new_pin_certificate: WalletCertificate,
     ) -> Result<(), StorageError>;
 }
@@ -62,9 +67,8 @@ pub trait ChangePinStorage {
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]
 pub enum ChangePinError {
-    #[category(expected)]
-    #[error("app version is blocked")]
-    VersionBlocked,
+    #[error("preconditions failed: {0}")]
+    CheckPreconditions(#[source] CheckPreconditionsError),
     #[error("wallet is not registered")]
     #[category(expected)]
     NotRegistered,
@@ -86,7 +90,7 @@ pub enum ChangePinError {
     #[error("error fetching update policy: {0}")]
     UpdatePolicy(#[from] UpdatePolicyError),
     #[error("could not validate new registration certificate received from Wallet Provider: {0}")]
-    CertificateValidation(#[source] JwtError),
+    CertificateValidation(#[source] JwtVerifyError),
     #[error(
         "public key in new registration certificate received from Wallet Provider does not match hardware public key"
     )]
@@ -103,7 +107,7 @@ pub struct BeginChangePinOperation<'a, C, S> {
     client: &'a C,
     storage: &'a S,
     registration_data: &'a RegistrationData,
-    certificate_public_key: &'a VerifyingKey,
+    certificate_public_keys: &'a HashMap<Kid, CertificatePublicKey>,
     hw_pubkey: &'a VerifyingKey,
 }
 
@@ -112,14 +116,14 @@ impl<'a, C, S> BeginChangePinOperation<'a, C, S> {
         client: &'a C,
         storage: &'a S,
         registration_data: &'a RegistrationData,
-        certificate_public_key: &'a VerifyingKey,
+        certificate_public_keys: &'a HashMap<Kid, CertificatePublicKey>,
         hw_pubkey: &'a VerifyingKey,
     ) -> Self {
         Self {
             client,
             storage,
             registration_data,
-            certificate_public_key,
+            certificate_public_keys,
             hw_pubkey,
         }
     }
@@ -127,7 +131,7 @@ impl<'a, C, S> BeginChangePinOperation<'a, C, S> {
     // Perform the same sanity checks as during registration, with the addition of checking the received wallet_id.
     pub fn validate_certificate(&self, certificate: &WalletCertificate) -> ChangePinResult<()> {
         let (_, cert_claims) = certificate
-            .parse_and_verify_with_sub(&self.certificate_public_key.into())
+            .parse_and_verify_with_sub_by_kid(self.certificate_public_keys)
             .map_err(ChangePinError::CertificateValidation)?;
 
         if cert_claims.hw_pubkey.as_inner() != self.hw_pubkey {
@@ -150,9 +154,9 @@ where
 {
     pub async fn begin_change_pin(
         &self,
-        old_pin: String,
-        new_pin: String,
-    ) -> ChangePinResult<(Vec<u8>, WalletCertificate)> {
+        old_pin: &Pin,
+        new_pin: &Pin,
+    ) -> ChangePinResult<(KeyBytes, WalletCertificate)> {
         tracing::info!("Start change PIN transaction");
 
         tracing::info!("Ensure no PIN change is in progress");
@@ -162,7 +166,7 @@ where
 
         tracing::info!("Validating new PIN");
         // Make sure the new PIN adheres to the requirements.
-        validate_pin(&new_pin)?;
+        validate_pin(new_pin)?;
 
         let new_pin_salt = pin_key::new_pin_salt();
 
@@ -170,7 +174,7 @@ where
 
         let start_result = self
             .client
-            .start_new_pin(&old_pin, &new_pin, &new_pin_salt)
+            .start_new_pin(old_pin, new_pin, &new_pin_salt)
             .await
             .map_err(|error| {
                 let is_network_error = error.is_network_error();
@@ -256,21 +260,21 @@ where
         Ok(())
     }
 
-    async fn commit(&self, new_pin: &str) -> ChangePinResult<()> {
+    async fn commit(&self, new_pin: &Pin) -> ChangePinResult<()> {
         self.with_retries("commit", || async { self.client.commit_new_pin(new_pin).await })
             .await?;
         self.storage.clear_change_pin_state().await?;
         Ok(())
     }
 
-    async fn rollback(&self, old_pin: &str) -> ChangePinResult<()> {
+    async fn rollback(&self, old_pin: &Pin) -> ChangePinResult<()> {
         self.with_retries("rollback", || async { self.client.rollback_new_pin(old_pin).await })
             .await?;
         self.storage.clear_change_pin_state().await?;
         Ok(())
     }
 
-    pub async fn finish_change_pin(&self, pin: &str) -> ChangePinResult<()> {
+    pub async fn finish_change_pin(&self, pin: &Pin) -> ChangePinResult<()> {
         tracing::info!("Continue change PIN transaction");
 
         match self.storage.get_change_pin_state().await? {
@@ -310,17 +314,19 @@ pub mod mock {
 
 #[cfg(test)]
 mod test {
-    use assert_matches::assert_matches;
+    use std::assert_matches;
+    use std::time::Duration;
+
     use chrono::Utc;
+    use jwt::KeyWithKid;
+    use jwt::SignedJwt;
     use mockall::predicate::eq;
     use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
-
-    use jwt::SignedJwt;
+    use p256::elliptic_curve::Generate;
+    use wallet_account::RevocationCode;
     use wallet_account::messages::registration::WalletCertificateClaims;
 
     use super::*;
-
     use crate::errors::InstructionError;
     use crate::pin::change::ChangePinError;
     use crate::pin::change::MockChangePinClient;
@@ -330,16 +336,24 @@ mod test {
 
     const CHANGE_PIN_RETRIES: u8 = 2;
 
-    async fn create_wallet_certificate() -> (RegistrationData, VerifyingKey, VerifyingKey) {
-        let certificate_signing_key = SigningKey::random(&mut OsRng);
-        let hw_privkey = SigningKey::random(&mut OsRng);
-        let certificate_public_key = *certificate_signing_key.verifying_key();
+    async fn create_registration_data() -> (RegistrationData, HashMap<Kid, CertificatePublicKey>, VerifyingKey) {
+        let certificate_signing_key = SigningKey::generate();
+        let hw_privkey = SigningKey::generate();
+        let certificate_public_keys = HashMap::from([(
+            certificate_signing_key.kid().try_into().unwrap(),
+            CertificatePublicKey {
+                key: (*certificate_signing_key.verifying_key()).into(),
+                used_from: Utc::now().into(),
+            },
+        )]);
+
         let hw_pubkey = *hw_privkey.verifying_key();
 
         let attested_key_identifier = crypto::utils::random_string(16);
-        let pin_salt = crypto::utils::random_bytes(32);
+        let pin_salt = crypto::utils::random_bytes(32).into();
         let wallet_id = crypto::utils::random_string(32);
 
+        let iat = Utc::now();
         let certificate_claims = WalletCertificateClaims {
             wallet_id: wallet_id.clone(),
             hw_pubkey: hw_pubkey.into(),
@@ -347,27 +361,31 @@ mod test {
             pin_pubkey_hash: crypto::utils::random_bytes(32),
             version: 0,
             iss: "pin_change_unit_test".to_string(),
-            iat: Utc::now(),
+            iat,
+            exp: iat + Duration::from_secs(3600),
         };
 
-        let wallet_certificate = SignedJwt::sign_with_sub(certificate_claims, &certificate_signing_key)
+        let wallet_certificate = SignedJwt::sign_with_sub_and_kid(certificate_claims, &certificate_signing_key)
             .await
             .unwrap()
             .into();
+
+        let revocation_code = RevocationCode::new_random();
 
         let registration_data = RegistrationData {
             attested_key_identifier,
             pin_salt,
             wallet_id,
             wallet_certificate,
+            revocation_code,
         };
 
-        (registration_data, certificate_public_key, hw_pubkey)
+        (registration_data, certificate_public_keys, hw_pubkey)
     }
 
     #[tokio::test]
     async fn begin_change_pin_success() {
-        let (registration_data, certificate_public_key, hw_pubkey) = create_wallet_certificate().await;
+        let (registration_data, certificate_public_keys, hw_pubkey) = create_registration_data().await;
         let returned_certificate = registration_data.wallet_certificate.clone();
 
         let mut change_pin_client = MockChangePinClient::new();
@@ -393,22 +411,22 @@ mod test {
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &certificate_public_key,
+            &certificate_public_keys,
             &hw_pubkey,
         );
 
         let (new_pin_salt, new_wallet_certificate) = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await
             .expect("begin changing PIN should succeed");
 
-        assert!(!new_pin_salt.is_empty());
+        assert!(!new_pin_salt.as_ref().is_empty());
         assert_eq!(new_wallet_certificate, registration_data.wallet_certificate);
     }
 
     #[tokio::test]
     async fn begin_change_pin_network_error() {
-        let (registration_data, certificate_public_key, hw_pubkey) = create_wallet_certificate().await;
+        let (registration_data, certificate_public_keys, hw_pubkey) = create_registration_data().await;
 
         let mut change_pin_client = MockChangePinClient::new();
         // return a network error
@@ -434,12 +452,12 @@ mod test {
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &certificate_public_key,
+            &certificate_public_keys,
             &hw_pubkey,
         );
 
         let actual = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await;
 
         assert_matches!(
@@ -452,7 +470,7 @@ mod test {
 
     #[tokio::test]
     async fn begin_change_pin_instruction_error() {
-        let (registration_data, certificate_public_key, hw_pubkey) = create_wallet_certificate().await;
+        let (registration_data, certificate_public_keys, hw_pubkey) = create_registration_data().await;
 
         let mut change_pin_client = MockChangePinClient::new();
         change_pin_client
@@ -477,12 +495,12 @@ mod test {
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &certificate_public_key,
+            &certificate_public_keys,
             &hw_pubkey,
         );
 
         let actual = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await;
 
         assert_matches!(
@@ -493,7 +511,7 @@ mod test {
 
     #[tokio::test]
     async fn begin_change_pin_error_already_in_progress() {
-        let (registration_data, certificate_public_key, hw_pubkey) = create_wallet_certificate().await;
+        let (registration_data, certificate_public_keys, hw_pubkey) = create_registration_data().await;
 
         let change_pin_client = MockChangePinClient::new();
 
@@ -507,12 +525,12 @@ mod test {
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &certificate_public_key,
+            &certificate_public_keys,
             &hw_pubkey,
         );
 
         let actual = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await;
 
         assert_matches!(actual, Err(ChangePinError::ChangePinAlreadyInProgress));
@@ -522,10 +540,10 @@ mod test {
         MockChangePinClient,
         MockChangePinStorage,
         RegistrationData,
-        VerifyingKey,
+        HashMap<Kid, CertificatePublicKey>,
         VerifyingKey,
     ) {
-        let (registration_data, certificate_public_key, hw_pubkey) = create_wallet_certificate().await;
+        let (registration_data, certificate_public_keys, hw_pubkey) = create_registration_data().await;
         let returned_certificate = registration_data.wallet_certificate.clone();
 
         let mut change_pin_client = MockChangePinClient::new();
@@ -551,7 +569,7 @@ mod test {
             change_pin_client,
             change_pin_storage,
             registration_data,
-            certificate_public_key,
+            certificate_public_keys,
             hw_pubkey,
         )
     }
@@ -560,19 +578,26 @@ mod test {
     async fn begin_change_pin_certificate_validation_error() {
         let (change_pin_client, change_pin_storage, registration_data, _, hw_pubkey) =
             setup_change_pin_certificate_sanity_check_test().await;
-        let other_certificate_public_key = *SigningKey::random(&mut OsRng).verifying_key();
+        let other_key = SigningKey::generate();
+        let other_certificate_public_keys = HashMap::from([(
+            other_key.kid().try_into().unwrap(), // same kid, different key
+            CertificatePublicKey {
+                key: (*other_key.verifying_key()).into(),
+                used_from: Utc::now().into(),
+            },
+        )]);
 
         let change_pin_session = BeginChangePinOperation::new(
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &other_certificate_public_key,
+            &other_certificate_public_keys,
             &hw_pubkey,
         );
 
         // Validation with a different certificate public key should fail.
         let error = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await
             .expect_err("begin changing PIN should fail");
 
@@ -581,21 +606,21 @@ mod test {
 
     #[tokio::test]
     async fn begin_change_pin_public_key_mismatch_error() {
-        let (change_pin_client, change_pin_storage, registration_data, certificate_public_key, _) =
+        let (change_pin_client, change_pin_storage, registration_data, certificate_public_keys, _) =
             setup_change_pin_certificate_sanity_check_test().await;
-        let other_hw_pubkey = *SigningKey::random(&mut OsRng).verifying_key();
+        let other_hw_pubkey = *SigningKey::generate().verifying_key();
 
         let change_pin_session = BeginChangePinOperation::new(
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &certificate_public_key,
+            &certificate_public_keys,
             &other_hw_pubkey,
         );
 
         // Validation with a different hardware public key should fail.
         let error = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await
             .expect_err("begin changing PIN should fail");
 
@@ -604,7 +629,7 @@ mod test {
 
     #[tokio::test]
     async fn begin_change_pin_wallet_id_mismatch_error() {
-        let (change_pin_client, change_pin_storage, registration_data, certificate_public_key, hw_pubkey) =
+        let (change_pin_client, change_pin_storage, registration_data, certificate_public_keys, hw_pubkey) =
             setup_change_pin_certificate_sanity_check_test().await;
 
         let registration_data = RegistrationData {
@@ -616,13 +641,13 @@ mod test {
             &change_pin_client,
             &change_pin_storage,
             &registration_data,
-            &certificate_public_key,
+            &certificate_public_keys,
             &hw_pubkey,
         );
 
         // Validation with a different wallet ID should fail.
         let error = change_pin_session
-            .begin_change_pin("000111".to_string(), "123789".to_string())
+            .begin_change_pin(&"000111".into(), &"123789".into())
             .await
             .expect_err("begin changing PIN should fail");
 
@@ -647,7 +672,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Ok(()));
     }
@@ -669,7 +694,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(
             actual,
@@ -703,7 +728,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Ok(()));
     }
@@ -725,7 +750,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(
             actual,
@@ -754,7 +779,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Ok(()));
     }
@@ -776,7 +801,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(
             actual,
@@ -813,7 +838,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Ok(()));
     }
@@ -835,7 +860,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(
             actual,
@@ -864,7 +889,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Ok(()));
     }
@@ -886,7 +911,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(
             actual,
@@ -923,7 +948,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Ok(()));
     }
@@ -945,7 +970,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(
             actual,
@@ -966,7 +991,7 @@ mod test {
         let change_pin_session =
             FinishChangePinOperation::new(&change_pin_client, &change_pin_storage, CHANGE_PIN_RETRIES);
 
-        let actual = change_pin_session.finish_change_pin("123789").await;
+        let actual = change_pin_session.finish_change_pin(&"123789".into()).await;
 
         assert_matches!(actual, Err(ChangePinError::NoChangePinInProgress));
     }

@@ -7,7 +7,6 @@
 //! See the encoder [`SdObjectEncoder`] on how to create selectively disclosable claims.
 use indexmap::IndexMap;
 use itertools::Itertools;
-
 use utils::vec_at_least::VecAtLeastN;
 
 use crate::claims::ArrayClaim;
@@ -36,7 +35,7 @@ impl SdObjectDecoder {
 
         // All disclosures should have been resolved
         if !disclosures.is_empty() {
-            return Err(DecoderError::UnreferencedDisclosures(disclosures.into_keys().collect()))?;
+            return Err(DecoderError::UnreferencedDisclosures(disclosures.into_keys().collect()));
         }
 
         // Construct a new SdJwtClaims with the decoded claims and without "_sd_alg" claim
@@ -194,7 +193,6 @@ mod test {
     fn sd_alg() {
         let object = json!({
             "vct": "com.example.pid",
-            "iss": "https://issuer.url/",
             "iat": 1683000000,
             "id": "did:value",
             "claim1": [

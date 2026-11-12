@@ -13,7 +13,7 @@
 //!     - `_sd_alg`: the hash algorithm identifier (defaults to sha-256 if absent)
 //!     - `cnf`: the holder binding
 //!     - `vct`: the attestation type
-//!     - metadata (`iss`, `iat`, `exp`/`nbf`, etc.)
+//!     - metadata (`iat`, `exp`/`nbf`, etc.)
 //!     - `claims`: the selectively disclosable claim tree represented by `ClaimValue` and `ObjectClaims`.
 //!   - The hash algorithm is selected via `SdAlg`; implementations live behind the [`hasher::Hasher`] trait. Currently,
 //!     only `Sha256` is implemented via `Sha256Hasher`.
@@ -65,20 +65,26 @@
 //! ```
 //! # use attestation_types::claim_path::ClaimPath;
 //! # use chrono::Utc;
+//! # use crypto::keys::PublicKeyRef;
 //! # use crypto::server_keys::generate::Ca;
+//! # use crypto::trust_anchor::TrustAnchors;
 //! # use jwt::confirmation::ConfirmationClaim;
 //! # use jwt::headers::HeaderWithX5c;
-//! # use jwt::jwk::jwk_from_p256;
-//! # use p256::ecdsa::{SigningKey, VerifyingKey};
-//! # use rand::rngs::OsRng;
-//! # use rustls_pki_types::TrustAnchor;
+//! # use jwt::nonce::Nonce;
+//! # use jwt::jwk::jwk_from_public_key;
+//! # use p256::ecdsa::SigningKey;
+//! # use p256::ecdsa::VerifyingKey;
+//! # use p256::elliptic_curve::Generate;
+//! # use crypto::trust_anchor::BorrowingTrustAnchor;
 //! # use sd_jwt::builder::SdJwtBuilder;
 //! # use sd_jwt::claims::ClaimName;
 //! # use sd_jwt::claims::ClaimValue;
 //! # use sd_jwt::disclosure::Disclosure;
 //! # use sd_jwt::key_binding_jwt::KbVerificationOptions;
 //! # use sd_jwt::key_binding_jwt::KeyBindingJwtBuilder;
-//! # use sd_jwt::sd_jwt::{SdJwtVcClaims, VerifiedSdJwt};
+//! # use sd_jwt::sd_jwt::SdJwtVcClaims;
+//! # use sd_jwt::sd_jwt::VerifiedSdJwt;
+//! # use std::sync::Arc;
 //! # use std::time::Duration;
 //! # use token_status_list::verification::client::mock::StatusListClientStub;
 //! # use token_status_list::verification::verifier::RevocationVerifier;
@@ -93,17 +99,15 @@
 //! let issuer_keypair = ca.generate_issuer_mock()?;
 //!
 //! // 1) Issuer constructs SD-JWT VC claims, including the holder's public key.
-//! let holder_privkey = SigningKey::random(&mut OsRng);
+//! let holder_privkey = SigningKey::generate();
 //! let claims = SdJwtVcClaims {
 //!     _sd_alg: None,
-//!     cnf: ConfirmationClaim::Jwk(jwk_from_p256(&holder_privkey.verifying_key())?),
+//!     cnf: ConfirmationClaim::try_from_public_key(&PublicKeyRef::from(holder_privkey.verifying_key()))?,
 //!     vct: "com:example:vct".into(),
 //!     vct_integrity: None,
-//!     iss: "https://issuer.example.com".parse()?,
 //!     iat: DateTimeSeconds::from(Utc::now()),
 //!     exp: None,
 //!     nbf: None,
-//!     attestation_qualification: None,
 //!     status: None,
 //!     claims: serde_json::from_value(serde_json::json!({
 //!         "name": "alice"
@@ -112,7 +116,7 @@
 //!
 //! // 2) Issuer marks fields as concealable and signs with issuer key.
 //! let signed = SdJwtBuilder::new(claims)
-//!     .make_concealable(VecNonEmpty::try_from(vec![ClaimPath::SelectByKey("name".into())])?)?
+//!     .make_concealable(vec_nonempty![ClaimPath::SelectByKey("name".into())])?
 //!     // optionally add decoys with `add_decoys`
 //!     .finish(&issuer_keypair)
 //!     .await
@@ -122,7 +126,7 @@
 //! let unverified = signed.into_unverified();
 //!
 //! // 4) Holder parses and verifies SD-JWT against trust anchors.
-//! let trust_anchors = vec![ca.to_trust_anchor()];
+//! let trust_anchors = ca.to_trust_anchors();
 //! let verified = unverified.into_verified_against_trust_anchors(
 //!     &trust_anchors,
 //!     &TimeGenerator::default()
@@ -133,7 +137,7 @@
 //!     .into_presentation_builder()
 //!     .disclose(&vec_nonempty![ClaimPath::SelectByKey("name".into())])?
 //!     .finish();
-//! let kb = KeyBindingJwtBuilder::new("https://verifier.example.com".into(), "nonce-123".into());
+//! let kb = KeyBindingJwtBuilder::new("https://verifier.example.com".into(), Nonce::from("nonce-123".to_string()));
 //! let signed_presentation = presentation.sign(kb, &holder_privkey, &TimeGenerator::default()).await?;
 //!
 //! // 6) Verifier verifies the presentation (SD-JWT via trust anchors + KB-JWT via cnf JWK) and decodes claims.
@@ -141,12 +145,12 @@
 //!     &trust_anchors,
 //!     &KbVerificationOptions {
 //!         expected_aud: "https://verifier.example.com",
-//!         expected_nonce: "nonce-123",
+//!         expected_nonce: &Nonce::from("nonce-123".to_string()),
 //!         iat_leeway: Duration::ZERO,
 //!         iat_acceptance_window: Duration::from_secs(300),
 //!     },
 //!     &TimeGenerator::default(),
-//!     &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock()?)),
+//!     &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(ca.generate_issuer_status_list_mock()?))),
 //! ).await?;
 //! let disclosed = verified_presentation.sd_jwt().decoded_claims()?;
 //! assert_eq!(disclosed.claims.get(&ClaimName::try_from("name").unwrap()), Some(&ClaimValue::String("alice".to_owned())));
@@ -172,15 +176,15 @@ pub mod test;
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashMap;
-
-    use assert_matches::assert_matches;
-    use rstest::rstest;
-    use serde_json::json;
+    use std::collections::HashSet;
 
     use attestation_types::claim_path::ClaimPath;
     use crypto::server_keys::generate::Ca;
+    use rstest::rstest;
     use sd_jwt_vc_metadata::ClaimSelectiveDisclosureMetadata;
+    use serde_json::json;
     use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
 
@@ -192,7 +196,6 @@ mod tests {
     fn test_object() -> SdJwtVcClaims {
         let input_object = json!({
             "vct": "com:example:1",
-            "iss": "https://issuer.example.com/",
             "iat": 1683000000,
             "cnf": {
                 "jwk": {
@@ -335,6 +338,30 @@ mod tests {
             .unwrap_err();
 
         verify_expected_error(error);
+    }
+
+    #[rstest]
+    #[case(all_claims(), vec![])]
+    #[case(selected_claims(), vec![vec_nonempty![ClaimPath::SelectByKey("root_array".to_string())], vec_nonempty![ClaimPath::SelectByKey("root_value".to_string())]])]
+    fn test_non_selectively_disclosable_claims(
+        #[case] concealed_claims: Vec<VecNonEmpty<ClaimPath>>,
+        #[case] expected: Vec<VecNonEmpty<ClaimPath>>,
+    ) {
+        let issuer_ca = Ca::generate_issuer_mock_ca().unwrap();
+        let issuer_keypair = issuer_ca.generate_issuer_mock().unwrap();
+
+        let input = test_object();
+
+        // conceal claims, and encode as an SD-JWT
+        let sd_jwt = conceal_and_sign(&issuer_keypair, input, concealed_claims);
+        let verified_sd_jwt = sd_jwt.into_verified();
+
+        let result = verified_sd_jwt.non_selectively_disclosable_claims().unwrap();
+
+        assert_eq!(
+            result.into_iter().collect::<HashSet<_>>(),
+            expected.into_iter().collect::<HashSet<_>>()
+        );
     }
 
     fn all_claims() -> Vec<VecNonEmpty<ClaimPath>> {

@@ -1,0 +1,42 @@
+[package]
+name = "jwe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+
+[[test]]
+name = "encrypt_decrypt"
+path = "tests/encrypt_decrypt.rs"
+
+[features]
+rsa = ["dep:rsa"]
+
+[dependencies]
+derive_more = { workspace = true, features = ["as_ref", "constructor", "debug", "display", "from", "from_str", "into"] }
+p256 = { workspace = true, features = ["pem"] }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+strum = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+itertools.workspace = true
+josekit.workspace = true
+jwk-simple.workspace = true
+
+rsa = { workspace = true, optional = true, features = ["encoding"] }
+
+[target.'cfg(any(target_env = "musl", target_os = "android", target_os = "ios"))'.dependencies]
+# When compiling for "musl", Android or iOS, make sure that the "vendored" feature of "josekit" is enabled, which in
+# turn enables the "vendored" feature on "openssl-sys".
+# This compiles and statically links OpenSSL, so that a dynamic library does not need to be present on the system.
+josekit = { workspace = true, features = ["vendored"] }
+
+[dev-dependencies]
+rstest.workspace = true

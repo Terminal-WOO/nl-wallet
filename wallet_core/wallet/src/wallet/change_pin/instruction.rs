@@ -1,4 +1,5 @@
 use crypto::keys::EcdsaKey;
+use crypto::utils::KeyBytes;
 use platform_support::attested_key::AppleAttestedKey;
 use platform_support::attested_key::GoogleAttestedKey;
 use wallet_account::messages::instructions::ChangePinCommit;
@@ -14,6 +15,7 @@ use crate::instruction::InstructionClientFactory;
 use crate::instruction::InstructionError;
 use crate::pin::change::ChangePinClient;
 use crate::pin::change::ChangePinClientError;
+use crate::pin::key::Pin;
 use crate::pin::key::PinKey;
 use crate::storage::Storage;
 
@@ -26,8 +28,10 @@ impl ChangePinClientError for InstructionError {
             Self::Blocked => false,
             Self::InstructionValidation => false,
             Self::Signing(_) => false,
+            Self::PinKey(_) => false,
             Self::InstructionResultValidation(_) => false,
             Self::StoreInstructionSequenceNumber(_) => false,
+            Self::AccountRevoked(..) => false,
         }
     }
 }
@@ -38,8 +42,6 @@ impl ChangePinClientError for AccountProviderError {
             Self::Response(error) => error.is_network_error(),
             Self::Networking(_) => true,
             Self::BaseUrl(_) => false,
-            Self::PayloadSerialization(_) => false,
-            Self::PayloadCompression(_) => false,
         }
     }
 }
@@ -66,28 +68,24 @@ where
 
     async fn start_new_pin(
         &self,
-        old_pin: &str,
-        new_pin: &str,
-        new_pin_salt: &[u8],
+        old_pin: &Pin,
+        new_pin: &Pin,
+        new_pin_salt: &KeyBytes,
     ) -> Result<WalletCertificate, Self::Error> {
-        let new_pin_key = PinKey {
-            pin: new_pin,
-            salt: new_pin_salt,
-        };
-
-        let client: InstructionClient<S, AK, GK, A> = self.create(old_pin.to_string());
+        let client: InstructionClient<S, AK, GK, A> = self.create(old_pin.clone());
 
         client
             .construct_and_send(|challenge| async move {
+                let new_pin_key = PinKey {
+                    pin: new_pin,
+                    salt: new_pin_salt,
+                };
                 let new_pin_key_pop = new_pin_key
                     .try_sign(&challenge)
                     .await
                     .map_err(|e| InstructionError::Signing(wallet_account::error::EncodeError::Signing(e.into())))?;
                 let instruction = ChangePinStart {
-                    pin_pubkey: new_pin_key
-                        .verifying_key()
-                        .map_err(|e| InstructionError::Signing(wallet_account::error::EncodeError::Signing(e.into())))?
-                        .into(),
+                    pin_pubkey: new_pin_key.verifying_key().map_err(InstructionError::PinKey)?.into(),
                     pop_pin_pubkey: new_pin_key_pop.into(),
                 };
                 Ok(instruction)
@@ -95,13 +93,13 @@ where
             .await
     }
 
-    async fn commit_new_pin(&self, new_pin: &str) -> Result<(), Self::Error> {
-        let client: InstructionClient<S, AK, GK, A> = self.create(new_pin.to_string());
+    async fn commit_new_pin(&self, new_pin: &Pin) -> Result<(), Self::Error> {
+        let client: InstructionClient<S, AK, GK, A> = self.create(new_pin.clone());
         client.send(ChangePinCommit {}).await
     }
 
-    async fn rollback_new_pin(&self, old_pin: &str) -> Result<(), Self::Error> {
-        let client: InstructionClient<S, AK, GK, A> = self.create(old_pin.to_string());
+    async fn rollback_new_pin(&self, old_pin: &Pin) -> Result<(), Self::Error> {
+        let client: InstructionClient<S, AK, GK, A> = self.create(old_pin.clone());
         client.send(ChangePinRollback {}).await
     }
 }

@@ -10,7 +10,7 @@ member can do a release, and knows what steps and which roles are involved.
   documentation we can refer to (config file changes, schema changes, etc)
 - The definitions of done of any merged feature always includes any relevant
   unit-, integration and/or end-to-end tests (i.e., features are tested)
-- You have `cargo-edit` and `git-filter-repo` installed
+- You have `cargo-edit` installed
 
 ## What constitutes a release?
 
@@ -26,7 +26,22 @@ a release themselves.
 
 This section of the guide documents all the steps we do when we do a release.
 
-### Step 1: Make sure the release on Jira is green and complete
+### Step 1: Freeze git main branch
+
+To avoid someone accidentally or otherwise sniping in another change, you can
+temporarily "freeze" the main branch. To do this in GitLab, you can follow these
+steps:
+
+1. Go to the project page, click `Settings`, go to `Repository`;
+2. Click `Expand` on `Branch rules` and see the `main` branch there;
+3. Set `Allowed to merge` to specifically **your** user account;
+
+After doing the above, no one except you can merge to the `main branch`.
+
+Don't forget to undo the above when you're done (at least after you've completed
+steps 6 and 7).
+
+### Step 2: Make sure the release on Jira is green and complete
 
 We use [Jira Releases][2] (also sort-of interchangably called "versions") to
 keep track of things we want to have in a release and administrate for which
@@ -44,55 +59,61 @@ relevant folks with regards to status and discuss with the product owner. When
 an issue is still far from done but important for this release, it effectively
 blocks the release - you need to wait until the issue is done. Alternatively,
 you and/or the product owner might decide that the issue can be moved to the
-next release.
+next release. In this open subtasks under the `In Progress` issues can be moved
+to the backlog and the `In Progress` issue can be moved to done. For certain
+issues an exception can be made; these issues will be partly released and thus
+will get multiple fix versions in the future.
 
-When the release is "green" (i.e., all relevant issues are in the `Done` state)
-you know that the relevant features and fixes have been merged in the `main`
-branch, and you can create a release tag (which we do later on in this guide).
-
-The nightly_git_jira_check job automatically keeps Jira issues up-to-date with
+The `nightly-git-jira-check` job automatically keeps Jira issues up-to-date with
 GitLab MRs by setting the correct fixVersion based on merged branches. So by the
 time you're prepping the release, Jira should already reflect the correct state,
-but it is advised to verify the job log of nightly_git_jira_check. This job also
-checks and logs other inconsistencies:
+but it is advised to verify the job log of `nightly-git-jira-check`. This job
+also checks and logs other inconsistencies:
 
 - Issues with the wrong version
 - Issues with multiple fixVersions
 - MRs with source branches that do not contain an existing Jira item
 
 In the latter case this cannot be synced/corrected automatically. In job
-'verify_release_check', which runs in the release tag pipeline, an artifact is
-created in which all MRs that are misisng a Jira key are logged. Add this file
+`verify-release-check`, which runs manual in the main pipeline, an artifact is
+created in which all MRs that are missing a Jira key are logged. Add this file
 to the release ticket in Jira or a separate ticket belonging to the release to
 ensure a quick way to determinate what has been released.
 
-### Step 2: Make sure Figma links are up-to-date in README.md
+### Step 3: Make sure Figma links are up-to-date in README.md
 
 We have links to Figma in our `README.md` file. We always update these before we
 tag the release. Obtain the up-to-date links from the UX team, create an MR and
 update the README.
 
-### Step 3: Confirm appropiate tests and reports have been done for this release
+### Step 4: Confirm appropiate tests and reports have been done for this release
 
 We do most testing in an automated fashion using our CI/CD pipeline. There are
 however still a few things we confirm. Most notably:
 
 - Stable main pipeline (CI/CD pipeline for main is green)
-- Automated nightly E2E testsuite succesful
+- Automated nightly E2E testsuite successful
 - Manual E2E testsuite executed and green (there is a metric in our quality time
   instance that our software quality engineer uses for this, you can ask him for
   the link)
 - OSV scanner ran and results accepted (see `osv-scanner` job in pipeline)
 - ZAP scanner ran and results accepted (see ZAP in Quality Time)
+- Trivy scan ran and results accepted (See Check `trivy-scan` job in
+  `Trigger vulnerability scanning` pipeline)
+- Dependency check ran and results accepted (see `dependency-check` job in
+  pipeline)
+- SBOM uploaded to Dependency-track and results accepted (see
+  `upload-sbom-to-dependency-track` job in pipeline)
 - No blocker or critical Sonar findings (you can check our Sonar instance for
   these findings, ask around for the link if you don't have it)
+- A11y scan is ran and evaluated and actual a11y issues are
+  reported Jira as bugs.
+- Nightly performance test pipeline ran and results accepted
 
-The manual E2E tests are usually executed by the test automation engineer. We
-are working on getting automated ZAP tests as part of the pipeline that will
-block on serious issues, and warn on lower priority ones.
+The manual E2E tests are usually executed by the test automation engineer.
 
 The confirmation of the acceptability of the tests and any required reports is
-done by our software quality engineer. He will e-mail our shared e-mail account,
+done by our software quality manager. He will e-mail our shared e-mail account,
 the software delivery manager and the product owner with their approval and/or
 any remarks or findings.
 
@@ -100,7 +121,7 @@ If there are any findings which can't be accepted or worked around, they will
 probably block the release and need to be addressed or otherwise accepted before
 further release-steps can occur.
 
-### Step 4: Release approval
+### Step 5: Release approval
 
 The release in Jira is green, manual and automated testing is done and the other
 things we confirm in the previous step are all ok or accepted. The product owner
@@ -117,22 +138,6 @@ If for some reason the release is not approved, then we as a team need to
 address any issues and concerns raised by the PO and/or SDM before further
 release-steps can occur.
 
-### Step 5: Freeze git main branch
-
-To avoid someone accidentally or otherwise sniping in another change, you can
-temporarily "freeze" the main branch. To do this in GitLab, you can follow these
-steps:
-
-1. Go to the project page, click `Settings`, go to `Repository settings`;
-2. Click `Expand` on `Protected branches` and see the `main` branch there;
-3. Set `Allowed to merge` to `None`;
-4. Set `Allowed to push and merge` to specifically **your** user account;
-
-After doing the above, no one except you can merge or push to the `main branch`.
-
-Don't forget to undo the above when you're done (at least after you've completed
-steps 6 and 7).
-
 ### Step 6: Set release version and tag
 
 We are now ready to tag the release in our git repository. Before we create the
@@ -146,6 +151,8 @@ and can show you which versions we have already.
 Start a new MR and run `version.sh -s RELEASE_VERSION` (where `RELEASE_VERSION`
 is something like `v0.2.2`). Run `git status` to see what changed and verify the
 sanity of the changes (should be small and easy to comprehend).
+
+Remove the `(dev)` from the release notes header of this version.
 
 Get the MR merged and after merge, run `git tag RELEASE_VERSION` (where
 `RELEASE_VERSION` is something like `v0.2.2`). After tagging, push the tag with
@@ -161,65 +168,48 @@ This development version `v0.2.3-dev` will remain set in the component project
 files, until we are ready to release, which then leads us to repeat the cycle,
 set `v0.2.3` and tag, set the next dev version, etc.
 
+Add a new release notes file for the new development version, with the name
+`vX.Y.Z.md` and the content:
+
+```
+# vX.Y.Z (dev)
+```
+
 After you've set the development version, merge the MR. It is best if this is
 done quickly so people don't accidentally start doing work under the older
 version tags.
 
 ### Step 8: Collect build artifacts for release
 
-We currently (2024-10-22) collect 4 artifacts from our GitLab CI/CD pipeline:
+We currently (2025-12-17) collect 6 artifacts from our GitLab CI/CD pipeline:
 
 - `wallet-sbom_vX.Y.Z_generic.zip`: The software-bill-of-materials for this
   release.
 - `wallet-issuance-server_vX.Y.Z_x86_64-linux-glibc.zip`: The wallet issuance
-  server for issuers, for glibc-based Linux systems built with Debian bookworm.
+  server for issuers with migrations binary, for glibc-based Linux systems built
+  with Debian trixie.
 - `wallet-issuance-server_vX.Y.Z_x86_64-linux-musl.zip`: The wallet issuance
-  server for issuers using statically linked musl.
+  server for issuers with migrations binary using statically linked musl.
 - `wallet-verification-server_vX.Y.Z_x86_64-linux-glibc.zip`: The wallet
-  verification server for relying parties, for glibc-based Linux systems built
-  with Debian bookworm.
+  verification server for relying parties with migrations binary, for
+  glibc-based Linux systems built with Debian trixie.
 - `wallet-verification-server_vX.Y.Z_x86_64-linux-musl.zip`: The wallet
-  verification server for relying parties using statically linked musl.
+  verification server for relying parties with migrations binary using
+  statically linked musl.
 - `wallet-web_vX.Y.Z_generic.zip`: The javascript helper library for issuers and
   relying parties, to assist with integrating issuers and relying party
   applications with the wallet platform.
 
-You can collect these artifacts from our GitLab CI/CD pipeline - you need to go
-to the relevant job and click on download artifact/zip. You might need to rename
-the zip file and/or repackage in the case of `issuance_server`,
-`verification_server` and `wallet_web`.
+There is a separate job `create-release-artifacts` you can run to automatically
+assemble these artifacts from the other artifcats of our GitLab CI/CD pipeline.
+It also includes a SHA256SUMS file you can use to check the SHA256 sums
+generated by GitHub. Upload the zip files as the artifacts of the release.
 
-Currently (2024-11-07) you need to create the sha256sums manually (in the future
-we would like to adjust the pipeline that creates the binary artifacts such that
-it will create the sha256 hashes also). To create the sha256sum texts, enter the
-directory which contains the above mentioned zip files and run:
-
-```shell
-for zip in *.zip; do sha256sum $zip > $(echo $zip | sed 's|.zip$|.sha256sum.txt|g'); done
-```
-
-When you have these zip files and sha256sum texts, and you made sure they're
-named correctly, you are ready to create the release description. We will upload
-the zip files and sha256sum texts as artifacts of the release.
-
-Note on other binaries like `verification_server_migrations` and schema changes
-in general: When any of our binaries that use a database backend require schema
-changes in the database, we can provide either documentation that instruct how
-someone can effect the necessary changes, or a `verification_server_migrations`
-utility and clear instructions with regards to how-to-use. When we as a team
-decide to provide a `verification_server_migrations` binary, make sure that
-binary is included in the verification server zip files, with instructions on
-how to use (i.e., an end-user must be able to update the schema using the
-provided utility by following the additionally supplied read-me or other
-installation instructions).
-
-Note about obtaining artifacts automatically: Currently the above is manual. We
+Note about uploading artifacts automatically: Currently the above is manual. We
 have an issue on Jira which is about creating an artifact uploader. This utility
 is called `uploader.mjs` and can talk to the GitHub releases API and add binary
-artifacts and their sha256 sums to a release. The idea is that our pipeline,
-when invoked with a CI_COMMIT_TAG environment variable present (i.e., a build
-triggered by a `git push --tags` that results in new version tags being pushed)
-can invoke this utility and create or update a release with relevant binary
+artifacts to a release. The idea is that there is a job in our pipeline that can
+invoke this utility and create or update a release with relevant binary
 artifacts.
 
 ### Step 9: Create a release description
@@ -240,15 +230,16 @@ We have the following artifacts as a part of this release:
   * `wallet-sbom_vX.Y.Z_generic.zip`: The software-bill-of-materials for this
     release.
   * `wallet-issuance-server_vX.Y.Z_x86_64-linux-glibc.zip`: The wallet issuance
-    server for issuers, for glibc-based Linux systems built with Debian
-    bookworm.
+    server for issuers with migrations binary, for glibc-based Linux systems
+    built with Debian trixie.
   * `wallet-issuance-server_vX.Y.Z_x86_64-linux-musl.zip`: The wallet issuance
-    server for issuers using statically linked musl.
+    server for issuers with migrations binary using statically linked musl.
   * `wallet-verification-server_vX.Y.Z_x86_64-linux-glibc.zip`: The wallet
-    verification server for relying parties, for glibc-based Linux systems
-    built with Debian bookworm.
+    verification server for relying parties with migrations binary, for
+    glibc-based Linux systems built with Debian trixie.
   * `wallet-verification-server_vX.Y.Z_x86_64-linux-musl.zip`: The wallet
-    verification server for relying parties using statically linked musl.
+    verification server for relying parties with migrations binary using
+    statically linked musl.
   * `wallet-web_vX.Y.Z_generic.zip`: The javascript helper library for issuers
     and relying parties, to assist with integrating issuers and relying party
     applications with the wallet platform.
@@ -274,7 +265,7 @@ Note on `OPTIONAL_RELEASE_STORY`: You can include a paragraph or two here which
 details what is special about this release, highlight some features or good to
 knows, like config-file-format changes, schema changes, etc.
 
-Note about `CHANGE`: Ensure that this file exists with the proper filename.
+Note about `Changes`: Ensure that this file exists with the proper filename.
 
 After you've created the above release description, save it somewhere so we can
 use it in the next step where we're going to create the actual GitHub release.
@@ -292,7 +283,7 @@ release yet.
    for (normally the latest one for which you did all the previous steps);
 3. As title, write: `Wallet X.Y.Z`, where `X.Y.Z` is the version number you're
    releasing (i.e., should match tag without the `v` prefix);
-4. Add the previously collected/created zip files and sha256 text files;
+4. Add the previously collected/created zip files;
 5. Insert the previously created release description markdown in the body text
    of this release;
 6. Enable the _Set as a pre-release_ flag;
@@ -313,7 +304,54 @@ backend. When the flag is removed (and so becomes a considered-stable release),
 don't forget to remove the `CONDITIONAL_PRE_RELEASE_WARNING` paragraph from the
 release description.
 
+## Release Checklists
+
+### Pre-Approval Checklist (Steps 1-4)
+
+The checklist below can be used to verify everything is in place before release
+approval can be requested by the software quality engineer. Alternatively it can
+be used to explain possible exceptions from the different aspects and steps.
+
+| Aspect/Step                                                  | Ok/Nok | Explain                                                                                          |
+| ------------------------------------------------------------ | ------ | ------------------------------------------------------------------------------------------------ |
+| Jira release is green - all issues in Done state             |        | Verify progress bar on Jira releases page, check all issues are Done except release-related ones |
+| `nightly-git-jira-check` job log verified                    |        | Check job log for inconsistencies: wrong versions, multiple fixVersions, missing Jira keys       |
+| `verify-release-check` artifact reviewed and added to Jira   |        | Artifact with MRs missing Jira keys added to release ticket                                      |
+| Figma links updated in README.md                             |        | Obtain up-to-date links from UX team, create and merge MR                                        |
+| Main pipeline is stable and green                            |        | Verify CI/CD pipeline for main branch is green                                                   |
+| Automated nightly E2E testsuite successful                   |        | Check nightly E2E test results are green                                                         |
+| Manual E2E testsuite executed and green                      |        | Verify with test automation engineer, check Quality Time metric                                  |
+| OSV scanner ran and results accepted                         |        | Check `osv-scanner` job in pipeline                                                              |
+| Dependency check ran and results accepted                    |        | Check `dependency-check` job in pipeline                                                         |
+| SBOM uploaded to Dependency-track and results accepted       |        | Check `upload-sbom-to-dependency-track` job in pipeline                                          |
+| Trivy scan ran and results accepted                          |        | Check `trivy-scan` job in `Trigger vulnerability scanning` pipeline                              |
+| ZAP scanner ran and results accepted                         |        | Check ZAP results in Quality Time                                                                |
+| No blocker or critical Sonar findings                        |        | Check Sonar instance for blocker/critical findings                                               |
+| A11y scan evaluated and issues reported to Jira              |        | Verify Browserstack A11y scan results, actual issues reported as bugs                            |
+| `Nightly performance test` pipeline ran and results accepted |        | Check nightly performance test pipeline results                                                  |
+
+### Final Release Verification Checklist (Steps 5-10)
+
+Use this checklist to verify all steps have been completed after release
+execution:
+
+| Aspect/Step                                 | Ok/Nok | Explain                                                                             |
+| ------------------------------------------- | ------ | ----------------------------------------------------------------------------------- |
+| Release version set and MR merged           |        | `version.sh -s vX.Y.Z` executed, MR merged successfully                             |
+| Release tag created and pushed              |        | `git tag vX.Y.Z` executed, tag pushed with `git push --tags`                        |
+| Development version set and MR merged       |        | `version.sh -s vX.Y.Z-dev` executed, MR merged quickly                              |
+| Main branch unfrozen after tagging          |        | GitLab protected branches settings reverted to original state                       |
+| All 6 build artifacts collected             |        | `create-release-artifacts` job executed, all zip files downloaded                   |
+| Release description created                 |        | All placeholders replaced: DAY, MONTH, YEAR, A.B.C, X.Y.Z, warnings, optional story |
+| Release notes file exists                   |        | `wallet_docs/release-notes/vX.Y.Z.md` file exists and is complete                   |
+| GitHub release created from correct tag     |        | Release created from vX.Y.Z tag                                                     |
+| GitHub release title correct                |        | Title format: "Wallet X.Y.Z" (without 'v' prefix)                                   |
+| All artifacts uploaded to GitHub release    |        | All 6 zip files uploaded to GitHub release                                          |
+| Release description added to GitHub release |        | Complete release description markdown inserted                                      |
+| Pre-release flag set                        |        | "Set as a pre-release" flag enabled                                                 |
+| GitHub release published                    |        | Release successfully published on GitHub                                            |
+
 ## References
 
-1. [Semantic Versioning](https://semver.org/)
-2. [Agile Versions](https://www.atlassian.com/agile/tutorials/versions/)
+[1]: https://semver.org/
+[2]: https://www.atlassian.com/agile/tutorials/versions/

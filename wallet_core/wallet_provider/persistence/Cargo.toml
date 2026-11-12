@@ -16,53 +16,80 @@ path = "tests/wallet_transfer.rs"
 required-features = ["db_test"]
 
 [[test]]
+name = "wallet_flag"
+path = "tests/wallet_flag.rs"
+required-features = ["db_test"]
+
+[[test]]
 name = "wallet_user"
 path = "tests/wallet_user.rs"
 required-features = ["db_test"]
 
 [[test]]
-name = "wallet_user_keys"
+name = "wallet_user_key"
 path = "tests/wallet_user_key.rs"
+required-features = ["db_test"]
+
+[[test]]
+name = "recovery_code"
+path = "tests/recovery_code.rs"
+required-features = ["db_test"]
+
+[[test]]
+name = "admin_portal_session"
+path = "tests/admin_portal_session.rs"
+required-features = ["db_test"]
+
+[[test]]
+name = "admin_task"
+path = "tests/admin_task.rs"
 required-features = ["db_test"]
 
 [features]
 # Include mock implementations and constructors for testing
-mock = ["dep:rand_core", "mockall", "wallet_provider_domain/mock"]
+mock = ["dep:dashmap", "dep:mockall", "dep:rand_core", "wallet_provider_domain/mock"]
 # Include and run test that depend on an external PostgreSQL database
 db_test = [
     "dep:ctor",
+    "dep:db_test",
     "dep:rand_core",
     "dep:thiserror",
     "sea-orm/debug-print",
     "tokio/macros",
+    "tokio/rt-multi-thread",
     "tracing-subscriber/ansi",
-    "tracing-subscriber/fmt",
-    "tracing-subscriber/parking_lot",
-    "tracing-subscriber/smallvec",
-    "tracing-subscriber/std",
-    "tracing-subscriber/tracing-log",
-    "wallet_provider_database_settings/test",
+    "tracing-subscriber/env-filter",
     "wallet_provider_domain/mock",
+    "test",
 ]
+# Include code used for testing
+test = ["async-dropper/simple", "dep:async-trait", "dep:android_attest", "dep:db_test", "dep:rand_core", "hsm/mock"]
 
 [dependencies]
-chrono = { workspace = true, features = ["std", "clock"] }
-derive_more = { workspace = true, features = ["from"] }
-p256 = { workspace = true, features = ["ecdsa", "pkcs8", "std"] }
+chrono = { workspace = true, features = ["now"] }
+derive_more = { workspace = true, features = ["as_ref", "from"] }
+metrics.workspace = true
+p256 = { workspace = true, features = ["pkcs8"] }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true, features = ["chrono"] }
 sea-orm = { workspace = true, features = [
     "macros",
     "runtime-tokio-rustls",
     "sqlx-postgres",
     "with-chrono",
     "with-uuid",
+    "with-json",
 ] }
-semver = { workspace = true }
-tokio = { workspace = true, features = ["parking_lot", "rt"] }
+semver.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
 
+async-dropper = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
 ctor = { workspace = true, optional = true }
+dashmap = { workspace = true, optional = true }
 mockall = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
@@ -71,11 +98,13 @@ tracing-subscriber = { workspace = true, optional = true }
 apple_app_attest.path = "../../lib/apple_app_attest"
 crypto.path = "../../lib/crypto"
 hsm.path = "../../lib/hsm"
-status_lists.path = "../../wallet_server/status_lists"
-utils.path = "../../lib/utils"
+measure.path = "../../lib/measure"
 wallet_account.path = "../wallet_account"
-wallet_provider_database_settings.path = "../database_settings"
 wallet_provider_domain.path = "../domain"
 
+android_attest = { path = "../../lib/android_attest", optional = true }
+db_test = { path = "../../lib/db_test", optional = true }
+
 [dev-dependencies]
-assert_matches.workspace = true
+rstest.workspace = true
+serde_json.workspace = true

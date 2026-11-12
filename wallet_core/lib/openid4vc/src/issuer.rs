@@ -1,73 +1,109 @@
-use std::collections::HashMap;
-use std::convert::Infallible;
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::num::NonZeroU8;
+use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
-
-use chrono::DateTime;
-use chrono::Days;
-use chrono::DurationRound;
-use chrono::Utc;
-use derive_more::AsRef;
-use derive_more::Debug;
-use derive_more::From;
-use futures::future::try_join_all;
-use indexmap::IndexMap;
-use itertools::Itertools;
-use p256::ecdsa::VerifyingKey;
-use reqwest::Method;
-use serde::Deserialize;
-use serde::Serialize;
-use ssri::Integrity;
-use tokio::task::JoinHandle;
-use tracing::info;
-use uuid::Uuid;
+use std::time::Duration;
 
 use attestation_data::attributes::AttributesError;
 use attestation_data::credential_payload::CredentialPayload;
-use attestation_data::credential_payload::CredentialPayloadError;
-use attestation_data::credential_payload::MdocCredentialPayloadError;
+use attestation_data::credential_payload::CredentialPayloadIntoSignedMdocError;
+use attestation_data::credential_payload::CredentialPayloadIntoSignedSdJwtError;
 use attestation_data::credential_payload::PreviewableCredentialPayload;
-use attestation_data::credential_payload::SdJwtCredentialPayloadError;
-use attestation_data::issuable_document::IssuableDocument;
-use attestation_types::qualification::AttestationQualification;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use attestation_types::credential_format::Format;
+use attestation_types::credential_kind::CredentialKind;
 use attestation_types::status_claim::StatusClaim;
-use crypto::EcdsaKeySend;
+use chrono::DateTime;
+use chrono::DurationRound;
+use chrono::Utc;
+use crypto::keys::EcdsaKey;
+use crypto::keys::EcdsaKeySend;
+use crypto::keys::PublicKey;
 use crypto::server_keys::KeyPair;
-use crypto::utils::random_string;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::utils::sha256;
+use derive_more::Constructor;
+use derive_more::Debug;
+use futures::future::try_join_all;
+use futures::join;
 use http_utils::urls::BaseUrl;
-use http_utils::urls::HttpsUri;
-use jwt::Algorithm;
-use jwt::EcdsaDecodingKey;
-use jwt::Validation;
+use indexmap::IndexSet;
+use itertools::Itertools;
+use jwe::algorithm::EcdhAlgorithm;
+use jwe::decryption::AllowedDecompression;
+use jwe::decryption::JweDecrypter;
+use jwe::decryption::JweEcdhSecretKey;
+use jwe::encryption::JwePublicKey;
+use jwe::error::JweJsonDecryptionError;
+use jwt::SignedJwt;
 use jwt::error::JwkConversionError;
-use jwt::error::JwtError;
-use jwt::wua::WuaDisclosure;
-use jwt::wua::WuaError;
+use jwt::error::JwtSignError;
+use jwt::headers::HeaderWithX5c;
+use jwt::nonce::Nonce;
+use oauth::dpop::Dpop;
+use oauth::dpop::DpopError;
+use oauth::dpop::DpopNonce;
+use oauth::issuer_identifier::IssuerIdentifier;
+use oauth::jose::JwsAlgorithm;
+use oauth::metadata::oauth_metadata::AuthorizationServerMetadata;
+use oauth::metadata::oauth_metadata::ClientAttestationMetadataExtension;
+use oauth::metadata::oauth_metadata::ParMetadataExtension;
+use oauth::pkce::S256PkcePair;
+use oauth::scope::Scope;
+use oauth::token::AccessToken;
+use oauth::token::AuthorizationCode;
+use p256::SecretKey;
+use reqwest::Method;
 use sd_jwt_vc_metadata::NormalizedTypeMetadata;
-use sd_jwt_vc_metadata::TypeMetadataChainError;
 use sd_jwt_vc_metadata::TypeMetadataDocuments;
+use serde::Deserialize;
+use serde::Serialize;
+use token_status_list::status_list_service::ObtainClaimError;
 use token_status_list::status_list_service::StatusListService;
+use tokio::task::AbortHandle;
+use tracing::info;
+use url::Url;
+use utils::generator::Generator;
 use utils::vec_at_least::IntoNonEmptyIterator;
 use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
-use wscd::Poa;
-use wscd::PoaVerificationError;
+use utils::vec_at_least::VecNonEmptyUnique;
+use uuid::Uuid;
+use wscd::payload::key_attestation::KeyAttestationVerificationError;
+use wscd::payload::key_attestation::KeyAttestationVerificationResult;
+use wscd::payload::wia::WIA_CLIENT_AUTH_METHOD;
+use wscd::payload::wia::WiaClaims;
+use wscd::payload::wia::WiaDisclosure;
+use wscd::payload::wia::WiaVerificationError;
 
-use crate::Format;
+use crate::authorization_details::AuthorizationDetails;
+use crate::authorization_details::CredentialId;
+use crate::cleanup::PeriodicCleanup;
+use crate::cleanup::log_cleanup_error;
 use crate::credential::CredentialRequest;
-use crate::credential::CredentialRequestProof;
-use crate::credential::CredentialRequests;
+use crate::credential::CredentialRequestIdentifier;
+use crate::credential::CredentialRequestProofs;
 use crate::credential::CredentialResponse;
-use crate::credential::CredentialResponses;
-use crate::dpop::Dpop;
-use crate::dpop::DpopError;
-use crate::metadata;
-use crate::metadata::CredentialMetadata;
-use crate::metadata::CredentialResponseEncryption;
-use crate::metadata::IssuerMetadata;
-use crate::oidc;
-use crate::server_state::CLEANUP_INTERVAL_SECONDS;
+use crate::credential::Credentials;
+use crate::credential::MdocCredential;
+use crate::credential::SdJwtCredential;
+use crate::credential_configurations::CredentialConfiguration;
+use crate::credential_configurations::CredentialConfigurationTypeMetadata;
+use crate::credential_configurations::CredentialConfigurations;
+use crate::credential_offer::CredentialOffer;
+use crate::issuable_document::IssuableDocument;
+use crate::metadata::issuer_metadata::AtLeastTwoU64;
+use crate::metadata::issuer_metadata::CredentialConfigurationId;
+use crate::metadata::issuer_metadata::IssuerEndpoints;
+use crate::metadata::issuer_metadata::IssuerMetadata;
+use crate::metadata::issuer_metadata::SignedIssuerMetadataPayload;
+use crate::metadata::oauth_metadata::IssuerAuthorizationServerMetadata;
+use crate::nonce::store::NonceStatus;
+use crate::nonce::store::NonceStore;
+use crate::nonce::store::NonceStoreError;
+use crate::preview::CredentialPreviewResponse;
 use crate::server_state::Expirable;
 use crate::server_state::HasProgress;
 use crate::server_state::Progress;
@@ -76,15 +112,12 @@ use crate::server_state::SessionState;
 use crate::server_state::SessionStore;
 use crate::server_state::SessionStoreError;
 use crate::server_state::SessionToken;
-use crate::token::AccessToken;
-use crate::token::AuthorizationCode;
 use crate::token::CredentialPreview;
-use crate::token::CredentialPreviewContent;
-use crate::token::TokenRequest;
 use crate::token::TokenRequestGrantType;
-use crate::token::TokenResponse;
-use crate::token::TokenResponseWithPreviews;
-use crate::token::TokenType;
+use crate::token::VciTokenRequest;
+use crate::token::VciTokenResponse;
+
+pub const CREDENTIAL_ENDPOINT_PATH: &str = "credential";
 
 // Errors are structured as follows in this module: the handler for a token request on the one hand, and the handlers
 // for the other endpoints on the other hand, have specific error types. (There is also a general error type included
@@ -103,10 +136,28 @@ pub enum IssuanceError {
     UnknownSession(AuthorizationCode),
 
     #[error("failed to retrieve session: {0}")]
-    SessionStore(#[from] SessionStoreError),
+    SessionStore(#[source] SessionStoreError),
 
     #[error("invalid DPoP header: {0}")]
     DpopInvalid(#[source] DpopError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum IssuableDocumentError {
+    #[error("credential type not offered in Credential Configurations: {0}")]
+    CredentialTypeNotOffered(CredentialKind),
+
+    #[error("attributes do not match metadata: {0}")]
+    AttributesError(#[source] AttributesError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreAuthorizedSessionError {
+    #[error("issuable document is not valid: {0}")]
+    IssuableDocument(#[source] IssuableDocumentError),
+
+    #[error("failed to store new session: {0}")]
+    SessionStore(#[source] SessionStoreError),
 }
 
 /// Errors that can occur during processing of the token request.
@@ -115,125 +166,200 @@ pub enum TokenRequestError {
     #[error("issuance error: {0}")]
     IssuanceError(#[from] IssuanceError),
 
-    #[error("unsupported token request type: must be of type pre-authorized_code")]
-    UnsupportedTokenRequestType,
+    #[error("session not found for the supplied code")]
+    SessionNotFound,
 
-    #[error("failed to get attributes to be issued: {0}")]
-    AttributeService(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    #[error("unexpected grant type for this session: expected {expected}, got {actual}")]
+    UnexpectedGrantType { expected: String, actual: String },
 
-    #[error("attributes do not match type metadata: {0}")]
-    AttributesError(#[from] AttributesError),
+    #[error("missing code_verifier")]
+    MissingCodeVerifier,
 
-    #[error("credential type not offered: {0}")]
-    CredentialTypeNotOffered(String),
+    #[error("PKCE verification failed")]
+    PkceVerificationFailed,
+
+    #[error("unknown \"client_id\" in Token Request: {0}")]
+    UnknownClient(String),
+
+    #[error(
+        "\"client_id\" in Token Request does not match the one provided in Authorization Request: expected \
+         {expected}, got {actual}"
+    )]
+    ClientIdMismatch { expected: String, actual: String },
+
+    #[error("error verifying WIA and WIA PoP: {0}")]
+    Wia(#[source] WiaError),
+
+    #[error("a Token Request containing authorization_details is not supported")]
+    AuthorizationDetailsUnsupported,
+
+    #[error(
+        "scope received in Token Request does not match scope requested in Authorization Request: \
+         expected {}, received: {}",
+        .expected.iter().join(" "),
+        .actual.iter().join(" ")
+    )]
+    ScopeMismatch {
+        expected: HashSet<Scope>,
+        actual: HashSet<Scope>,
+    },
+
+    #[error("use of scope values in Pre-Authorized Token Request is not supported, received: {}", .0.iter().join(" "))]
+    PreAuthorizedScopeUnsupported(HashSet<Scope>),
+
+    #[error("missing redirect_uri in Authorization Code flow")]
+    MissingRedirectUri,
+
+    #[error(
+        "redirect_uri received in Token Request does not match the one in the Authorization Request: expected \
+         {expected}, received: {actual}"
+    )]
+    RedirectUriMismatch { expected: Box<Url>, actual: Box<Url> },
+
+    #[error("credential configuration not offered: {0}")]
+    CredentialConfigNotOffered(CredentialConfigurationId),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WiaError {
+    #[error("error verifying WIA: {0}")]
+    Verification(#[source] WiaVerificationError),
+
+    #[error("no challenge present in WIA PoP")]
+    MissingChallenge,
+
+    #[error("invalid or already used challenge in WIA PoP")]
+    InvalidChallenge,
+
+    #[error("could not check challenge against storage: {0}")]
+    ChallengeStore(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 /// Errors that can occur during handling of the (batch) credential request.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialRequestError {
-    #[error("issuance error: {0}")]
-    IssuanceError(#[from] IssuanceError),
-
-    #[error("unauthorized: incorrect access token")]
-    Unauthorized,
+    #[error("{0}")]
+    IssuanceError(#[source] IssuanceError),
 
     #[error("malformed access token")]
     MalformedToken,
 
-    #[error("credential type not offered")]
-    CredentialTypeNotOffered(String),
+    #[error("unauthorized: incorrect access token")]
+    Unauthorized,
 
-    #[error("credential request ambiguous, use /batch_credential instead")]
-    UseBatchIssuance,
+    #[error("could not decrypt credential request: {0}")]
+    Decryption(#[source] JweJsonDecryptionError),
 
-    #[error("incorrect nonce")]
-    IncorrectNonce,
+    #[error("missing credential request proof")]
+    MissingCredentialRequestProof,
 
-    #[error("unsupported JWT: {0}")]
-    UnsupportedJwt(#[source] JwtError),
+    #[error("unsupported proof type(s): {}", .0.iter().join(", "))]
+    ProofTypeUnsupported(HashSet<String>),
 
-    #[error("JWK conversion error: {0}")]
-    JwkConversion(#[from] JwkConversionError),
+    #[error("too many copies of a credential were requested: {0}")]
+    TooManyCopiesRequested(NonZeroUsize),
 
-    #[error("JWT error: {0}")]
-    Jwt(#[from] JwtError),
+    #[error("attestation proof is invalid: {0}")]
+    InvalidAttestationProof(#[source] KeyAttestationVerificationError),
 
-    #[error("missing attestation type config for {0}")]
-    MissingAttestationTypeConfiguration(String),
+    #[error("nonce is not provided in credential request proof")]
+    MissingProofNonce,
 
-    #[error("failed to sign credential: {0}")]
-    CredentialSigning(mdoc::Error),
+    #[error("could not check proof nonce against nonce storage: {0}")]
+    ProofNonceStore(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 
-    #[error("mismatch between requested: {requested} and offered attestation types: {offered}")]
-    CredentialTypeMismatch { requested: Format, offered: Format },
+    #[error("invalid nonce used in credential request proof")]
+    InvalidNonce,
 
-    #[error("wrong number of credential requests")]
-    WrongNumberOfCredentialRequests,
+    #[error("requested credential identifier is not known: {0}")]
+    UnknownCredentialIdentifier(CredentialId),
 
-    #[error("missing credential request proof of possession")]
-    MissingCredentialRequestPoP,
+    #[error(
+        "use of the \"credential_configuration_id\" field in the Credential Request is not allowed, expected \
+         \"credential_identifier\" instead"
+    )]
+    CredentialConfigurationIdNotAllowed,
 
-    #[error("missing WUA")]
-    MissingWua,
+    #[error("issuer does not have credential configuration identifier configured: {0}")]
+    MissingCredentialConfiguration(CredentialConfigurationId),
 
-    #[error("missing PoA")]
-    MissingPoa,
+    #[error("could not obtain status claim, batch ID already exists in database: {0}")]
+    StatusClaimBatchIdExists(Uuid),
 
-    #[error("error verifying PoA: {0}")]
-    PoaVerification(#[from] PoaVerificationError),
-
-    #[error("error converting PreviewableCredentialPayload to CredentialPayload: {0}")]
-    PreviewConversion(#[from] CredentialPayloadError),
-
-    #[error("error converting CredentialPayload to Mdoc: {0}")]
-    MdocConversion(#[from] MdocCredentialPayloadError),
-
-    #[error("error converting CredentialPayload to SD-JWT: {0}")]
-    SdJwtConversion(#[from] SdJwtCredentialPayloadError),
-
-    #[error("error verifying WUA: {0}")]
-    Wua(#[from] WuaError),
-
-    #[error("error obtaining status claim: {0}")]
+    #[error("could not obtain status claim: {0}")]
     ObtainStatusClaim(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 
-    #[error("incorrect number of status claims for attestation_type: {0}")]
-    IncorrectNumberOfStatusClaims(String),
+    #[error("incorrect number of status claims, expected {expected}, but received {received}")]
+    IncorrectNumberOfStatusClaims {
+        expected: NonZeroUsize,
+        received: NonZeroUsize,
+    },
+
+    #[error("error converting holder VerifyingKey to JWK: {0}")]
+    JwkConversion(#[source] JwkConversionError),
+
+    #[error("error converting CredentialPayload to Mdoc: {0}")]
+    MdocConversion(#[source] CredentialPayloadIntoSignedMdocError),
+
+    #[error("error converting CredentialPayload to SD-JWT: {0}")]
+    SdJwtConversion(#[source] CredentialPayloadIntoSignedSdJwtError),
 }
 
+/// Errors that can occur during handling of the credential preview request.
+#[derive(Debug, thiserror::Error)]
+pub enum CredentialPreviewError {
+    #[error("issuance error: {0}")]
+    IssuanceError(#[from] IssuanceError),
+
+    #[error("malformed access token")]
+    MalformedToken,
+
+    #[error("unauthorized: incorrect access token")]
+    Unauthorized,
+
+    #[error("missing credential configuration with identifier: {0}")]
+    MissingCredentialConfiguration(CredentialConfigurationId),
+}
+
+/// Session keyed by a code that the wallet will exchange at `/token`. Covers both grant types:
+/// `Grant::PreAuthorizedCode` (no PKCE) and `Grant::AuthorizationCode` (PKCE-verified at `/token`).
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Created {
-    pub issuable_documents: Option<VecNonEmpty<IssuableDocument>>,
+pub struct AuthCodeIssued {
+    pub grant: Grant,
+    pub credential_ids_and_documents: VecNonEmpty<(CredentialConfigurationId, IssuableDocument)>,
+}
+
+/// Values present in the (pushed) Authorization Request that initiated the Authorization Code Flow.
+#[derive(Debug, Clone, PartialEq, Eq, Constructor, Serialize, Deserialize)]
+pub struct AuthRequestValues {
+    pub client_id: String,
+    pub redirect_uri: Url,
+    pub code_challenge: String,
+    // Note that the "scope" value has already been used to select issuable credentials and is at this point only
+    // present in the state in order to validate any "scope" that is received in the Token Request.
+    pub scope: HashSet<Scope>,
+}
+
+#[derive(Debug, Clone, strum::Display, Serialize, Deserialize)]
+pub enum Grant {
+    PreAuthorizedCode,
+    AuthorizationCode(AuthRequestValues),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WaitingForResponse {
+pub struct AccessTokenIssued {
     pub access_token: AccessToken,
-    pub c_nonce: String,
-    pub accepted_wallet_client_ids: Vec<String>,
-    pub credential_previews: Vec<CredentialPreviewState>,
-    pub dpop_public_key: VerifyingKey,
-    pub dpop_nonce: String,
+    pub prepared_credentials: VecNonEmpty<PreparedCredential>,
+    pub dpop_public_key: PublicKey,
+    pub dpop_nonce: DpopNonce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CredentialPreviewState {
-    /// The amount of copies of this attestation that the holder will receive per credential format. This is serialized
-    /// as a list of pairs in order to guarantee the order across system boundaries.
-    #[serde(with = "indexmap::map::serde_seq")]
-    pub copies_per_format: IndexMap<Format, NonZeroU8>,
+pub struct PreparedCredential {
+    pub id: Uuid,
+    pub credential_configuration_id: CredentialConfigurationId,
+    pub format: Format,
     pub credential_payload: PreviewableCredentialPayload,
-    pub batch_id: Uuid,
-}
-
-impl CredentialPreviewState {
-    fn from(value: CredentialPreview, batch_id: Uuid) -> Self {
-        Self {
-            copies_per_format: value.content.copies_per_format,
-            credential_payload: value.content.credential_payload,
-            batch_id,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -243,8 +369,8 @@ pub struct Done {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum IssuanceData {
-    Created(Created),
-    WaitingForResponse(Box<WaitingForResponse>),
+    AuthCodeIssued(Box<AuthCodeIssued>),
+    AccessTokenIssued(Box<AccessTokenIssued>),
     Done(Done),
 }
 
@@ -255,7 +381,7 @@ impl SessionDataType for IssuanceData {
 impl HasProgress for IssuanceData {
     fn progress(&self) -> Progress {
         match self {
-            Self::Created(_) | Self::WaitingForResponse(_) => Progress::Active,
+            Self::AuthCodeIssued(_) | Self::AccessTokenIssued(_) => Progress::Active,
             Self::Done(done) => Progress::Finished {
                 has_succeeded: matches!(done.session_result, SessionResult::Done),
             },
@@ -281,16 +407,16 @@ impl Expirable for IssuanceData {
 }
 
 pub trait IssuanceState {}
-impl IssuanceState for Created {}
-impl IssuanceState for WaitingForResponse {}
+impl IssuanceState for AuthCodeIssued {}
+impl IssuanceState for AccessTokenIssued {}
 impl IssuanceState for Done {}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "UPPERCASE", tag = "status")]
 pub enum SessionResult {
+    // Note that this state is currently never reached, see the comment in `Issuer::process_credential_request()`.
     Done,
     Failed { error: String },
-    Cancelled,
     Expired,
 }
 
@@ -299,197 +425,302 @@ pub struct Session<S: IssuanceState> {
     pub state: SessionState<S>,
 }
 
-/// Implementations of this trait are responsible for determine the attributes to be issued, given the session and
-/// the token request. See for example the [`BrpPidAttributeService`].
-#[trait_variant::make(Send)]
-pub trait AttributeService {
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    async fn attributes(&self, token_request: TokenRequest) -> Result<VecNonEmpty<IssuableDocument>, Self::Error>;
-
-    async fn oauth_metadata(&self, issuer_url: &BaseUrl) -> Result<oidc::Config, Self::Error>;
-}
-
-pub struct TrivialAttributeService;
-
-impl AttributeService for TrivialAttributeService {
-    type Error = Infallible;
-
-    async fn attributes(&self, _: TokenRequest) -> Result<VecNonEmpty<IssuableDocument>, Self::Error> {
-        unimplemented!()
-    }
-
-    async fn oauth_metadata(&self, issuer_url: &BaseUrl) -> Result<oidc::Config, Self::Error> {
-        // TODO (PVW-4257): we don't use the `authorize` and `jwks` endpoint here, but we need to specify them
-        // because they are mandatory in an OIDC Provider Metadata document (see
-        // <https://openid.net/specs/openid-connect-discovery-1_0.html>).
-        // However, OpenID4VCI says that this should return not an OIDC Provider Metadata document but an OAuth
-        // Authorization Metadata document instead, see <https://www.rfc-editor.org/rfc/rfc8414.html>, which to
-        // a large extent has the same fields but `authorize` and `jwks` are optional there.
-
-        Ok(oidc::Config::new(
-            issuer_url.clone(),
-            issuer_url.join("authorize"),
-            issuer_url.join("token"),
-            issuer_url.join("jwks"),
-        ))
-    }
-}
-
-/// Static attestation data shared across all instances of an attestation type. The issuer augments this with an
-/// [`IssuableDocument`] to form the attestation.
-#[derive(Debug)]
-pub struct AttestationTypeConfig<K> {
-    #[debug(skip)]
-    pub key_pair: KeyPair<K>,
-    pub valid_days: Days,
-    pub copies_per_format: IndexMap<Format, NonZeroU8>,
-    pub issuer_uri: HttpsUri,
-    pub attestation_qualification: AttestationQualification,
-    #[debug(skip)]
-    pub metadata_documents: TypeMetadataDocuments,
-    first_metadata_integrity: Integrity,
-    metadata: NormalizedTypeMetadata,
-}
-
-impl<K> AttestationTypeConfig<K> {
-    /// Create a new [`AttestationTypeConfig`] and decode and validate the type metadata documents.
-    #[expect(clippy::too_many_arguments, reason = "Constructor")]
-    pub fn try_new(
-        attestation_type: &str,
-        key_pair: KeyPair<K>,
-        valid_days: Days,
-        copies_per_format: IndexMap<Format, NonZeroU8>,
-        issuer_uri: HttpsUri,
-        attestation_qualification: AttestationQualification,
-        metadata_documents: TypeMetadataDocuments,
-    ) -> Result<Self, TypeMetadataChainError> {
-        // Calculate and cache the integrity hash for the first metadata document in the chain.
-        let first_metadata_integrity = Integrity::from(metadata_documents.as_ref().first().as_slice());
-        let (metadata, sorted_documents) = metadata_documents.into_normalized(attestation_type)?;
-
-        let config = Self {
-            key_pair,
-            valid_days,
-            copies_per_format,
-            issuer_uri,
-            attestation_qualification,
-            metadata_documents: sorted_documents.into(),
-            first_metadata_integrity,
-            metadata,
-        };
-
-        Ok(config)
-    }
-}
-
-/// Static attestation data indexed by attestation type.
-#[derive(Debug, From, AsRef)]
-pub struct AttestationTypesConfig<K>(HashMap<String, AttestationTypeConfig<K>>);
-
-pub struct Issuer<A, K, S, L> {
+pub struct Issuer<K, L, S, N> {
+    issuer_data: IssuerData<K, L>,
     sessions: Arc<S>,
-    attr_service: A,
-    issuer_data: IssuerData<K>,
-    sessions_cleanup_task: JoinHandle<()>,
-    status_list_service: L,
-    pub metadata: IssuerMetadata,
+    nonce_store: Arc<N>,
+    status_list_refresh_tasks: Vec<AbortHandle>,
 }
 
 /// Fields of the [`Issuer`] needed by the issuance functions.
-pub struct IssuerData<K> {
-    attestation_config: AttestationTypesConfig<K>,
-    wua_config: Option<WuaConfig>,
+pub struct IssuerData<K, L> {
+    credential_configs: CredentialConfigurations<K, L>,
 
-    /// URL identifying the issuer; should host ` /.well-known/openid-credential-issuer`,
-    /// and MUST be used by the wallet as `aud` in its PoP JWTs.
-    credential_issuer_identifier: BaseUrl,
+    credential_request_decrypter: JweDecrypter,
+    batch_size: NonZeroU8,
 
     /// Wallet IDs accepted by this server, MUST be used by the wallet as `iss` in its PoP JWTs.
-    accepted_wallet_client_ids: Vec<String>,
+    accepted_wallet_client_ids: HashSet<String>,
 
     /// URL prefix of the `/token`, `/credential` and `/batch_crededential` endpoints.
     server_url: BaseUrl,
+
+    metadata: IssuerMetadata,
+    metadata_keypair: KeyPair<K>,
+
+    /// The trust anchors for the Wallet Provider Trusted List. Both the signing certificate for the Wallet Instance
+    /// Attestation (WIA) and the signing certificate for Key Attestations must be verified using these anchors.
+    wp_trusted_list_anchors: TrustAnchors,
 }
 
-pub struct WuaConfig {
-    /// Public key of the WUA issuer.
-    pub wua_issuer_pubkey: EcdsaDecodingKey,
-}
+impl<K, L> IssuerData<K, L> {
+    fn get_checked_credential_config(
+        &self,
+        config_id: &CredentialConfigurationId,
+        format: Format,
+        attestation_type: &str,
+    ) -> Option<&CredentialConfiguration<K, L>> {
+        self.credential_configs
+            .get_by_configuration_id(config_id)
+            .and_then(|config| {
+                // Do a sanity check to see if the credential configuration has changed since determining its id.
+                (config.format.format() == format && config.format.attestation_type() == attestation_type)
+                    .then_some(config)
+            })
+    }
 
-impl<A, K, S, L> Drop for Issuer<A, K, S, L> {
-    fn drop(&mut self) {
-        // Stop the tasks at the next .await
-        self.sessions_cleanup_task.abort();
+    fn get_credential_config_for_prepared_credential(
+        &self,
+        credential: &PreparedCredential,
+    ) -> Option<&CredentialConfiguration<K, L>> {
+        self.get_checked_credential_config(
+            &credential.credential_configuration_id,
+            credential.format,
+            &credential.credential_payload.attestation_type,
+        )
+    }
+
+    fn accepted_wallet_client_ids_vec(&self) -> impl Iterator<Item = &String> {
+        self.accepted_wallet_client_ids.iter()
+    }
+
+    fn verify_wia(
+        &self,
+        wia_disclosure: &WiaDisclosure,
+        client_id: Option<&str>,
+    ) -> Result<(WiaClaims, Option<Nonce>), WiaVerificationError> {
+        // The RFC says we should use the Issuer Identifier of the Authorization for this (see
+        // https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-09#section-5.1-5.1.1.)
+        // In this implementation, that coincides with the Issuer Identifier of the OpenID4VCI issuer.
+        let expected_aud = self.metadata.credential_issuer.as_ref();
+
+        wia_disclosure.verify(
+            &self.wp_trusted_list_anchors,
+            expected_aud,
+            self.accepted_wallet_client_ids_vec(),
+            client_id,
+        )
     }
 }
 
-impl<A, K, S, L> Issuer<A, K, S, L>
+impl PreparedCredential {
+    /// Convert the tuple of a [`CredentialConfigurationId`] and [`IssuableDocument`] to the state needed to both serve
+    /// previews and actually issue credentials by adding the required timestamps. This will return the passed
+    /// [`CredentialConfigurationId`] as the `Err` variant if the corresponding [`CredentialConfiguration`] cannot
+    /// be found.
+    fn try_new<K, L>(
+        config_id: CredentialConfigurationId,
+        issuable_document: IssuableDocument,
+        issuer_data: &IssuerData<K, L>,
+    ) -> Result<Self, CredentialConfigurationId> {
+        let Some(credential_config) = issuer_data.get_checked_credential_config(
+            &config_id,
+            issuable_document.credential_kind.format,
+            &issuable_document.credential_kind.attestation_type,
+        ) else {
+            return Err(config_id);
+        };
+
+        // Note that we rely in the `IssuableDocument` being validated against the Credential Configuration's metadata
+        // when the session was created. Since the issuer state may be persisted in a database, it could be that the
+        // Credential Configuration has changed since then. However, we rely on the sanity check when retrieving the
+        // Credential Configuration and the fact that the metadata should never actually change.
+        //
+        // If this does occur for some reason, it is still the Wallet's responisibility to check the metadata on
+        // reception of the issued credentials.
+
+        // Truncate the current time to only include the date part, so that all issued credentials on a single
+        // day have the same `nbf` and `exp` field
+        let now = utc_now_truncated_to_days();
+        let valid_until = now.add(credential_config.valid_days);
+
+        let format = issuable_document.credential_kind.format;
+        let (id, credential_payload) = issuable_document.into_id_and_previewable_credential_payload(now, valid_until);
+
+        let credential = Self {
+            id,
+            credential_configuration_id: config_id,
+            format,
+            credential_payload,
+        };
+
+        Ok(credential)
+    }
+}
+
+impl<K, L, S, N> Drop for Issuer<K, L, S, N> {
+    fn drop(&mut self) {
+        // Stop the tasks at the next .await
+        for task in &self.status_list_refresh_tasks {
+            task.abort();
+        }
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N> {
+    pub(crate) fn credential_configs(&self) -> &CredentialConfigurations<K, L> {
+        &self.issuer_data.credential_configs
+    }
+
+    pub fn status_lists(&self) -> impl Iterator<Item = &L> {
+        self.issuer_data
+            .credential_configs
+            .configurations()
+            .map(|config| &config.status_list)
+    }
+
+    pub fn accepted_wallet_client_ids(&self) -> &HashSet<String> {
+        &self.issuer_data.accepted_wallet_client_ids
+    }
+
+    pub fn issuer_identifier(&self) -> &IssuerIdentifier {
+        &self.issuer_data.metadata.credential_issuer
+    }
+
+    pub fn metadata(&self) -> &IssuerMetadata {
+        &self.issuer_data.metadata
+    }
+
+    pub fn has_credential_preview_endpoint(&self) -> bool {
+        self.issuer_data
+            .metadata
+            .endpoints
+            .credential_preview_endpoint
+            .is_some()
+    }
+
+    pub fn type_metadata(&self, id: &CredentialConfigurationId) -> Option<TypeMetadataDocuments> {
+        self.issuer_data
+            .credential_configs
+            .get_by_configuration_id(id)
+            .and_then(|config| config.format.type_metadata())
+            .map(|metadata| metadata.documents().clone().into())
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
 where
-    A: AttributeService,
     K: EcdsaKeySend,
-    S: SessionStore<IssuanceData> + Send + Sync + 'static,
+{
+    pub async fn signed_metadata<G: Generator<DateTime<Utc>>>(
+        &self,
+        ttl: Duration,
+        time_generator: &G,
+    ) -> Result<SignedJwt<SignedIssuerMetadataPayload<'_>, HeaderWithX5c>, JwtSignError> {
+        let iat = time_generator.generate();
+        let exp = iat + ttl;
+        let payload = SignedIssuerMetadataPayload {
+            metadata: Cow::Borrowed(&self.issuer_data.metadata),
+
+            iss: None,
+            sub: Cow::Borrowed(self.issuer_identifier()),
+            iat: iat.into(),
+            exp: Some(exp.into()),
+        };
+        SignedJwt::sign_with_certificate(&payload, &self.issuer_data.metadata_keypair).await
+    }
+}
+
+fn credential_request_decrypter_and_public_key(encryption_key: SecretKey) -> (JweDecrypter, JwePublicKey) {
+    // According to OpenID4VCI, a `credential_request_encryption` JWK published in the Issuer Metadata should always
+    // contain a `kid` value. Here, we generate the `kid` for the single public key this Issuer supports by
+    // hex-encoding a hash of its public key. If its configured key changes while an issuance request in progress,
+    // this should lead to an error that the `kid` is incorrect, instead of the JWE library attempting decryption and
+    // then reporting that this failed.
+    let kid = hex::encode(sha256(&encryption_key.public_key().to_sec1_bytes()));
+
+    // Choose `ECDH-ES` as the JWE algorithm for Credential Request encryption, both to mirror OpenID4VP where this
+    // value is mandated by HAIP and because key wrapping does not provided added benefit in this scenario.
+    let secret_key = JweEcdhSecretKey::new(Some(kid), encryption_key, EcdhAlgorithm::EcdhEs);
+
+    let public_key = secret_key.to_jwe_public_key();
+    let decrypter = JweDecrypter::from_ecdh_secret_key(&secret_key);
+
+    (decrypter, public_key)
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
+where
+    S: SessionStore<IssuanceData> + Sync + 'static,
+    N: NonceStore + Sync + 'static,
     L: StatusListService,
 {
     #[expect(clippy::too_many_arguments, reason = "Constructor")]
     pub fn new(
+        issuer_identifier: IssuerIdentifier,
+        metadata_keypair: KeyPair<K>,
+        registration_certificate: RegistrationCertificateEnvelope,
+        credential_request_encryption_key: SecretKey,
+        batch_size: NonZeroU8,
+        accepted_wallet_client_ids: HashSet<String>,
+        credential_configs: CredentialConfigurations<K, L>,
+        credential_preview_endpoint: bool,
+        wp_trusted_list_anchors: TrustAnchors,
         sessions: Arc<S>,
-        attr_service: A,
-        attestation_config: AttestationTypesConfig<K>,
-        server_url: &BaseUrl,
-        wallet_client_ids: Vec<String>,
-        wua_config: Option<WuaConfig>,
-        status_list_service: L,
+        nonce_store: N,
     ) -> Self {
-        let credential_configurations_supported = attestation_config
-            .as_ref()
-            .iter()
-            .map(|(typ, attestation)| {
-                (
-                    typ.to_string(),
-                    CredentialMetadata::from_sd_jwt_vc_type_metadata(&attestation.metadata),
-                )
-            })
-            .collect();
+        let server_url = issuer_identifier.as_issuer_url().join_issuer_url("/issuance");
+        let credential_endpoint = server_url.join_issuer_url(&format!("/{CREDENTIAL_ENDPOINT_PATH}"));
+        let nonce_endpoint = server_url.join_issuer_url("/nonce");
+        let credential_preview_endpoint =
+            credential_preview_endpoint.then(|| server_url.join_issuer_url("/credential_preview"));
+        let type_metadata_base_url = server_url.join_issuer_url("/type_metadata");
 
-        let issuer_url = server_url.join_base_url("issuance/");
+        let (credential_request_decrypter, credential_request_public_key) =
+            credential_request_decrypter_and_public_key(credential_request_encryption_key);
+
+        let metadata = IssuerMetadata::new(
+            issuer_identifier,
+            IssuerEndpoints::new(credential_endpoint, nonce_endpoint, credential_preview_endpoint),
+            credential_request_public_key,
+            AtLeastTwoU64::try_new(batch_size.into()).ok(),
+            registration_certificate,
+            credential_configs.to_credential_configurations_supported(&type_metadata_base_url),
+        );
+
         let issuer_data = IssuerData {
-            attestation_config,
-            credential_issuer_identifier: issuer_url.clone(),
-            accepted_wallet_client_ids: wallet_client_ids,
-            wua_config,
-
-            // In this implementation, for now the Credential Issuer Identifier also always acts as
-            // the public server URL.
-            server_url: issuer_url.clone(),
+            credential_configs,
+            credential_request_decrypter,
+            batch_size,
+            accepted_wallet_client_ids,
+            server_url: server_url.into_inner(),
+            metadata,
+            metadata_keypair,
+            wp_trusted_list_anchors,
         };
 
+        let nonce_store = Arc::new(nonce_store);
+
+        let status_list_refresh_tasks = issuer_data
+            .credential_configs
+            .configurations()
+            .map(|config| config.status_list.start_refresh_job())
+            .collect();
+
         Self {
-            sessions: Arc::clone(&sessions),
-            attr_service,
             issuer_data,
-            status_list_service,
-            sessions_cleanup_task: sessions.start_cleanup_task(CLEANUP_INTERVAL_SECONDS),
-            metadata: IssuerMetadata {
-                issuer_config: metadata::IssuerData {
-                    credential_issuer: issuer_url.clone(),
-                    authorization_servers: None,
-                    credential_endpoint: issuer_url.join_base_url("/credential"),
-                    batch_credential_endpoint: Some(issuer_url.join_base_url("/batch_credential")),
-                    deferred_credential_endpoint: None,
-                    notification_endpoint: None,
-                    credential_response_encryption: CredentialResponseEncryption {
-                        alg_values_supported: vec![],
-                        enc_values_supported: vec![],
-                        encryption_required: false,
-                    },
-                    credential_identifiers_supported: Some(false),
-                    display: None,
-                    credential_configurations_supported,
-                },
-                protected_metadata: None,
-            },
+            sessions,
+            nonce_store,
+            status_list_refresh_tasks,
         }
+    }
+}
+
+impl<K, L, S, N> PeriodicCleanup for Issuer<K, L, S, N>
+where
+    K: Send + Sync,
+    L: Send + Sync,
+    S: SessionStore<IssuanceData> + Send + Sync,
+    N: NonceStore + Send + Sync,
+{
+    /// Removes expired sessions and proof nonces.
+    ///
+    /// Scheduled by the server via [`start_cleanup_task`](crate::cleanup::start_cleanup_task).
+    async fn cleanup(&self) {
+        let _ = join!(
+            log_cleanup_error("session", self.sessions.cleanup()),
+            log_cleanup_error("nonce", self.nonce_store.remove_expired_nonces()),
+        );
     }
 }
 
@@ -499,210 +730,349 @@ fn logged_issuance_result<T, E: std::error::Error>(result: Result<T, E>) -> Resu
         .inspect_err(|error| info!("Issuance error: {error}"))
 }
 
-impl<A, K, S, L> Issuer<A, K, S, L>
+impl<K, L, S, N> Issuer<K, L, S, N> {
+    /// Process each [`IssuableDocument`] in a collection by finding the corresponding [`CredentialConfiguration`],
+    /// validating it against that configuration's metadata and returning it along with the
+    /// [`CredentialConfigurationId`]. This is called both for Pre-Authorized sessions (by
+    /// `Isser::new_preauthorized_session()`) and Authorization Code sessions (by
+    /// `AuthorizingIssuer::complete_authorization()`).
+    pub(crate) fn validate_issuable_documents(
+        &self,
+        issuable_documents: VecNonEmpty<IssuableDocument>,
+    ) -> Result<VecNonEmpty<(CredentialConfigurationId, IssuableDocument)>, IssuableDocumentError> {
+        issuable_documents
+            .into_nonempty_iter()
+            .map(|document| {
+                let (credential_config_id, credential_config) = self
+                    .issuer_data
+                    .credential_configs
+                    .get_by_credential_kind(&document.credential_kind)
+                    .ok_or_else(|| IssuableDocumentError::CredentialTypeNotOffered(document.credential_kind.clone()))?;
+
+                document
+                    .validate_with_metadata(&credential_config.format)
+                    .map_err(IssuableDocumentError::AttributesError)?;
+
+                Ok((credential_config_id.clone(), document))
+            })
+            .collect()
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
 where
     S: SessionStore<IssuanceData>,
 {
-    pub async fn new_session(
+    /// Create and store a new Pre-Authorized session, based on a collection of [`IssuableDocument`]s and return a
+    /// [`CredentialConfiguration`] that can be presented to the wallet.
+    pub async fn new_preauthorized_session(
         &self,
-        to_issue: VecNonEmpty<IssuableDocument>,
+        issuable_documents: VecNonEmpty<IssuableDocument>,
+    ) -> Result<CredentialOffer, PreAuthorizedSessionError> {
+        let credential_ids_and_documents = self
+            .validate_issuable_documents(issuable_documents)
+            .map_err(PreAuthorizedSessionError::IssuableDocument)?;
+
+        let config_ids = credential_ids_and_documents
+            .nonempty_iter()
+            .map(|(config_id, _document)| config_id)
+            .cloned()
+            .collect();
+
+        let token = self
+            .write_auth_code_issued_session(AuthCodeIssued {
+                grant: Grant::PreAuthorizedCode,
+                credential_ids_and_documents,
+            })
+            .await
+            .map_err(PreAuthorizedSessionError::SessionStore)?;
+
+        let credential_offer = CredentialOffer::new_pre_authorized(
+            self.issuer_data.metadata.credential_issuer.clone(),
+            config_ids,
+            token.into(),
+        );
+
+        Ok(credential_offer)
+    }
+
+    /// Persist a new session that is in the initial [`AuthCodeIssued`] state. This is called both for Pre-Authorized
+    /// sessions (by `Isser::new_preauthorized_session()`) and Authorization Code sessions (by
+    /// `AuthorizingIssuer::complete_authorization()`).
+    pub(crate) async fn write_auth_code_issued_session(
+        &self,
+        auth_code_issued: AuthCodeIssued,
     ) -> Result<SessionToken, SessionStoreError> {
         let token = SessionToken::new_random();
-
-        let session = SessionState::new(
-            token.clone(),
-            IssuanceData::Created(Created {
-                issuable_documents: Some(to_issue),
-            }),
-        );
+        let session = SessionState::new(token.clone(), IssuanceData::AuthCodeIssued(Box::new(auth_code_issued)));
 
         self.sessions.write(session, true).await?;
 
         Ok(token)
     }
-}
 
-impl<A, K, S, L> Issuer<A, K, S, L>
-where
-    A: AttributeService,
-    K: EcdsaKeySend,
-    S: SessionStore<IssuanceData>,
-    L: StatusListService,
-{
-    pub async fn process_token_request(
-        &self,
-        token_request: TokenRequest,
-        dpop: Dpop,
-    ) -> Result<(TokenResponseWithPreviews, String), TokenRequestError> {
-        let session_token = token_request.code().clone().into();
-
-        // Retrieve the session from the session store, if present. It need not be, depending on the implementation of
-        // the attribute service.
-        let maybe_session = self
-            .sessions
-            .get(&session_token)
-            .await
-            .map_err(IssuanceError::SessionStore)?;
-
-        let (is_new_session, session) = match maybe_session {
-            Some(session) => (false, session),
-            None => (
-                true,
-                SessionState::<IssuanceData>::new(
-                    session_token,
-                    IssuanceData::Created(Created {
-                        issuable_documents: None,
-                    }),
-                ),
-            ),
-        };
-
-        let session: Session<Created> = session.try_into().map_err(TokenRequestError::IssuanceError)?;
-
-        let result = session
-            .process_token_request(
-                token_request,
-                &self.issuer_data.accepted_wallet_client_ids,
-                dpop,
-                &self.attr_service,
-                &self.issuer_data.credential_issuer_identifier,
-                &self.issuer_data.attestation_config,
-            )
-            .await;
-
-        let (response, next) = match result {
-            Ok((response, dpop_nonce, next)) => (Ok((response, dpop_nonce)), next.into()),
-            Err((err, next)) => (Err(err), next.into()),
-        };
-
-        self.sessions
-            .write(next, is_new_session)
-            .await
-            .map_err(|e| TokenRequestError::IssuanceError(e.into()))?;
-
-        response
-    }
-
-    async fn get_session(
-        &self,
-        code: AuthorizationCode,
-    ) -> Result<Session<WaitingForResponse>, CredentialRequestError> {
+    async fn get_session(&self, code: AuthorizationCode) -> Result<Session<AccessTokenIssued>, IssuanceError> {
         self.sessions
             .get(&code.clone().into())
             .await
             .map_err(IssuanceError::SessionStore)?
             .ok_or(IssuanceError::UnknownSession(code))?
             .try_into()
-            .map_err(CredentialRequestError::IssuanceError)
-    }
-
-    pub async fn process_credential(
-        &self,
-        access_token: AccessToken,
-        dpop: Dpop,
-        credential_request: CredentialRequest,
-    ) -> Result<CredentialResponse, CredentialRequestError> {
-        let code = access_token.code().ok_or(CredentialRequestError::MalformedToken)?;
-        let session = self.get_session(code).await?;
-
-        let (response, next) = session
-            .process_credential(
-                credential_request,
-                access_token,
-                dpop,
-                &self.issuer_data,
-                &self.status_list_service,
-            )
-            .await;
-
-        self.sessions
-            .write(next.into(), false)
-            .await
-            .map_err(IssuanceError::SessionStore)?;
-
-        logged_issuance_result(response)
-    }
-
-    pub async fn process_batch_credential(
-        &self,
-        access_token: AccessToken,
-        dpop: Dpop,
-        credential_requests: CredentialRequests,
-    ) -> Result<CredentialResponses, CredentialRequestError> {
-        let code = access_token.code().ok_or(CredentialRequestError::MalformedToken)?;
-        let session = self.get_session(code).await?;
-
-        let (response, next) = session
-            .process_batch_credential(
-                credential_requests,
-                access_token,
-                dpop,
-                &self.issuer_data,
-                &self.status_list_service,
-            )
-            .await;
-
-        self.sessions
-            .write(next.into(), false)
-            .await
-            .map_err(IssuanceError::SessionStore)?;
-
-        logged_issuance_result(response)
-    }
-
-    pub async fn process_reject_issuance(
-        &self,
-        access_token: AccessToken,
-        dpop: Dpop,
-        endpoint_name: &str,
-    ) -> Result<(), CredentialRequestError> {
-        let code = access_token.code().ok_or(CredentialRequestError::MalformedToken)?;
-        let session = self.get_session(code).await?;
-
-        // Check authorization of the request
-        let session_data = session.session_data();
-        if session_data.access_token != access_token {
-            return Err(CredentialRequestError::Unauthorized);
-        }
-
-        dpop.verify_expecting_key(
-            &session_data.dpop_public_key,
-            &self.issuer_data.credential_issuer_identifier.join(endpoint_name),
-            &Method::DELETE,
-            Some(&access_token),
-            Some(&session_data.dpop_nonce),
-        )
-        .map_err(|err| CredentialRequestError::IssuanceError(IssuanceError::DpopInvalid(err)))?;
-
-        let next = session.transition(Done {
-            session_result: SessionResult::Cancelled,
-        });
-
-        self.sessions
-            .write(next.into(), false)
-            .await
-            .map_err(IssuanceError::SessionStore)?;
-
-        Ok(())
-    }
-
-    pub async fn oauth_metadata(&self) -> Result<oidc::Config, A::Error> {
-        self.attr_service
-            .oauth_metadata(&self.issuer_data.credential_issuer_identifier)
-            .await
     }
 }
 
-impl TryFrom<SessionState<IssuanceData>> for Session<Created> {
+impl<K, L, S, N> Issuer<K, L, S, N>
+where
+    N: NonceStore,
+{
+    pub async fn generate_nonce(&self) -> Result<Nonce, NonceStoreError<N::Error>> {
+        let nonce = Nonce::new_random();
+
+        self.nonce_store.store_nonce(nonce.clone()).await?;
+
+        Ok(nonce)
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N> {
+    pub fn oauth_metadata(&self) -> IssuerAuthorizationServerMetadata {
+        let issuer_url = self.issuer_data.metadata.credential_issuer.as_base_url();
+
+        IssuerAuthorizationServerMetadata {
+            oauth_metadata: AuthorizationServerMetadata {
+                authorization_endpoint: Some(issuer_url.join("/issuance/authorize")),
+                token_endpoint_auth_methods_supported: Some(IndexSet::from([WIA_CLIENT_AUTH_METHOD.to_string()])),
+                ..AuthorizationServerMetadata::new(
+                    self.issuer_data.metadata.credential_issuer.clone(),
+                    issuer_url.join("issuance/token"),
+                )
+            },
+            par_metadata_extension: ParMetadataExtension {
+                pushed_authorization_request_endpoint: Some(issuer_url.join("/issuance/par")),
+                require_pushed_authorization_requests: true,
+            },
+            client_attestation_metadata_extension: ClientAttestationMetadataExtension {
+                challenge_endpoint: Some(issuer_url.join("/issuance/client_auth_challenge")),
+                client_attestation_signing_alg_values_supported: Some(IndexSet::from([JwsAlgorithm::ES256])),
+                client_attestation_pop_signing_alg_values_supported: Some(IndexSet::from([JwsAlgorithm::ES256])),
+            },
+        }
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
+where
+    S: SessionStore<IssuanceData>,
+{
+    pub async fn process_credential_preview(
+        &self,
+        access_token: AccessToken,
+    ) -> Result<CredentialPreviewResponse, CredentialPreviewError> {
+        let code = access_token.code().ok_or(CredentialPreviewError::MalformedToken)?;
+
+        let session: Session<AccessTokenIssued> = self
+            .sessions
+            .get(&code.clone().into())
+            .await
+            .map_err(IssuanceError::SessionStore)?
+            .ok_or(IssuanceError::UnknownSession(code))?
+            .try_into()
+            .map_err(CredentialPreviewError::IssuanceError)?;
+
+        let session_data = session.session_data();
+
+        if session_data.access_token != access_token {
+            return Err(CredentialPreviewError::Unauthorized);
+        }
+
+        let credential_previews = session_data
+            .prepared_credentials
+            .nonempty_iter()
+            .map(|state| self.credential_preview_for_credential(state))
+            .collect::<Result<_, _>>()?;
+
+        Ok(CredentialPreviewResponse { credential_previews })
+    }
+
+    fn credential_preview_for_credential(
+        &self,
+        credential: &PreparedCredential,
+    ) -> Result<CredentialPreview, CredentialPreviewError> {
+        self.issuer_data
+            .get_credential_config_for_prepared_credential(credential)
+            .ok_or_else(|| {
+                CredentialPreviewError::MissingCredentialConfiguration(credential.credential_configuration_id.clone())
+            })?;
+
+        let preview = CredentialPreview {
+            credential_id: credential.id.to_string().into(),
+            config_id: credential.credential_configuration_id.clone(),
+            format: credential.format,
+            credential_payload: credential.credential_payload.clone(),
+        };
+
+        Ok(preview)
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
+where
+    K: EcdsaKey,
+    S: SessionStore<IssuanceData>,
+    N: NonceStore,
+{
+    /// Process a token request. The session must already exist, populated by a flow-specific
+    /// provisioner: either via [`Issuer::new_preauthorized_session`] for the pre-authorized-code
+    /// flow, or via [`AuthorizingIssuer::complete_authorization`] for the authorization-code
+    /// flow (wallet PKCE is then verified by the `openid4vc` layer at `/token`).
+    pub async fn process_token_request(
+        &self,
+        token_request: VciTokenRequest,
+        dpop: Dpop,
+        wia_disclosure: WiaDisclosure,
+    ) -> Result<(VciTokenResponse, DpopNonce), TokenRequestError> {
+        let session_token = token_request.code().clone().into();
+
+        let session = self
+            .sessions
+            .get(&session_token)
+            .await
+            .map_err(IssuanceError::SessionStore)?
+            .ok_or(TokenRequestError::SessionNotFound)?;
+
+        let result = Session::<AuthCodeIssued>::try_from(session)
+            .map_err(TokenRequestError::IssuanceError)?
+            .process_token_request(
+                &token_request,
+                dpop,
+                &wia_disclosure,
+                &self.issuer_data.server_url,
+                &self.issuer_data,
+                self.nonce_store.as_ref(),
+            )
+            .await;
+
+        let (response, next) = match result {
+            Ok((response, dpop_nonce, next)) => (Ok((response, dpop_nonce)), next.into()),
+            Err(boxed) => {
+                let (err, next) = *boxed;
+                (Err(err), next.into())
+            }
+        };
+
+        self.sessions
+            .write(next, false)
+            .await
+            .map_err(|e| TokenRequestError::IssuanceError(IssuanceError::SessionStore(e)))?;
+
+        response
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
+where
+    K: EcdsaKey,
+    L: StatusListService,
+    S: SessionStore<IssuanceData>,
+    N: NonceStore,
+{
+    pub async fn process_credential_request<G>(
+        &self,
+        access_token: &AccessToken,
+        dpop: Dpop,
+        credential_request_jwe: &str,
+        time: &G,
+    ) -> Result<CredentialResponse, CredentialRequestError>
+    where
+        G: Generator<DateTime<Utc>>,
+    {
+        let code = access_token.code().ok_or(CredentialRequestError::MalformedToken)?;
+        let session = self
+            .get_session(code)
+            .await
+            .map_err(CredentialRequestError::IssuanceError)?;
+
+        let response_result = session
+            .process_credential_request(
+                credential_request_jwe,
+                access_token,
+                dpop,
+                &self.issuer_data,
+                self.nonce_store.as_ref(),
+                time,
+            )
+            .await;
+
+        // Note that as of now, a successful Credential Request does not advance the session state machine, meaning that
+        // a wallet could in theory request the same credential multiple times. In practice however, any subsequent
+        // request will fail, as the issuer tries to create status claims with the same batch_id, which will fail on a
+        // uniqueness constraint in the database.
+        //
+        // For a production-grade issuer, a proper check should be performed earlier, where a wallet can only request
+        // each offered credential once in a single session. Then, once the last credential has been issued, the
+        // session should move to the "Done" state. This would involve persisting which credentials have been issued in
+        // a session within its state. However, since it is allowed and even desirable for a wallet to send multiple
+        // Credential Requests in parallel and because the state is written as a JSON blob that is opaque to PostgreSQL,
+        // this would require some sort of locking mechanism to guarantee atomicity of the state. For now, because of
+        // the complexity this entails, this non-trival functionality is beyond what is needed from the issuer
+        // implementation.
+        //
+        // Instead, we rely on detecting the uniqueness constraint violation of the status claims batch_id and return a
+        // specific error based on that.
+
+        logged_issuance_result(response_result)
+    }
+}
+
+impl<K, L, S, N> Issuer<K, L, S, N>
+where
+    N: NonceStore,
+{
+    pub(super) async fn verify_wia(
+        &self,
+        wia_disclosure: &WiaDisclosure,
+        client_id: Option<&str>,
+    ) -> Result<(), WiaError> {
+        verify_wia_and_consume_nonce(&self.issuer_data, self.nonce_store.as_ref(), wia_disclosure, client_id)
+            .await
+            .map(|_| ())
+    }
+}
+
+/// Verify the WIA (and its PoP), then check that the challenge it carries is a nonce that this issuer
+/// generated and that has not been used before, consuming it from `nonce_store` in the process.
+async fn verify_wia_and_consume_nonce<K, L>(
+    issuer_data: &IssuerData<K, L>,
+    nonce_store: &impl NonceStore,
+    wia_disclosure: &WiaDisclosure,
+    client_id: Option<&str>,
+) -> Result<WiaClaims, WiaError> {
+    let (wia_claims, nonce) = issuer_data
+        .verify_wia(wia_disclosure, client_id)
+        .map_err(WiaError::Verification)?;
+
+    let nonce_status = nonce_store
+        .check_nonce_status_and_remove([nonce.as_ref().ok_or(WiaError::MissingChallenge)?])
+        .await
+        .map_err(|error| WiaError::ChallengeStore(error.into()))?;
+
+    if !matches!(nonce_status, NonceStatus::AllValid) {
+        return Err(WiaError::InvalidChallenge);
+    }
+
+    Ok(wia_claims)
+}
+
+impl TryFrom<SessionState<IssuanceData>> for Session<AuthCodeIssued> {
     type Error = IssuanceError;
 
     fn try_from(value: SessionState<IssuanceData>) -> Result<Self, Self::Error> {
-        let IssuanceData::Created(session_data) = value.data else {
+        let IssuanceData::AuthCodeIssued(session_data) = value.data else {
             return Err(IssuanceError::UnexpectedState);
         };
-        Ok(Session::<Created> {
+        Ok(Session::<AuthCodeIssued> {
             state: SessionState {
-                data: session_data,
+                data: *session_data,
                 token: value.token,
                 last_active: value.last_active,
             },
@@ -716,168 +1086,293 @@ fn utc_now_truncated_to_days() -> DateTime<Utc> {
         .expect("should never exceed Unix time bounds")
 }
 
-impl Session<Created> {
-    #[expect(clippy::too_many_arguments, reason = "Indirect constructor of a session")]
-    pub async fn process_token_request(
+/// Outcome of [`Session<AuthCodeIssued>::process_token_request`]: either the access-token response
+/// paired with the `AccessTokenIssued` session, or the error paired with the failed session
+/// the `openid4vc` layer should persist in its place. The `Err` variant is boxed to keep the size of
+/// the `Result` reasonable.
+type ProcessTokenRequest =
+    Result<(VciTokenResponse, DpopNonce, Session<AccessTokenIssued>), Box<(TokenRequestError, Session<Done>)>>;
+
+impl Grant {
+    /// Verify that the `grant_type` of the token request matches the grant captured for this session.
+    fn verify_grant_type(&self, token_request: &VciTokenRequest) -> Result<(), TokenRequestError> {
+        match (self, &token_request.oauth_request.grant_type) {
+            (Grant::PreAuthorizedCode, TokenRequestGrantType::PreAuthorizedCode { .. }) => Ok(()),
+            (Grant::AuthorizationCode(_), TokenRequestGrantType::AuthorizationCode { .. }) => Ok(()),
+            _ => Err(TokenRequestError::UnexpectedGrantType {
+                expected: self.to_string(),
+                actual: token_request.oauth_request.grant_type.to_string(),
+            }),
+        }
+    }
+
+    /// Verify the wallet's PKCE `code_verifier` (RFC 7636). `PreAuthorizedCode` carries no PKCE and
+    /// passes unconditionally; `AuthorizationCode` requires a `code_verifier` whose S256 challenge
+    /// matches the one captured at `/authorize`.
+    fn verify_pkce(&self, token_request: &VciTokenRequest) -> Result<(), TokenRequestError> {
+        let Grant::AuthorizationCode(AuthRequestValues { code_challenge, .. }) = self else {
+            // Pre-authorized-code grant: no PKCE to verify.
+            return Ok(());
+        };
+
+        match token_request.oauth_request.code_verifier.as_deref() {
+            None => Err(TokenRequestError::MissingCodeVerifier),
+            Some(verifier) if S256PkcePair::challenge_for(verifier) == *code_challenge => Ok(()),
+            Some(_) => Err(TokenRequestError::PkceVerificationFailed),
+        }
+    }
+
+    /// Verify the following about the `client_id`:
+    ///
+    /// - In the Pre-Authorized flow, check that `client_id` is one of the allowed IDs.
+    /// - In the Authorization Code flow, check that the `client_id` is exactly the same as the one provided in the
+    ///   Authorization Request.
+    fn verify_client_id(
+        &self,
+        client_id: String,
+        accepted_wallet_client_ids: &HashSet<String>,
+    ) -> Result<(), TokenRequestError> {
+        match self {
+            Grant::PreAuthorizedCode => {
+                if !accepted_wallet_client_ids.contains(&client_id) {
+                    return Err(TokenRequestError::UnknownClient(client_id));
+                }
+            }
+            Grant::AuthorizationCode(AuthRequestValues {
+                client_id: auth_client_id,
+                ..
+            }) => {
+                if client_id != *auth_client_id {
+                    return Err(TokenRequestError::ClientIdMismatch {
+                        expected: auth_client_id.clone(),
+                        actual: client_id,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify the `scope` of the [`VciTokenRequest`], if it is present.
+    fn verify_scope(&self, token_request: &VciTokenRequest) -> Result<(), TokenRequestError> {
+        match self {
+            Grant::AuthorizationCode(AuthRequestValues {
+                scope: request_scope, ..
+            }) => {
+                // The client has the option of further restricting the requested scope as included in the Authorization
+                // Request in the Token Request. We choose not to have the issuer support this restriction, so instead
+                // we check that the scope in the Token Request is exactly the same as what was included in the
+                // Authorization Request.
+                if let Some(scope) = token_request.oauth_request.scope.as_ref()
+                    && scope != request_scope
+                {
+                    return Err(TokenRequestError::ScopeMismatch {
+                        expected: request_scope.clone(),
+                        actual: scope.clone(),
+                    });
+                }
+            }
+
+            Grant::PreAuthorizedCode => {
+                // If the Token Request was Pre-Authorized, we choose not to support scope values at all.
+                // TODO (PVW-6161): Support scope values for the Pre-Authorized Code flow.
+                if let Some(scope) = token_request.oauth_request.scope.as_ref() {
+                    return Err(TokenRequestError::PreAuthorizedScopeUnsupported(scope.clone()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify the `redirect_uri` of the [`VciTokenRequest`] when in the Authorization Code flow.
+    fn verify_redirect_uri(&self, token_request: &VciTokenRequest) -> Result<(), TokenRequestError> {
+        if let Grant::AuthorizationCode(AuthRequestValues {
+            redirect_uri: request_redirect_uri,
+            ..
+        }) = self
+        {
+            let redirect_uri = token_request
+                .oauth_request
+                .redirect_uri
+                .as_ref()
+                .ok_or(TokenRequestError::MissingRedirectUri)?;
+
+            if redirect_uri != request_redirect_uri {
+                return Err(TokenRequestError::RedirectUriMismatch {
+                    expected: Box::new(request_redirect_uri.clone()),
+                    actual: Box::new(redirect_uri.clone()),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Session<AuthCodeIssued> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "passes through validate_and_build_token_response's parameters"
+    )]
+    async fn process_token_request<K, L>(
         self,
-        token_request: TokenRequest,
-        accepted_wallet_client_ids: &[String],
+        token_request: &VciTokenRequest,
         dpop: Dpop,
-        attr_service: &impl AttributeService,
+        wia_disclosure: &WiaDisclosure,
         server_url: &BaseUrl,
-        attestation_settings: &AttestationTypesConfig<impl EcdsaKeySend>,
-    ) -> Result<(TokenResponseWithPreviews, String, Session<WaitingForResponse>), (TokenRequestError, Session<Done>)>
-    {
+        issuer_data: &IssuerData<K, L>,
+        nonce_store: &impl NonceStore,
+    ) -> ProcessTokenRequest {
         let result = self
-            .process_token_request_inner(token_request, dpop, attr_service, server_url, attestation_settings)
+            .validate_and_build_token_response(
+                token_request,
+                dpop,
+                wia_disclosure,
+                server_url,
+                issuer_data,
+                nonce_store,
+            )
             .await;
 
+        self.finalize_token_response(result)
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "no natural grouping of these parameters")]
+    async fn validate_and_build_token_response<K, L>(
+        &self,
+        token_request: &VciTokenRequest,
+        dpop: Dpop,
+        wia_disclosure: &WiaDisclosure,
+        server_url: &BaseUrl,
+        issuer_data: &IssuerData<K, L>,
+        nonce_store: &impl NonceStore,
+    ) -> Result<(VciTokenResponse, VecNonEmpty<PreparedCredential>, PublicKey, DpopNonce), TokenRequestError> {
+        let wia_claims = verify_wia_and_consume_nonce(
+            issuer_data,
+            nonce_store,
+            wia_disclosure,
+            token_request.oauth_request.client_id.as_deref(),
+        )
+        .await
+        .map_err(TokenRequestError::Wia)?;
+
+        let client_id = wia_claims.sub;
+        let session_data = self.session_data();
+
+        session_data.grant.verify_grant_type(token_request)?;
+        session_data.grant.verify_pkce(token_request)?;
+        session_data
+            .grant
+            .verify_client_id(client_id, &issuer_data.accepted_wallet_client_ids)?;
+
+        if token_request.authorization_details.is_some() {
+            return Err(TokenRequestError::AuthorizationDetailsUnsupported);
+        }
+
+        session_data.grant.verify_scope(token_request)?;
+        session_data.grant.verify_redirect_uri(token_request)?;
+
+        build_token_response(
+            token_request.code(),
+            dpop,
+            server_url,
+            session_data.credential_ids_and_documents.clone(),
+            issuer_data,
+        )
+    }
+
+    /// Apply the state transition on a `Session<AuthCodeIssued>` based on the result of
+    /// [`build_token_response`]: success → `AccessTokenIssued`, failure → `Done`. The `Err`
+    /// variant of the returned [`ProcessTokenRequest`] is boxed for size.
+    fn finalize_token_response(
+        self,
+        result: Result<(VciTokenResponse, VecNonEmpty<PreparedCredential>, PublicKey, DpopNonce), TokenRequestError>,
+    ) -> ProcessTokenRequest {
         match result {
-            Ok((response, ids, dpop_pubkey, dpop_nonce)) => {
-                let next = self.transition(WaitingForResponse {
-                    access_token: response.token_response.access_token.clone(),
-                    c_nonce: response.token_response.c_nonce.as_ref().unwrap().clone(), // field is always set below
-                    accepted_wallet_client_ids: accepted_wallet_client_ids.to_vec(),
-                    credential_previews: response
-                        .credential_previews
-                        .clone()
-                        .into_iter()
-                        // ids are unzipped from token_request issuable_documents which are transformed into previews
-                        .zip_eq(ids)
-                        .map(|(preview, id)| CredentialPreviewState::from(preview, id))
-                        .collect(),
+            Ok((token_response, prepared_credentials, dpop_pubkey, dpop_nonce)) => {
+                let next = self.transition(AccessTokenIssued {
+                    access_token: token_response.oauth_response.access_token.clone(),
+                    prepared_credentials,
                     dpop_public_key: dpop_pubkey,
                     dpop_nonce: dpop_nonce.clone(),
                 });
-                Ok((response, dpop_nonce, next))
+                Ok((token_response, dpop_nonce, next))
             }
             Err(err) => {
                 let next = self.transition_fail(&err);
-                Err((err, next))
+                Err(Box::new((err, next)))
             }
         }
     }
-
-    fn id_and_credential_preview_from_issuable_document(
-        document: IssuableDocument,
-        attestation_data: &AttestationTypeConfig<impl EcdsaKeySend>,
-    ) -> (Uuid, CredentialPreview) {
-        // Truncate the current time to only include the date part, so that all issued credentials on a single
-        // day have the same `nbf` and `exp` field
-        let now = utc_now_truncated_to_days();
-        let valid_until = now.add(attestation_data.valid_days);
-
-        let (id, credential_payload) = document.into_id_and_previewable_credential_payload(
-            now,
-            valid_until,
-            attestation_data.issuer_uri.clone(),
-            attestation_data.attestation_qualification,
-        );
-
-        let preview = CredentialPreview {
-            content: CredentialPreviewContent {
-                copies_per_format: attestation_data.copies_per_format.clone(),
-                credential_payload,
-                issuer_certificate: attestation_data.key_pair.certificate().clone(),
-            },
-            type_metadata: attestation_data.metadata_documents.clone(),
-        };
-        (id, preview)
-    }
-
-    pub async fn process_token_request_inner(
-        &self,
-        token_request: TokenRequest,
-        dpop: Dpop,
-        attr_service: &impl AttributeService,
-        server_url: &BaseUrl,
-        attestation_settings: &AttestationTypesConfig<impl EcdsaKeySend>,
-    ) -> Result<(TokenResponseWithPreviews, VecNonEmpty<Uuid>, VerifyingKey, String), TokenRequestError> {
-        if !matches!(
-            token_request.grant_type,
-            TokenRequestGrantType::PreAuthorizedCode { pre_authorized_code: _ }
-        ) {
-            return Err(TokenRequestError::UnsupportedTokenRequestType);
-        }
-
-        let dpop_public_key = dpop
-            .verify(&server_url.join("token"), &Method::POST, None)
-            .map_err(|err| TokenRequestError::IssuanceError(IssuanceError::DpopInvalid(err)))?;
-
-        let code = token_request.code().clone();
-
-        let issuables = match &self.session_data().issuable_documents {
-            Some(docs) => docs.clone(),
-            None => attr_service
-                .attributes(token_request)
-                .await
-                .map_err(|e| TokenRequestError::AttributeService(Box::new(e)))?,
-        };
-
-        let (ids, previews) = issuables
-            .into_nonempty_iter()
-            .map(|document| {
-                let attestation_data = attestation_settings
-                    .as_ref()
-                    .get(document.attestation_type())
-                    .ok_or_else(|| {
-                        TokenRequestError::CredentialTypeNotOffered(document.attestation_type().to_string())
-                    })?;
-
-                document.validate_with_metadata(&attestation_data.metadata)?;
-                let (id, preview) = Self::id_and_credential_preview_from_issuable_document(document, attestation_data);
-
-                Ok((id, preview))
-            })
-            .collect::<Result<VecNonEmpty<(_, _)>, TokenRequestError>>()?
-            .into_nonempty_iter()
-            .unzip();
-
-        let c_nonce = random_string(32);
-        let dpop_nonce = random_string(32);
-
-        let response = TokenResponseWithPreviews {
-            token_response: TokenResponse::new(AccessToken::new(&code), c_nonce),
-            credential_previews: previews,
-        };
-
-        Ok((response, ids, dpop_public_key, dpop_nonce))
-    }
 }
 
-impl TokenResponse {
-    pub(crate) fn new(access_token: AccessToken, c_nonce: String) -> Self {
-        Self {
-            access_token,
-            c_nonce: Some(c_nonce),
-            token_type: TokenType::DPoP,
-            expires_in: None,
-            refresh_token: None,
-            scope: None,
-            c_nonce_expires_in: None,
-            authorization_details: None,
-        }
-    }
+/// Verify DPoP, prepare credentials from the supplied (pre-provisioned) issuables, and
+/// generate a fresh access token + DPoP nonce. Shared by the pre-authorized-code and
+/// authorization-code token-request paths.
+fn build_token_response<K, L>(
+    token_request_auth_code: &AuthorizationCode,
+    dpop: Dpop,
+    server_url: &BaseUrl,
+    credential_ids_and_documents: VecNonEmpty<(CredentialConfigurationId, IssuableDocument)>,
+    issuer_data: &IssuerData<K, L>,
+) -> Result<(VciTokenResponse, VecNonEmpty<PreparedCredential>, PublicKey, DpopNonce), TokenRequestError> {
+    let dpop_public_key = dpop
+        .verify(&server_url.join("token"), &Method::POST, None)
+        .map_err(|err| TokenRequestError::IssuanceError(IssuanceError::DpopInvalid(err)))?;
+
+    // The issuer has a choice here to either include `scope` values that refer to the Credential Configurations of the
+    // credentials offered or include an `authorization_details` field that includes both the Credential Configuration
+    // Identifiers and the individual Credential Identifiers. As the former prohibits issuance of multiple credentials
+    // within the same Credential Configuration, we choose the latter.
+    let authorization_details = AuthorizationDetails::from_credential_ids_and_identifiers(
+        credential_ids_and_documents
+            .nonempty_iter()
+            .map(|(config_id, document)| (config_id, document.id.to_string().into())),
+    );
+
+    let prepared_credentials = credential_ids_and_documents
+        .into_nonempty_iter()
+        .map(|(config_id, document)| {
+            PreparedCredential::try_new(config_id, document, issuer_data)
+                .map_err(TokenRequestError::CredentialConfigNotOffered)
+        })
+        .collect::<Result<_, _>>()?;
+
+    let dpop_nonce = DpopNonce::new_random();
+
+    // Note that, in the Authorization Code flow, we assume that the implementer of `AuthorizationCodeFlow` provides all
+    // of the credentials that are identified by the scopes that the wallet includes in the Authorization Request.
+    // Therefore we do not need to include a `scope` value in the Token Response, as the scope that the wallet requested
+    // is never curtailed.
+    //
+    // In the the Pre-Authorized Code flow we do not allow `scope` values from the wallet, so any scope restriction does
+    // not apply.
+    let token_response =
+        VciTokenResponse::new_vci(AccessToken::new(token_request_auth_code), Some(authorization_details));
+
+    Ok((token_response, prepared_credentials, dpop_public_key, dpop_nonce))
 }
 
-impl From<Session<WaitingForResponse>> for SessionState<IssuanceData> {
-    fn from(value: Session<WaitingForResponse>) -> Self {
+impl From<Session<AccessTokenIssued>> for SessionState<IssuanceData> {
+    fn from(value: Session<AccessTokenIssued>) -> Self {
         SessionState {
-            data: IssuanceData::WaitingForResponse(Box::new(value.state.data)),
+            data: IssuanceData::AccessTokenIssued(Box::new(value.state.data)),
             token: value.state.token,
             last_active: value.state.last_active,
         }
     }
 }
 
-impl TryFrom<SessionState<IssuanceData>> for Session<WaitingForResponse> {
+impl TryFrom<SessionState<IssuanceData>> for Session<AccessTokenIssued> {
     type Error = IssuanceError;
 
     fn try_from(value: SessionState<IssuanceData>) -> Result<Self, Self::Error> {
-        let IssuanceData::WaitingForResponse(session_data) = value.data else {
+        let IssuanceData::AccessTokenIssued(session_data) = value.data else {
             return Err(IssuanceError::UnexpectedState);
         };
-        Ok(Session::<WaitingForResponse> {
+        Ok(Session::<AccessTokenIssued> {
             state: SessionState {
                 data: *session_data,
                 token: value.token,
@@ -887,38 +1382,12 @@ impl TryFrom<SessionState<IssuanceData>> for Session<WaitingForResponse> {
     }
 }
 
-impl Session<WaitingForResponse> {
-    pub async fn process_credential(
-        self,
-        credential_request: CredentialRequest,
-        access_token: AccessToken,
-        dpop: Dpop,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
-        status_list_service: &impl StatusListService,
-    ) -> (Result<CredentialResponse, CredentialRequestError>, Session<Done>) {
-        let result = self
-            .process_credential_inner(credential_request, access_token, dpop, issuer_data, status_list_service)
-            .await;
-
-        // In case of success, transition the session to done. This means the client won't be able to reuse its access
-        // token in more requests to this endpoint. (The OpenID4VCI and OAuth specs allow reuse of access tokens, but
-        // don't forbid that a server doesn't allow that.)
-        let next = match &result {
-            Ok(_) => self.transition(Done {
-                session_result: SessionResult::Done,
-            }),
-            Err(err) => self.transition_fail(err),
-        };
-
-        (result, next)
-    }
-
+impl Session<AccessTokenIssued> {
     pub fn check_credential_endpoint_access(
         &self,
         access_token: &AccessToken,
         dpop: Dpop,
-        endpoint: &str,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
+        endpoint: &Url,
     ) -> Result<(), CredentialRequestError> {
         let session_data = self.session_data();
 
@@ -929,8 +1398,8 @@ impl Session<WaitingForResponse> {
 
         // Check that the DPoP is valid and its key matches the one from the Token Request
         dpop.verify_expecting_key(
-            &session_data.dpop_public_key,
-            &issuer_data.server_url.join(endpoint),
+            session_data.dpop_public_key.to_owned(),
+            endpoint,
             &Method::POST,
             Some(access_token),
             Some(&session_data.dpop_nonce),
@@ -940,274 +1409,96 @@ impl Session<WaitingForResponse> {
         Ok(())
     }
 
-    fn verify_wua(
+    #[expect(clippy::too_many_arguments, reason = "internal method")]
+    async fn process_credential_request<K, L, N, G>(
         &self,
-        wua_config: &WuaConfig,
-        attestations: Option<&WuaDisclosure>,
-        issuer_identifier: &str,
-    ) -> Result<VerifyingKey, CredentialRequestError> {
-        let wua_disclosure = attestations.ok_or(CredentialRequestError::MissingWua)?;
-
-        let wua_pubkey = wua_disclosure.verify(
-            &wua_config.wua_issuer_pubkey,
-            issuer_identifier,
-            &self.state.data.accepted_wallet_client_ids,
-            &self.state.data.c_nonce,
+        credential_request_jwe: &str,
+        access_token: &AccessToken,
+        dpop: Dpop,
+        issuer_data: &IssuerData<K, L>,
+        nonce_store: &N,
+        time: &G,
+    ) -> Result<CredentialResponse, CredentialRequestError>
+    where
+        K: EcdsaKey,
+        L: StatusListService,
+        N: NonceStore,
+        G: Generator<DateTime<Utc>>,
+    {
+        // First, check that the request is authorized.
+        self.check_credential_endpoint_access(
+            access_token,
+            dpop,
+            issuer_data.metadata.endpoints.credential_endpoint.as_url(),
         )?;
 
-        Ok(wua_pubkey)
-    }
+        let session_data = self.session_data();
 
-    pub fn verify_wua_and_poa(
-        &self,
-        attestations: Option<&WuaDisclosure>,
-        poa: Option<Poa>,
-        attestation_keys: impl Iterator<Item = VerifyingKey>,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
-    ) -> Result<(), CredentialRequestError> {
-        let issuer_identifier = issuer_data.credential_issuer_identifier.as_ref().as_str();
+        // Decrypt the Credential Request, which should always be encrypted as we publish `encryption_required: true` in
+        // the Issuer Metadata.
+        let credential_request = CredentialRequest::decrypt(
+            credential_request_jwe,
+            &issuer_data.credential_request_decrypter,
+            // Disallow Deflate compression in order to prevent a wallet from including zip bombs in the encrypted
+            // Credential Request.
+            AllowedDecompression::None,
+        )
+        .map_err(CredentialRequestError::Decryption)?;
 
-        let attestation_keys = match &issuer_data.wua_config {
-            None => attestation_keys.collect_vec(),
-            Some(wua) => {
-                let wua_pubkey = self.verify_wua(wua, attestations, issuer_identifier)?;
-                attestation_keys.chain([wua_pubkey]).collect_vec()
+        // Verify the received proof of cryptographic key material and collect all of the public keys.
+        let public_keys = credential_request
+            .verify(
+                issuer_data.batch_size,
+                &issuer_data.wp_trusted_list_anchors,
+                nonce_store,
+                time,
+            )
+            .await?;
+
+        // Find the credential on offer in the session, based on the identifier in the request.
+        let credential = match credential_request.identifier {
+            CredentialRequestIdentifier::CredentialIdentifier(credential_id) => {
+                // Convert the received ID to a UUID in order to find the matching credential. If this fails, the ID
+                // will never match any of the to be issued credentials.
+                Uuid::parse_str(credential_id.as_ref())
+                    .ok()
+                    .and_then(|id| {
+                        session_data
+                            .prepared_credentials
+                            .iter()
+                            .find(|credential| credential.id == id)
+                    })
+                    .ok_or(CredentialRequestError::UnknownCredentialIdentifier(credential_id))?
+            }
+            CredentialRequestIdentifier::CredentialConfigurationId(_) => {
+                // As the issuer always sends a Token Response containing `authorization_details`, the wallet must
+                // respond with `credential_identifier` in its Credential Request. Use of `credential_configuration_id`
+                // is therefore not allowed.
+                return Err(CredentialRequestError::CredentialConfigurationIdNotAllowed);
             }
         };
 
-        poa.ok_or(CredentialRequestError::MissingPoa)?.verify(
-            &attestation_keys,
-            issuer_identifier,
-            &issuer_data.accepted_wallet_client_ids,
-            &self.state.data.c_nonce,
-        )?;
+        // Look up the Credential Configuration that the to be issued credential belongs to.
+        let credential_config = issuer_data
+            .get_credential_config_for_prepared_credential(credential)
+            .ok_or_else(|| {
+                CredentialRequestError::MissingCredentialConfiguration(credential.credential_configuration_id.clone())
+            })?;
 
-        Ok(())
-    }
-
-    pub async fn process_credential_inner(
-        &self,
-        credential_request: CredentialRequest,
-        access_token: AccessToken,
-        dpop: Dpop,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
-        status_list_service: &impl StatusListService,
-    ) -> Result<CredentialResponse, CredentialRequestError> {
-        let session_data = self.session_data();
-
-        self.check_credential_endpoint_access(&access_token, dpop, "credential", issuer_data)?;
-
-        // If we have exactly one credential on offer that matches the credential type that the client is
-        // requesting, then we issue that credential.
-        // NB: the OpenID4VCI specification leaves open how to make this decision, this is our own behaviour.
-        let requested_format = credential_request.credential_type.as_ref().format();
-        let offered_creds = session_data
-            .credential_previews
-            .iter()
-            .filter(|preview| preview.copies_per_format.contains_key(&requested_format))
-            .collect_vec();
-
-        let preview = match (offered_creds.first(), offered_creds.len()) {
-            (Some(preview), 1) => Ok(*preview),
-            (_, 0) => Err(CredentialRequestError::CredentialTypeNotOffered(
-                credential_request.credential_type.as_ref().to_string(),
-            )),
-            // If we have more than one credential on offer of the specified credential type then it is not clear which
-            // one we should issue; abort
-            _ => Err(CredentialRequestError::UseBatchIssuance),
-        }?;
-
-        let holder_pubkey = credential_request.verify(&session_data.c_nonce, issuer_data)?;
-
-        self.verify_wua_and_poa(
-            credential_request.attestations.as_ref(),
-            credential_request.poa,
-            [holder_pubkey].into_iter(),
-            issuer_data,
-        )?;
-
-        let attestation_type = &preview.credential_payload.attestation_type;
-        let config = issuer_data
-            .attestation_config
-            .as_ref()
-            .get(attestation_type)
-            .ok_or_else(|| CredentialRequestError::MissingAttestationTypeConfiguration(attestation_type.to_owned()))?;
-
-        let status_claim = status_list_service
-            .obtain_status_claims(
-                &preview.credential_payload.attestation_type,
-                preview.batch_id,
-                preview.credential_payload.expires,
-                1.try_into().unwrap(),
-            )
-            .await
-            .map_err(|err| CredentialRequestError::ObtainStatusClaim(Box::new(err)))?
-            .into_first();
-
-        let credential_response = CredentialResponse::new(
-            requested_format,
-            preview.credential_payload.clone(),
+        // Issue the same number of credentials as the amount of received holder public keys.
+        let credentials = Credentials::sign_batch(
+            credential.id,
+            credential.format,
+            credential.credential_payload.clone(),
             utc_now_truncated_to_days(),
-            &holder_pubkey,
-            config,
-            status_claim,
+            public_keys.nonempty_iter().collect(),
+            credential_config.format.type_metadata(),
+            &credential_config.key_pair,
+            &credential_config.status_list,
         )
         .await?;
 
-        Ok(credential_response)
-    }
-
-    pub async fn process_batch_credential(
-        self,
-        credential_requests: CredentialRequests,
-        access_token: AccessToken,
-        dpop: Dpop,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
-        status_list_service: &impl StatusListService,
-    ) -> (Result<CredentialResponses, CredentialRequestError>, Session<Done>) {
-        let result = self
-            .process_batch_credential_inner(
-                credential_requests,
-                access_token,
-                dpop,
-                issuer_data,
-                status_list_service,
-            )
-            .await;
-
-        // In case of success, transition the session to done. This means the client won't be able to reuse its access
-        // token in more requests to this endpoint. (The OpenID4VCI and OAuth specs allow reuse of access tokens, but
-        // don't forbid that a server doesn't allow that.)
-        let next = match &result {
-            Ok(_) => self.transition(Done {
-                session_result: SessionResult::Done,
-            }),
-            Err(err) => self.transition_fail(err),
-        };
-
-        (result, next)
-    }
-
-    async fn process_batch_credential_inner(
-        &self,
-        credential_requests: CredentialRequests,
-        access_token: AccessToken,
-        dpop: Dpop,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
-        status_list_service: &impl StatusListService,
-    ) -> Result<CredentialResponses, CredentialRequestError> {
-        let session_data = self.session_data();
-
-        self.check_credential_endpoint_access(&access_token, dpop, "batch_credential", issuer_data)?;
-
-        let mut cred_req_index = 0;
-        let previews_and_holder_pubkeys = session_data
-            .credential_previews
-            .iter()
-            .map(|preview| {
-                // For every preview collect for every copy the verified key and the format
-                let format_pubkeys: VecNonEmpty<_> = preview
-                    .copies_per_format
-                    .iter()
-                    .flat_map(|(format, copies)| itertools::repeat_n(*format, copies.get().into()))
-                    .map(|format| {
-                        let cred_req = credential_requests
-                            .credential_requests
-                            .as_ref()
-                            .get(cred_req_index)
-                            .ok_or(CredentialRequestError::WrongNumberOfCredentialRequests)?;
-                        cred_req_index += 1;
-
-                        // Verify the assumption that the order of the incoming requests matches exactly
-                        // that of the flattened copies_per_format by matching the requested format.
-                        if format != cred_req.credential_type.as_ref().format() {
-                            return Err(CredentialRequestError::CredentialTypeMismatch {
-                                offered: format,
-                                requested: cred_req.credential_type.as_ref().format(),
-                            });
-                        }
-                        let key = cred_req.verify(&session_data.c_nonce, issuer_data)?;
-                        Ok((format, key))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .try_into()
-                    .unwrap(); // ok because copies_per_format has a NonZeroU8 value in AttestationConfig (source)
-
-                let attestation_type = &preview.credential_payload.attestation_type;
-                let config = issuer_data
-                    .attestation_config
-                    .as_ref()
-                    .get(attestation_type)
-                    .ok_or_else(|| {
-                        CredentialRequestError::MissingAttestationTypeConfiguration(attestation_type.to_string())
-                    })?;
-
-                Ok((preview, config, format_pubkeys))
-            })
-            .collect::<Result<Vec<_>, CredentialRequestError>>()?;
-
-        // Verify that we have consumed all credential requests
-        if cred_req_index != credential_requests.credential_requests.as_ref().len() {
-            return Err(CredentialRequestError::WrongNumberOfCredentialRequests);
-        }
-
-        self.verify_wua_and_poa(
-            credential_requests.attestations.as_ref(),
-            credential_requests.poa,
-            previews_and_holder_pubkeys
-                .iter()
-                .flat_map(|(_, _, format_pubkeys)| format_pubkeys.iter().map(|(_, key)| *key)),
-            issuer_data,
-        )?;
-
-        // Obtain a status claim for every attestation copy, linked to a single batch id per preview
-        let status_claims = try_join_all(previews_and_holder_pubkeys.iter().map(
-            |(preview, _, format_pubkeys)| async move {
-                let claims = status_list_service
-                    .obtain_status_claims(
-                        &preview.credential_payload.attestation_type,
-                        preview.batch_id,
-                        preview.credential_payload.expires,
-                        format_pubkeys.len(),
-                    )
-                    .await
-                    .map_err(|err| CredentialRequestError::ObtainStatusClaim(Box::new(err)))?;
-                if claims.len() != format_pubkeys.len() {
-                    return Err(CredentialRequestError::IncorrectNumberOfStatusClaims(
-                        preview.credential_payload.attestation_type.clone(),
-                    ));
-                }
-                Ok(claims)
-            },
-        ))
-        .await?;
-
-        // Make sure all credentials are issued with the same `issued_at` timestamp
-        let issued_at = utc_now_truncated_to_days();
-        let credential_responses = try_join_all(
-            previews_and_holder_pubkeys
-                .iter()
-                // The claims size is explicitly checked to be equal to the number of copies
-                .zip_eq(status_claims.into_iter())
-                .flat_map(|((preview, config, format_pubkeys), claims)| {
-                    format_pubkeys
-                        .into_iter()
-                        .zip(claims.into_inner())
-                        .map(|((format, key), claim)| {
-                            CredentialResponse::new(
-                                *format,
-                                preview.credential_payload.clone(),
-                                issued_at,
-                                key,
-                                config,
-                                claim,
-                            )
-                        })
-                }),
-        )
-        .await?;
-
-        Ok(CredentialResponses { credential_responses })
+        Ok(CredentialResponse::new_immediate(credentials))
     }
 }
 
@@ -1244,158 +1535,435 @@ impl<T: IssuanceState> Session<T> {
 }
 
 impl CredentialRequest {
-    fn verify(
+    async fn verify<N, G>(
         &self,
-        c_nonce: &str,
-        issuer_data: &IssuerData<impl EcdsaKeySend>,
-    ) -> Result<VerifyingKey, CredentialRequestError> {
-        let holder_pubkey = self
-            .proof
-            .as_ref()
-            .ok_or(CredentialRequestError::MissingCredentialRequestPoP)?
-            .verify(
-                c_nonce,
-                &issuer_data.accepted_wallet_client_ids,
-                &issuer_data.credential_issuer_identifier,
-            )?;
+        batch_size: NonZeroU8,
+        wp_trusted_list_anchors: &TrustAnchors,
+        nonce_store: &N,
+        time: &G,
+    ) -> Result<VecNonEmptyUnique<PublicKey>, CredentialRequestError>
+    where
+        N: NonceStore,
+        G: Generator<DateTime<Utc>>,
+    {
+        // The issuer requires key binding proofs, as is indicated in the Issuer Metadata.
+        let key_attestation = match self.proofs.as_ref() {
+            Some(CredentialRequestProofs::Attestation([key_attestation])) => key_attestation,
+            Some(CredentialRequestProofs::Other(proofs)) => {
+                return Err(CredentialRequestError::ProofTypeUnsupported(
+                    proofs.keys().cloned().collect(),
+                ));
+            }
+            None => {
+                return Err(CredentialRequestError::MissingCredentialRequestProof);
+            }
+        };
 
-        Ok(holder_pubkey)
+        // Verify that the Key Attestation JWT is valid, the public keys are distinct and the attack potential
+        // resistance is sufficient.
+        //
+        // NB: We intentionally choose to ignore and not validate both the `status` and `key_storage_status` claims
+        //     here. This Issuer implementation does not need to be to be fully compliant and implementing such a check
+        //     would involve fetching the Status Lists regularly to evaluate if the key attestation or key storage
+        //     respectively has been revoked in the intervening time.
+        let KeyAttestationVerificationResult {
+            attested_keys, nonce, ..
+        } = key_attestation
+            .verify(wp_trusted_list_anchors, time)
+            .map_err(CredentialRequestError::InvalidAttestationProof)?;
+
+        // As this issuer offers a nonce endpoint, use of the nonce in the proof payload is mandatory.
+        let nonce = nonce.ok_or(CredentialRequestError::MissingProofNonce)?;
+
+        // Verify that the used nonce is valid.
+        let nonce_status = nonce_store
+            .check_nonce_status_and_remove(std::iter::once(&nonce))
+            .await
+            .map_err(|error| CredentialRequestError::ProofNonceStore(Box::new(error)))?;
+
+        if !matches!(nonce_status, NonceStatus::AllValid) {
+            return Err(CredentialRequestError::InvalidNonce);
+        }
+
+        // If the holder povided more attested keys than the `batch_size` indicated in the Issuer Metadata, it is
+        // requesting more credentials than the issuer allows, so return an error.
+        if attested_keys.len() > batch_size.into() {
+            return Err(CredentialRequestError::TooManyCopiesRequested(attested_keys.len()));
+        }
+
+        Ok(attested_keys)
     }
 }
 
-impl CredentialResponse {
-    async fn new(
-        credential_format: Format,
+impl Credentials {
+    /// Sign a batch of credentials by constructing a `CredentialPayload` a `PreviewableCredentialPayload` and signing N
+    /// copies in the requested format, where N is based on the number of provided holder public keys. This also
+    /// includes obtaining N status claims for the batch as a whole.
+    #[expect(clippy::too_many_arguments, reason = "Internal constructor")]
+    async fn sign_batch<K, L>(
+        batch_id: Uuid,
+        format: Format,
         preview_credential_payload: PreviewableCredentialPayload,
         issued_at: DateTime<Utc>,
-        holder_pubkey: &VerifyingKey,
-        attestation_config: &AttestationTypeConfig<impl EcdsaKeySend>,
-        status_claim: StatusClaim,
-    ) -> Result<CredentialResponse, CredentialRequestError> {
-        let payload = CredentialPayload::from_previewable_credential_payload(
-            preview_credential_payload,
-            issued_at,
-            holder_pubkey,
-            &attestation_config.metadata,
-            attestation_config.first_metadata_integrity.clone(),
-            status_claim,
-        )?;
+        holder_public_keys: VecNonEmpty<&PublicKey>,
+        type_metadata: Option<&CredentialConfigurationTypeMetadata>,
+        key_pair: &KeyPair<K>,
+        status_list: &L,
+    ) -> Result<Self, CredentialRequestError>
+    where
+        K: EcdsaKey,
+        L: StatusListService,
+    {
+        let copy_count = holder_public_keys.len();
 
-        match credential_format {
-            Format::MsoMdoc => Self::new_for_mdoc(payload, attestation_config).await,
-            Format::SdJwt => Self::new_for_sd_jwt(payload, attestation_config).await,
-            other => Err(CredentialRequestError::CredentialTypeNotOffered(other.to_string())),
+        // Type Metadata describes an SD-JWT; an mdoc is described by its Credential Metadata and therefore carries no
+        // integrity digest for a Type Metadata document.
+        let metadata_integrity = matches!(format, Format::SdJwt)
+            .then(|| type_metadata.map(|metadata| metadata.first_document_integrity().clone()))
+            .flatten();
+
+        // Obtain a status claim for each holder public key, i.e. for each credential copy.
+        let status_claims = status_list
+            .obtain_status_claims(batch_id, preview_credential_payload.expires, copy_count)
+            .await
+            .map_err(|error| match error {
+                // Identify the claims batch_id already existing in the database as a separate error, as this is the
+                // error that will occur if a wallet sends a Credential Request for the same credential multiple times.
+                // This particular error will then result in a 400 HTTP status code and a "credential_request_denied"
+                // error code, instead of a 500 error.
+                ObtainClaimError::BatchIdExists(id) => CredentialRequestError::StatusClaimBatchIdExists(id),
+                ObtainClaimError::InternalError(error) => CredentialRequestError::ObtainStatusClaim(Box::new(error)),
+            })?;
+
+        if status_claims.len() != copy_count {
+            return Err(CredentialRequestError::IncorrectNumberOfStatusClaims {
+                expected: copy_count,
+                received: status_claims.len(),
+            });
         }
+
+        // Clone a `CredentialPayload` for each holder public key, i.e. for each credential copy.
+        let payloads = holder_public_keys
+            .into_nonempty_iter()
+            .zip(utils::vec_at_least::repeat_n(
+                (preview_credential_payload, metadata_integrity),
+                copy_count,
+            ))
+            .zip(status_claims)
+            .map(
+                |((public_key, (preview_credential_payload, metadata_integrity)), status_claim)| {
+                    let StatusClaim::StatusList(status_claim) = status_claim;
+                    CredentialPayload::from_previewable_credential_payload(
+                        preview_credential_payload,
+                        issued_at,
+                        public_key,
+                        metadata_integrity,
+                        Some(status_claim),
+                    )
+                    .map_err(CredentialRequestError::JwkConversion)
+                },
+            )
+            .collect::<Result<VecNonEmpty<_>, _>>()?;
+
+        // Convert all of these `CredentialPayload` values into actual credentials by signing them.
+        let credentials = match format {
+            Format::MsoMdoc => {
+                let mdoc_credentials =
+                    try_join_all(payloads.into_iter().map(|credential_payload| {
+                        MdocCredential::from_credential_payload(credential_payload, key_pair)
+                    }))
+                    .await
+                    .map_err(CredentialRequestError::MdocConversion)?
+                    .try_into()
+                    .expect("source iterator is non-empty");
+
+                Self::MsoMdoc(mdoc_credentials)
+            }
+            Format::SdJwt => {
+                let type_metadata = type_metadata.map(CredentialConfigurationTypeMetadata::normalized);
+
+                let sd_jwt_credentials = try_join_all(payloads.into_iter().map(|credential_payload| {
+                    SdJwtCredential::from_credential_payload(credential_payload, key_pair, type_metadata)
+                }))
+                .await
+                .map_err(CredentialRequestError::SdJwtConversion)?
+                .try_into()
+                .expect("source iterator is non-empty");
+
+                Self::SdJwt(sd_jwt_credentials)
+            }
+        };
+
+        Ok(credentials)
     }
+}
 
-    async fn new_for_mdoc(
+impl MdocCredential {
+    async fn from_credential_payload<K>(
         credential_payload: CredentialPayload,
-        attestation_config: &AttestationTypeConfig<impl EcdsaKeySend + Sized>,
-    ) -> Result<CredentialResponse, CredentialRequestError> {
-        // Construct an mdoc `IssuerSigned` from the contents of `PreviewableCredentialPayload`
-        // and the attestation config by signing it.
-        let (issuer_signed, _) = credential_payload
-            .into_signed_mdoc(&attestation_config.key_pair)
-            .await?;
+        key_pair: &KeyPair<K>,
+    ) -> Result<Self, CredentialPayloadIntoSignedMdocError>
+    where
+        K: EcdsaKey,
+    {
+        let (issuer_signed, _mso) = credential_payload.into_signed_mdoc(key_pair).await?;
 
-        Ok(CredentialResponse::MsoMdoc {
-            credential: Box::new(issuer_signed),
-        })
-    }
-
-    async fn new_for_sd_jwt(
-        credential_payload: CredentialPayload,
-        attestation_config: &AttestationTypeConfig<impl EcdsaKeySend + Sized>,
-    ) -> Result<CredentialResponse, CredentialRequestError> {
-        let signed_sd_jwt = credential_payload
-            .into_signed_sd_jwt(&attestation_config.metadata, &attestation_config.key_pair)
-            .await?;
-
-        Ok(CredentialResponse::SdJwt {
-            credential: signed_sd_jwt.into_unverified(),
+        Ok(Self {
+            credential: issuer_signed,
         })
     }
 }
 
-impl CredentialRequestProof {
-    pub fn verify(
-        &self,
-        nonce: &str,
-        accepted_wallet_client_ids: &[impl ToString],
-        credential_issuer_identifier: &BaseUrl,
-    ) -> Result<VerifyingKey, CredentialRequestError> {
-        let CredentialRequestProof::Jwt { jwt } = self;
+impl SdJwtCredential {
+    async fn from_credential_payload<K>(
+        credential_payload: CredentialPayload,
+        key_pair: &KeyPair<K>,
+        type_metadata: Option<&NormalizedTypeMetadata>,
+    ) -> Result<Self, CredentialPayloadIntoSignedSdJwtError>
+    where
+        K: EcdsaKey,
+    {
+        let sd_jwt = credential_payload.into_signed_sd_jwt(type_metadata, key_pair).await?;
 
-        let mut validation_options = Validation::new(Algorithm::ES256);
-        validation_options.set_required_spec_claims(&["iss", "aud"]);
-        validation_options.set_issuer(accepted_wallet_client_ids);
-        validation_options.set_audience(&[credential_issuer_identifier]);
-
-        let (header, payload) = jwt
-            .parse_and_verify_with_jwk(&validation_options)
-            .map_err(CredentialRequestError::UnsupportedJwt)?;
-
-        if payload.nonce.as_deref() != Some(nonce) {
-            return Err(CredentialRequestError::IncorrectNonce);
-        }
-
-        Ok(header.verifying_key()?)
+        Ok(Self {
+            credential: sd_jwt.into_unverified(),
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+
+    use attestation_types::status_claim::StatusClaim;
     use chrono::Timelike;
+    use coset::iana;
+    use crypto::server_keys::generate::Ca;
+    use crypto::trust_anchor::TrustAnchors;
+    use crypto::utils::random_string;
     use derive_more::Debug;
+    use futures::FutureExt;
+    use jwe::algorithm::CompressionAlgorithm;
+    use jwe::algorithm::EncryptionAlgorithm;
+    use jwe::encryption::JweEncrypter;
+    use jwe::error::JweDecryptionError;
+    use mdoc::MdocStatus;
+    use mdoc::verifier::IssuerSignedVerificationResult;
+    use mdoc::verifier::ValidityRequirement;
+    use oauth::dpop::Dpop;
+    use oauth::errors::ErrorResponse;
+    use oauth::errors::RemoteErrorCode;
+    use oauth::issuer_identifier::IssuerIdentifier;
+    use oauth::token::AccessToken;
+    use p256::ecdsa::SigningKey;
+    use p256::ecdsa::VerifyingKey;
+    use p256::elliptic_curve::Generate;
+    use rstest::rstest;
+    use sd_jwt_vc_metadata::TypeMetadataDocuments;
+    use serde_json::json;
     use thiserror::Error;
     use tracing_test::traced_test;
-
-    use attestation_data::auth::issuer_auth::IssuerRegistration;
-    use attestation_data::x509::generate::mock::generate_issuer_mock_with_registration;
-    use crypto::server_keys::generate::Ca;
+    use url::Url;
+    use utils::generator::mock::MockTimeGenerator;
+    use utils::vec_nonempty;
+    use wscd::mock_remote::IssuanceMockRemoteWscd;
+    use wscd::wia::WiaClient;
+    use wscd::wia::mock::MockWiaClient;
 
     use super::*;
+    use crate::cleanup::CLEANUP_INTERVAL;
+    use crate::cleanup::start_cleanup_task;
+    use crate::client_auth::ClientAttestationChallengeMechanism;
+    use crate::credential::CredentialResponse;
+    use crate::credential_configurations::CredentialConfigurationFormat;
+    use crate::errors::CredentialErrorCode;
+    use crate::errors::CredentialPreviewErrorCode;
+    use crate::errors::VciTokenErrorCode;
+    use crate::issuable_document::IssuableDocument;
+    use crate::metadata::issuer_metadata::CredentialMetadata;
+    use crate::metadata::issuer_metadata::IssuerInfo;
+    use crate::nonce::response::NonceResponse;
+    use crate::preview::CredentialPreviewResponse;
+    use crate::server_state::MemorySessionStore;
+    use crate::server_state::test::memory_session_store_with_mock_time;
+    use crate::server_state::test::test_memory_store_with_cleanup_task;
+    use crate::test::MOCK_ATTESTATION_TYPES;
+    use crate::test::MOCK_ATTRS;
+    use crate::test::MockIssuer;
+    use crate::test::mock_issuable_document_with_attrs;
+    use crate::test::mock_issuable_documents;
+    use crate::test::mock_type_metadata;
+    use crate::test::setup_mock_issuer;
+    use crate::test::setup_mock_issuer_with_metadata;
+    use crate::token::VciTokenRequest;
+    use crate::token::VciTokenResponse;
+    use crate::wallet_issuance::AcceptIssuanceTrustAnchors;
+    use crate::wallet_issuance::IssuanceSession;
+    use crate::wallet_issuance::WalletIssuanceError;
+    use crate::wallet_issuance::issuance_session::CredentialRequestBody;
+    use crate::wallet_issuance::issuance_session::HttpIssuanceSession;
+    use crate::wallet_issuance::issuance_session::VcMessageClient;
+    use crate::wallet_issuance::issuer_registration::IssuerRegistration;
+
+    #[tokio::test]
+    async fn test_validate_issuable_documents_sd_jwt_described_by_credential_metadata() {
+        let attestation_type = MOCK_ATTESTATION_TYPES[0];
+        let claim_names = MOCK_ATTRS.map(|(name, _)| name);
+
+        let (issuer, _, _, _, _) = setup_mock_issuer_with_metadata(
+            "https://example.com/".parse().unwrap(),
+            vec![CredentialConfigurationFormat::new_sd_jwt_credential_metadata(
+                attestation_type.to_string(),
+                CredentialMetadata::new_example(&claim_names),
+            )],
+            true,
+            Arc::new(MemorySessionStore::default()),
+        );
+
+        let document = mock_issuable_document_with_attrs(Format::SdJwt, attestation_type, &MOCK_ATTRS);
+
+        let validated = issuer
+            .validate_issuable_documents(vec_nonempty![document])
+            .expect("an SD-JWT described by Credential Metadata should validate against it");
+
+        assert_eq!(validated.len().get(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_validate_issuable_documents_sd_jwt_credential_metadata_attribute_without_claim() {
+        let attestation_type = MOCK_ATTESTATION_TYPES[0];
+
+        let (issuer, _, _, _, _) = setup_mock_issuer_with_metadata(
+            "https://example.com/".parse().unwrap(),
+            vec![CredentialConfigurationFormat::new_sd_jwt_credential_metadata(
+                attestation_type.to_string(),
+                CredentialMetadata::new_example(&["first_name"]),
+            )],
+            true,
+            Arc::new(MemorySessionStore::default()),
+        );
+
+        // The document also contains `family_name`, which the Credential Metadata does not describe.
+        let document = mock_issuable_document_with_attrs(Format::SdJwt, attestation_type, &MOCK_ATTRS);
+
+        let error = issuer
+            .validate_issuable_documents(vec_nonempty![document])
+            .expect_err("attributes not described by the Credential Metadata should not validate");
+
+        assert_matches!(
+            error,
+            IssuableDocumentError::AttributesError(AttributesError::AttributesWithoutClaim(_))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_issuable_documents_sd_jwt_credential_metadata_missing_mandatory_claim() {
+        let attestation_type = MOCK_ATTESTATION_TYPES[0];
+
+        let credential_metadata = serde_json::from_value(serde_json::json!({
+            "claims": [
+                { "path": ["first_name"] },
+                { "path": ["family_name"], "mandatory": true },
+            ]
+        }))
+        .unwrap();
+
+        let (issuer, _, _, _, _) = setup_mock_issuer_with_metadata(
+            "https://example.com/".parse().unwrap(),
+            vec![CredentialConfigurationFormat::new_sd_jwt_credential_metadata(
+                attestation_type.to_string(),
+                credential_metadata,
+            )],
+            true,
+            Arc::new(MemorySessionStore::default()),
+        );
+
+        // The document does not contain `family_name`, which the Credential Metadata describes as mandatory.
+        let document = mock_issuable_document_with_attrs(Format::SdJwt, attestation_type, &MOCK_ATTRS[..1]);
+
+        let error = issuer
+            .validate_issuable_documents(vec_nonempty![document])
+            .expect_err("a document without a mandatory claim of the Credential Metadata should not validate");
+
+        assert_matches!(
+            error,
+            IssuableDocumentError::AttributesError(AttributesError::MissingMandatoryAttribute(_))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_signed_metadata() {
+        let (_, metadata) = TypeMetadataDocuments::degree_example();
+        let (issuer, trust_anchors, _, _, _) = setup_mock_issuer_with_metadata(
+            "https://example.com/".parse().unwrap(),
+            vec![CredentialConfigurationFormat::new_sd_jwt_type_metadata(
+                CredentialConfigurationTypeMetadata::try_new("com.example.degree", metadata).unwrap(),
+            )],
+            true,
+            Arc::new(MemorySessionStore::default()),
+        );
+
+        let time_generator = MockTimeGenerator::default();
+        let ttl = Duration::from_secs(300);
+        let now = time_generator.generate();
+        let signed_metadata = issuer.signed_metadata(ttl, &time_generator).await.unwrap();
+
+        let payload = signed_metadata
+            .into_unverified()
+            .into_verified_against_trust_anchors(
+                &trust_anchors,
+                &time_generator,
+                None,
+                jwt::DEFAULT_VALIDATION.to_owned(),
+            )
+            .unwrap()
+            .into_payload();
+        assert_eq!(payload.iss, None);
+        assert_eq!(payload.sub.as_ref(), &payload.metadata.credential_issuer);
+        assert_eq!(payload.iat, now.into());
+        assert_eq!(payload.exp, Some((now + ttl).into()));
+        let issuer_info = payload.metadata.issuer_info.as_ref().unwrap();
+        assert_matches!(issuer_info.as_slice(), [IssuerInfo::RegistrationCertificate { .. }]);
+        assert_eq!(
+            serde_json::to_value(issuer_info).unwrap(),
+            serde_json::to_value(issuer.metadata().issuer_info.as_ref().unwrap()).unwrap()
+        );
+    }
 
     #[derive(Debug, Error, Clone, Eq, PartialEq)]
     #[error("MyError")]
     struct MyError;
 
-    #[test]
-    fn test_credential_preview_from_issuable_document() {
-        let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let issuance_keypair = generate_issuer_mock_with_registration(&ca, IssuerRegistration::new_mock()).unwrap();
+    // Note that this needs to be async because `Issuer::try_new()` requires a tokio reactor.
+    #[tokio::test]
+    async fn test_prepared_credential_try_new() {
+        let (_, metadata) = TypeMetadataDocuments::degree_example();
+        let (issuer, _, _, _, _) = setup_mock_issuer_with_metadata(
+            "https://example.com/".parse().unwrap(),
+            vec![CredentialConfigurationFormat::new_sd_jwt_type_metadata(
+                CredentialConfigurationTypeMetadata::try_new("com.example.degree", metadata).unwrap(),
+            )],
+            true,
+            Arc::new(MemorySessionStore::default()),
+        );
+
         let document = IssuableDocument::new_mock_degree("Education".to_string());
-        let config = AttestationTypeConfig::try_new(
-            document.attestation_type(),
-            KeyPair::new_from_signing_key(
-                issuance_keypair.private_key().to_owned(),
-                issuance_keypair.certificate().to_owned(),
-            )
-            .unwrap(),
-            Days::new(1),
-            IndexMap::from_iter([(Format::MsoMdoc, NonZeroU8::new(1).unwrap())]),
-            "https://example.com".parse().unwrap(),
-            AttestationQualification::default(),
-            TypeMetadataDocuments::degree_example().1,
+
+        let PreparedCredential { credential_payload, .. } = PreparedCredential::try_new(
+            "com.example.degree_dc+sd-jwt".to_string().into(),
+            document,
+            &issuer.issuer_data,
         )
         .unwrap();
 
-        let (_, preview) = Session::<Created>::id_and_credential_preview_from_issuable_document(document, &config);
-        assert_eq!(
-            preview.content.credential_payload.not_before.unwrap().as_ref().second(),
-            0
-        );
-        assert_eq!(
-            preview.content.credential_payload.not_before.unwrap().as_ref().minute(),
-            0
-        );
-        assert_eq!(
-            preview.content.credential_payload.not_before.unwrap().as_ref().hour(),
-            0
-        );
-        assert_eq!(preview.content.credential_payload.expires.unwrap().as_ref().second(), 0);
-        assert_eq!(preview.content.credential_payload.expires.unwrap().as_ref().minute(), 0);
-        assert_eq!(preview.content.credential_payload.expires.unwrap().as_ref().hour(), 0);
+        assert_eq!(credential_payload.not_before.unwrap().as_ref().second(), 0);
+        assert_eq!(credential_payload.not_before.unwrap().as_ref().minute(), 0);
+        assert_eq!(credential_payload.not_before.unwrap().as_ref().hour(), 0);
+        assert_eq!(credential_payload.expires.unwrap().as_ref().second(), 0);
+        assert_eq!(credential_payload.expires.unwrap().as_ref().minute(), 0);
+        assert_eq!(credential_payload.expires.unwrap().as_ref().hour(), 0);
     }
 
     #[traced_test]
@@ -1414,5 +1982,1075 @@ mod tests {
         let result = logged_issuance_result(input.clone());
         assert_eq!(result, input);
         assert!(logs_contain("Issuance error: MyError"));
+    }
+
+    // Error injection tests
+
+    fn setup_simple_mock_issuer() -> (MockIssuer, TrustAnchors, IssuerIdentifier, Ca) {
+        let issuer_identifier: IssuerIdentifier = "https://example.com/".parse().unwrap();
+
+        let (attestation_type, _, metadata_documents) =
+            TypeMetadataDocuments::from_single_example(mock_type_metadata(MOCK_ATTESTATION_TYPES[0]));
+        let attestations = vec![
+            CredentialConfigurationFormat::new_mdoc(
+                attestation_type.clone(),
+                CredentialMetadata::new_mdoc_example(&attestation_type, &MOCK_ATTRS.map(|(name, _)| name)),
+            ),
+            CredentialConfigurationFormat::new_sd_jwt_type_metadata(
+                CredentialConfigurationTypeMetadata::try_new(&attestation_type, metadata_documents).unwrap(),
+            ),
+        ];
+
+        let (issuer, trust_anchor, wptl_ca, _, _) = setup_mock_issuer_with_metadata(
+            issuer_identifier.clone(),
+            attestations,
+            true,
+            Arc::new(MemorySessionStore::default()),
+        );
+
+        (issuer, trust_anchor, issuer_identifier, wptl_ca)
+    }
+
+    /// An implementation of [`VcMessageClient`] that dispatches messages directly to the contained
+    /// issuer by function invocation, optionally allowing the caller to mess with the input to trigger
+    /// certain error cases.
+    ///
+    /// NOTE: This bypasses HTTP transport, so the transport part of the OpenID4VCI implementation is
+    /// not tested here. See `openid4vc_server/tests/issuance.rs` for full-stack integration tests.
+    struct VcMessageClientStub {
+        issuer: MockIssuer,
+
+        wrong_access_token: bool,
+        invalidate_dpop: bool,
+        wia_override: Option<WiaDisclosure>,
+    }
+
+    impl VcMessageClientStub {
+        fn new(issuer: MockIssuer) -> Self {
+            Self {
+                issuer,
+                wrong_access_token: false,
+                invalidate_dpop: false,
+                wia_override: None,
+            }
+        }
+
+        fn access_token(&self, access_token: &AccessToken) -> AccessToken {
+            if self.wrong_access_token {
+                let code = &access_token.as_ref()[32..];
+                AccessToken::from("0".repeat(32) + code)
+            } else {
+                access_token.clone()
+            }
+        }
+
+        fn dpop_header(&self, dpop_header: &Dpop) -> Dpop {
+            if self.invalidate_dpop {
+                invalidate_jwt_str(&dpop_header.to_string()).as_str().parse().unwrap()
+            } else {
+                dpop_header.clone()
+            }
+        }
+    }
+
+    fn invalidate_jwt_str(jwt: &str) -> String {
+        let new_char = if !jwt.ends_with('A') { 'A' } else { 'B' };
+        jwt[..jwt.len() - 1].to_string() + &new_char.to_string()
+    }
+
+    impl VcMessageClient for VcMessageClientStub {
+        async fn request_token(
+            &self,
+            _url: Url,
+            token_request: &VciTokenRequest,
+            dpop_header: &Dpop,
+            wia: &WiaDisclosure,
+        ) -> Result<(VciTokenResponse, Option<DpopNonce>), WalletIssuanceError> {
+            let wia = self.wia_override.as_ref().unwrap_or(wia);
+            let (token_response, dpop_nonce) = self
+                .issuer
+                .process_token_request(token_request.clone(), dpop_header.clone(), wia.clone())
+                .await
+                .map_err(|error| {
+                    let error_response = ErrorResponse::<VciTokenErrorCode>::from(error);
+
+                    WalletIssuanceError::VciTokenRequest(Box::new(error_response.into()))
+                })?;
+            Ok((token_response, Some(dpop_nonce)))
+        }
+
+        async fn request_challenge(&self, _url: Url) -> Result<Nonce, WalletIssuanceError> {
+            Ok(self.issuer.generate_nonce().await.unwrap())
+        }
+
+        async fn request_credential_preview(
+            &self,
+            _url: Url,
+            access_token: &AccessToken,
+        ) -> Result<CredentialPreviewResponse, WalletIssuanceError> {
+            self.issuer
+                .process_credential_preview(access_token.clone())
+                .await
+                .map_err(|error| {
+                    let error_response = ErrorResponse::<CredentialPreviewErrorCode>::from(error);
+
+                    WalletIssuanceError::CredentialPreview(Box::new(error_response.into()))
+                })
+        }
+
+        async fn request_type_metadata(&self, url: Url) -> Result<TypeMetadataDocuments, WalletIssuanceError> {
+            let id = url.path_segments().unwrap().next_back().unwrap().to_string().into();
+            Ok(self.issuer.type_metadata(&id).unwrap())
+        }
+
+        async fn request_nonce(&self, _url: Url) -> Result<(NonceResponse, Option<DpopNonce>), WalletIssuanceError> {
+            let c_nonce = self.issuer.generate_nonce().await.unwrap();
+            Ok((NonceResponse { c_nonce }, None))
+        }
+
+        async fn request_credential<'a>(
+            &self,
+            _url: Url,
+            credential_request: CredentialRequestBody<'a>,
+            dpop_header: &Dpop,
+            access_token: &AccessToken,
+        ) -> Result<CredentialResponse, WalletIssuanceError> {
+            let CredentialRequestBody::Encrypted(credential_request_jwe) = credential_request else {
+                panic!("credential request should be encrypted");
+            };
+
+            self.issuer
+                .process_credential_request(
+                    &self.access_token(access_token),
+                    self.dpop_header(dpop_header),
+                    &credential_request_jwe,
+                    &MockTimeGenerator::default(),
+                )
+                .await
+                .map_err(|error| {
+                    let error_response = ErrorResponse::<CredentialErrorCode>::from(error);
+
+                    WalletIssuanceError::CredentialRequest(Box::new(error_response.into()))
+                })
+        }
+    }
+
+    async fn start_and_accept_err(
+        message_client: VcMessageClientStub,
+        issuer_identifier: IssuerIdentifier,
+        issuer_trust_anchors: TrustAnchors,
+        wptl_ca: &Ca,
+    ) -> WalletIssuanceError {
+        let credential_offer = message_client
+            .issuer
+            .new_preauthorized_session(mock_issuable_documents(NonZeroUsize::MIN))
+            .await
+            .unwrap();
+
+        let issuer_metadata = message_client.issuer.metadata().clone();
+        let oauth_metadata = IssuerAuthorizationServerMetadata::new_mock(issuer_identifier);
+
+        let credential_configs = credential_offer
+            .credential_configuration_ids
+            .into_nonempty_iter()
+            .map(|config_id| {
+                let config = issuer_metadata
+                    .credential_configurations_supported
+                    .get(&config_id)
+                    .unwrap()
+                    .clone();
+
+                (config_id, config)
+            })
+            .collect();
+
+        let code = credential_offer
+            .grants
+            .unwrap()
+            .pre_authorized_code
+            .unwrap()
+            .pre_authorized_code;
+        let batch_size = issuer_metadata.batch_size().try_into().unwrap();
+        let mut session = HttpIssuanceSession::create(
+            message_client,
+            credential_configs,
+            issuer_metadata.credential_issuer,
+            issuer_metadata.endpoints,
+            IssuerRegistration::new_mock(),
+            batch_size,
+            Some(
+                issuer_metadata
+                    .credential_request_encryption
+                    .as_ref()
+                    .unwrap()
+                    .select_encryption_parameters()
+                    .unwrap()
+                    .unwrap(),
+            ),
+            oauth_metadata.oauth_metadata.token_endpoint,
+            ClientAttestationChallengeMechanism::ChallengeEndpoint(
+                oauth_metadata
+                    .client_attestation_metadata_extension
+                    .challenge_endpoint
+                    .unwrap(),
+            ),
+            VciTokenRequest::new_mock_with_pre_authorized_code(code),
+            &MockWiaClient::from_ca(wptl_ca),
+            &oauth_metadata.oauth_metadata.issuer,
+        )
+        .await
+        .unwrap();
+
+        let wptl_ca = Ca::generate_wptl_mock_ca().unwrap();
+        let wptl_trust_anchors = wptl_ca.to_trust_anchors();
+
+        session
+            .accept_issuance(
+                NonZeroU8::MIN,
+                AcceptIssuanceTrustAnchors::new(&issuer_trust_anchors, &wptl_trust_anchors),
+                &IssuanceMockRemoteWscd::new(&wptl_ca),
+                &MockTimeGenerator::default(),
+            )
+            .await
+            .unwrap_err()
+    }
+
+    /// Like [`start_and_accept_err`] but for errors that happen at token request time (inside
+    /// `HttpIssuanceSession::create`). The `wia_override` on the stub is used to inject a bad WIA;
+    /// the `wia_client` passed to `create` is a dummy because the stub ignores it.
+    async fn start_token_request_err(
+        message_client: VcMessageClientStub,
+        issuer_identifier: IssuerIdentifier,
+        wia_client: &impl WiaClient,
+    ) -> WalletIssuanceError {
+        let session_token = message_client
+            .issuer
+            .new_preauthorized_session(mock_issuable_documents(NonZeroUsize::MIN))
+            .await
+            .unwrap()
+            .grants
+            .unwrap()
+            .pre_authorized_code
+            .unwrap()
+            .pre_authorized_code;
+
+        let issuer_metadata = message_client.issuer.metadata().clone();
+        let oauth_metadata = IssuerAuthorizationServerMetadata::new_mock(issuer_identifier);
+
+        let credential_configs = message_client
+            .issuer
+            .credential_configs()
+            .all_configuration_ids()
+            .into_nonempty_iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    issuer_metadata.credential_configurations_supported[id].clone(),
+                )
+            })
+            .collect();
+
+        let batch_size = issuer_metadata.batch_size().try_into().unwrap();
+        HttpIssuanceSession::create(
+            message_client,
+            credential_configs,
+            issuer_metadata.credential_issuer,
+            issuer_metadata.endpoints,
+            IssuerRegistration::new_mock(),
+            batch_size,
+            None,
+            oauth_metadata.oauth_metadata.token_endpoint,
+            ClientAttestationChallengeMechanism::ChallengeEndpoint(
+                oauth_metadata
+                    .client_attestation_metadata_extension
+                    .challenge_endpoint
+                    .unwrap(),
+            ),
+            VciTokenRequest::new_mock_with_pre_authorized_code(session_token),
+            wia_client,
+            &oauth_metadata.oauth_metadata.issuer,
+        )
+        .await
+        .err()
+        .expect("HttpIssuanceSession::create should have returned an error")
+    }
+
+    #[tokio::test]
+    async fn token_request_rejects_wia_from_untrusted_issuer() {
+        let (issuer, _trust_anchor, issuer_identifier, _wptl_ca) = setup_simple_mock_issuer();
+
+        // WIA signed by a freshly generated CA that is not in the issuer's trust anchors.
+        let bad_wia = MockWiaClient::new()
+            .issue_wia(issuer_identifier.to_string(), None)
+            .await
+            .unwrap();
+
+        let message_client = VcMessageClientStub {
+            wia_override: Some(bad_wia),
+            ..VcMessageClientStub::new(issuer)
+        };
+
+        let error = start_token_request_err(message_client, issuer_identifier, &MockWiaClient::new()).await;
+        assert_matches!(
+            error,
+            WalletIssuanceError::VciTokenRequest(err)
+                if matches!(err.error, RemoteErrorCode::Known(VciTokenErrorCode::InvalidClientAttestation))
+        );
+    }
+
+    #[tokio::test]
+    async fn token_request_rejects_wia_with_wrong_audience() {
+        let (issuer, _trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+
+        // WIA signed by the trusted key pair but targeting a different audience.
+        let bad_wia = MockWiaClient::from_ca(&wptl_ca)
+            .issue_wia("https://wrong-issuer.example.com".to_string(), None)
+            .await
+            .unwrap();
+
+        let message_client = VcMessageClientStub {
+            wia_override: Some(bad_wia),
+            ..VcMessageClientStub::new(issuer)
+        };
+
+        let error = start_token_request_err(message_client, issuer_identifier, &MockWiaClient::new()).await;
+        assert_matches!(
+            error,
+            WalletIssuanceError::VciTokenRequest(err)
+                if matches!(err.error, RemoteErrorCode::Known(VciTokenErrorCode::InvalidClientAttestation))
+        );
+    }
+
+    #[tokio::test]
+    async fn token_request_rejects_wia_with_disallowed_client_id() {
+        let (issuer, _trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+
+        // WIA signed by the trusted key pair, targeting the correct audience, but with a client id that
+        // is not among the issuer's accepted wallet client ids.
+        let bad_wia = MockWiaClient::from_ca_with_client_id(&wptl_ca, "not-an-accepted-client".to_string())
+            .issue_wia(issuer_identifier.to_string(), None)
+            .await
+            .unwrap();
+
+        let message_client = VcMessageClientStub {
+            wia_override: Some(bad_wia),
+            ..VcMessageClientStub::new(issuer)
+        };
+
+        let error = start_token_request_err(message_client, issuer_identifier, &MockWiaClient::new()).await;
+        assert_matches!(
+            error,
+            WalletIssuanceError::VciTokenRequest(err)
+                if matches!(err.error, RemoteErrorCode::Known(VciTokenErrorCode::InvalidClientAttestation))
+        );
+    }
+
+    /// Builds a `VciTokenRequest` for a fresh pre-authorized session on `issuer`, along with a `Dpop`
+    /// proof that verifies against the issuer's token endpoint
+    async fn mock_token_request_and_dpop(issuer: &MockIssuer) -> (VciTokenRequest, Dpop) {
+        let code = issuer
+            .new_preauthorized_session(mock_issuable_documents(NonZeroUsize::MIN))
+            .await
+            .unwrap()
+            .grants
+            .unwrap()
+            .pre_authorized_code
+            .unwrap()
+            .pre_authorized_code;
+
+        let token_request = VciTokenRequest::new_mock_with_pre_authorized_code(code);
+        let dpop = Dpop::new(
+            &SigningKey::generate(),
+            issuer.issuer_data.server_url.join("token"),
+            &Method::POST,
+            None,
+            None,
+        )
+        .unwrap();
+
+        (token_request, dpop)
+    }
+
+    #[tokio::test]
+    async fn token_request_accepts_valid_wia_nonce() {
+        let (issuer, _trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+        let (token_request, dpop) = mock_token_request_and_dpop(&issuer).await;
+
+        let nonce = issuer.generate_nonce().await.unwrap();
+        let wia = MockWiaClient::from_ca(&wptl_ca)
+            .issue_wia(issuer_identifier.to_string(), Some(nonce))
+            .await
+            .unwrap();
+
+        issuer.process_token_request(token_request, dpop, wia).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn token_request_rejects_missing_wia_nonce() {
+        let (issuer, _trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+        let (token_request, dpop) = mock_token_request_and_dpop(&issuer).await;
+
+        let wia = MockWiaClient::from_ca(&wptl_ca)
+            .issue_wia(issuer_identifier.to_string(), None)
+            .await
+            .unwrap();
+
+        let error = issuer
+            .process_token_request(token_request, dpop, wia)
+            .await
+            .unwrap_err();
+        assert_matches!(error, TokenRequestError::Wia(WiaError::MissingChallenge));
+    }
+
+    #[tokio::test]
+    async fn token_request_rejects_unknown_wia_nonce() {
+        let (issuer, _trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+
+        let (token_request, dpop) = mock_token_request_and_dpop(&issuer).await;
+
+        // This nonce was never issued by (and thus never stored in) the issuer.
+        let wia = MockWiaClient::from_ca(&wptl_ca)
+            .issue_wia(issuer_identifier.to_string(), Some(Nonce::new_random()))
+            .await
+            .unwrap();
+
+        let error = issuer
+            .process_token_request(token_request, dpop, wia)
+            .await
+            .unwrap_err();
+        assert_matches!(error, TokenRequestError::Wia(WiaError::InvalidChallenge));
+    }
+
+    #[tokio::test]
+    async fn token_request_rejects_replayed_wia_nonce() {
+        let (issuer, _trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+
+        let nonce = issuer.generate_nonce().await.unwrap();
+        let wia = MockWiaClient::from_ca(&wptl_ca)
+            .issue_wia(issuer_identifier.to_string(), Some(nonce))
+            .await
+            .unwrap();
+
+        // The first request consumes the nonce.
+        let (token_request, dpop) = mock_token_request_and_dpop(&issuer).await;
+        issuer
+            .process_token_request(token_request, dpop, wia.clone())
+            .await
+            .unwrap();
+
+        // A second session replaying the same WIA (and therefore the same nonce) must be rejected.
+        let (token_request, dpop) = mock_token_request_and_dpop(&issuer).await;
+        let error = issuer
+            .process_token_request(token_request, dpop, wia)
+            .await
+            .unwrap_err();
+        assert_matches!(error, TokenRequestError::Wia(WiaError::InvalidChallenge));
+    }
+
+    #[tokio::test]
+    async fn wrong_access_token() {
+        let (issuer, trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+        let message_client = VcMessageClientStub {
+            wrong_access_token: true,
+            ..VcMessageClientStub::new(issuer)
+        };
+
+        let result = start_and_accept_err(message_client, issuer_identifier, trust_anchor, &wptl_ca).await;
+        assert_matches!(
+            result,
+            WalletIssuanceError::CredentialRequest(err)
+                if matches!(err.error, RemoteErrorCode::Known(CredentialErrorCode::InvalidToken))
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_dpop() {
+        let (issuer, trust_anchor, issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+        let message_client = VcMessageClientStub {
+            invalidate_dpop: true,
+            ..VcMessageClientStub::new(issuer)
+        };
+
+        let result = start_and_accept_err(message_client, issuer_identifier, trust_anchor, &wptl_ca).await;
+        assert_matches!(
+            result,
+            WalletIssuanceError::CredentialRequest(err)
+                if matches!(err.error, RemoteErrorCode::Known(CredentialErrorCode::InvalidCredentialRequest))
+        );
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CredentialRequestFailure {
+        None,
+        WrongDpopNonce,
+        IncorrectPreparedCredentialFormat,
+        SingleProofKey,
+        MissingProofNonce,
+        UnknownProofNonce,
+        CredentialConfigurationId,
+        UnknownCredentialIdentifier,
+        DeflateCompression,
+        JwtProofType,
+    }
+
+    /// Create a mock `Issuer`, set it up with a fixture of a credential that is ready to be issued and populate a
+    /// `CredentialRequest` with the right contents to actually have it issued.
+    fn setup_mock_issuer_and_credential_request(
+        format: Format,
+        copy_count: NonZeroUsize,
+        failure: CredentialRequestFailure,
+    ) -> (
+        MockIssuer,
+        TrustAnchors,
+        AccessToken,
+        Dpop,
+        VecNonEmpty<VerifyingKey>,
+        String,
+    ) {
+        let (issuer, trust_anchors, _issuer_identifier, wptl_ca) = setup_simple_mock_issuer();
+
+        // Create tokens and DPoP variables.
+        let session_token = SessionToken::new_random();
+        let access_token = AccessToken::new(&session_token.clone().into());
+
+        let dpop_private_key = SigningKey::generate();
+        let dpop_public_key = (*dpop_private_key.verifying_key()).into();
+        let dpop_nonce = DpopNonce::new_random();
+
+        let request_dpop_nonce = if failure == CredentialRequestFailure::WrongDpopNonce {
+            DpopNonce::new_random()
+        } else {
+            dpop_nonce.clone()
+        };
+        let dpop = Dpop::new(
+            &dpop_private_key,
+            issuer.issuer_data.server_url.join(CREDENTIAL_ENDPOINT_PATH),
+            &Method::POST,
+            Some(&access_token),
+            Some(request_dpop_nonce),
+        )
+        .unwrap();
+
+        // Create a `PreparedCredential` to insert into the `Issuer` session.
+        let document = mock_issuable_document_with_attrs(format, MOCK_ATTESTATION_TYPES[0], &MOCK_ATTRS);
+        let credential_kind = &document.credential_kind;
+        let config_id = format!("{}_{}", credential_kind.attestation_type, credential_kind.format).into();
+        let mut prepared_credential = PreparedCredential::try_new(config_id, document, &issuer.issuer_data).unwrap();
+
+        if failure == CredentialRequestFailure::IncorrectPreparedCredentialFormat {
+            prepared_credential.format = Format::MsoMdoc;
+        }
+
+        // Sign a key attestation.
+        let nonce = if failure == CredentialRequestFailure::MissingProofNonce {
+            None
+        } else if failure == CredentialRequestFailure::UnknownProofNonce {
+            Some("unknown_nonce".to_string().into())
+        } else {
+            Some(issuer.generate_nonce().now_or_never().unwrap().unwrap())
+        };
+
+        let single_proof_key = (failure == CredentialRequestFailure::SingleProofKey).then(SigningKey::generate);
+        let verifying_keys = utils::vec_at_least::repeat_n((), copy_count)
+            .map(|_| {
+                let holder_private_key = match single_proof_key.as_ref() {
+                    Some(key) => key,
+                    None => &SigningKey::generate(),
+                };
+
+                *holder_private_key.verifying_key()
+            })
+            .collect::<VecNonEmpty<_>>();
+
+        let key_attestation = IssuanceMockRemoteWscd::new(&wptl_ca).sign_key_attestation(
+            verifying_keys.clone(),
+            nonce,
+            &MockTimeGenerator::default(),
+        );
+
+        // Populate a `CredentialRequest` that can be used to have the credential issued, its contents depending on the
+        // `CredentialRequestFailure` enum.
+        let credential_request = if failure == CredentialRequestFailure::CredentialConfigurationId {
+            CredentialRequest::new(
+                CredentialRequestIdentifier::CredentialConfigurationId(
+                    prepared_credential.credential_configuration_id.clone(),
+                ),
+                key_attestation,
+            )
+        } else {
+            let identifier = if failure == CredentialRequestFailure::UnknownCredentialIdentifier {
+                "unknown_credential_id".to_string().into()
+            } else {
+                prepared_credential.id.to_string().into()
+            };
+
+            CredentialRequest::new(
+                CredentialRequestIdentifier::CredentialIdentifier(identifier),
+                key_attestation,
+            )
+        };
+
+        let credential_request_encrypter = JweEncrypter::from(
+            JwePublicKey::try_from_jwk(
+                issuer
+                    .metadata()
+                    .credential_request_encryption
+                    .as_ref()
+                    .unwrap()
+                    .jwks
+                    .keys
+                    .first(),
+            )
+            .unwrap(),
+        );
+
+        let credential_request_jwe = match failure {
+            CredentialRequestFailure::DeflateCompression => credential_request
+                .encrypt(
+                    &credential_request_encrypter,
+                    EncryptionAlgorithm::A128Gcm,
+                    Some(CompressionAlgorithm::Deflate),
+                )
+                .unwrap(),
+            CredentialRequestFailure::JwtProofType => {
+                // Because a "jwt" proof will make a `CredentialRequest` fail to serialize, convert to
+                // `serde_json::Value` first before editing the payload.
+                let mut credential_request = serde_json::to_value(credential_request).unwrap();
+
+                credential_request["proofs"] = json!({"jwt": ["eyJ0eXAiOiJvcGVuaWQ0dmNpLXByb29mK2p3dCJ9.e30.c2ln"]});
+                credential_request_encrypter
+                    .encrypt_json(&credential_request, EncryptionAlgorithm::A128Gcm, None, None, None)
+                    .unwrap()
+            }
+            _ => credential_request
+                .encrypt(&credential_request_encrypter, EncryptionAlgorithm::A128Gcm, None)
+                .unwrap(),
+        };
+
+        // Create a fixture to populate the `Issuer` session, containing the `PreparedCredential`.
+        let access_token_issued = AccessTokenIssued {
+            access_token: access_token.clone(),
+            prepared_credentials: vec_nonempty![prepared_credential],
+            dpop_public_key,
+            dpop_nonce,
+        };
+
+        let data = IssuanceData::AccessTokenIssued(Box::new(access_token_issued));
+        issuer
+            .sessions
+            .write(SessionState::new(session_token, data), false)
+            .now_or_never()
+            .unwrap()
+            .unwrap();
+
+        (
+            issuer,
+            trust_anchors,
+            access_token,
+            dpop,
+            verifying_keys,
+            credential_request_jwe,
+        )
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_process_credential_request_ok(
+        #[values(Format::MsoMdoc, Format::SdJwt)] format: Format,
+        #[values(1, 4)] copy_count: usize,
+    ) {
+        let (issuer, trust_anchors, access_token, dpop, holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                format,
+                copy_count.try_into().unwrap(),
+                CredentialRequestFailure::None,
+            );
+
+        let response = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect("processing CredentialRequest should succeed");
+
+        let time = MockTimeGenerator::default();
+
+        // Verify all issued credentials and extract the "issued_at" timestamps, the metadata integrity values, the
+        // status claims and the holder public keys from them.
+        let (issued_ats, vct_integrities, status_claims, issued_public_keys): (
+            HashSet<_>,
+            HashSet<_>,
+            HashSet<_>,
+            Vec<_>,
+        ) = match (format, response.into_immediate_credentials()) {
+            (Format::SdJwt, Some(Credentials::SdJwt(sd_jwt_credentials))) => sd_jwt_credentials
+                .into_iter()
+                .map(|sd_jwt| {
+                    let sd_jwt_claims = sd_jwt
+                        .credential
+                        .into_verified_against_trust_anchors(&trust_anchors, &time)
+                        .expect("issued SD-JWT should verify correctly")
+                        .into_claims();
+
+                    let issued_at = DateTime::<Utc>::from(sd_jwt_claims.iat);
+                    let vct_integrity = Some(
+                        sd_jwt_claims
+                            .vct_integrity
+                            .expect("issued SD-JWT should contain vct#integrity"),
+                    );
+                    let status_claim = sd_jwt_claims.status.expect("issued SD-JWT should contain status claim");
+                    let public_key = sd_jwt_claims.cnf.try_to_public_key().unwrap();
+
+                    (issued_at, vct_integrity, status_claim, public_key)
+                })
+                .collect_vec(),
+            (Format::MsoMdoc, Some(Credentials::MsoMdoc(mdoc_credentials))) => mdoc_credentials
+                .into_iter()
+                .map(|mdoc_credential| {
+                    let IssuerSignedVerificationResult { mso, .. } = mdoc_credential
+                        .credential
+                        .verify(
+                            ValidityRequirement::AllowNotYetValid,
+                            &time,
+                            &trust_anchors,
+                            &[iana::Algorithm::ES256],
+                        )
+                        .expect("issued mdoc should verify correctly");
+
+                    let issued_at = DateTime::<Utc>::try_from(&mso.validity_info.signed).unwrap();
+                    // An mdoc is described by Credential Metadata, so it carries no Type Metadata integrity digest.
+                    let vct_integrity = None;
+                    let MdocStatus::StatusList(status_claim) =
+                        mso.status.expect("issued mdoc should contain status claim")
+                    else {
+                        panic!("issued mdoc status should be a status list");
+                    };
+                    let status_claim = StatusClaim::StatusList(status_claim);
+                    let public_key = VerifyingKey::try_from(mso.device_key_info).unwrap().into();
+
+                    (issued_at, vct_integrity, status_claim, public_key)
+                })
+                .collect_vec(),
+            _ => panic!(
+                "processing CredentialRequest should result in an immediate CredentialResponse with the requested \
+                 format"
+            ),
+        }
+        .into_iter()
+        .multiunzip();
+
+        // Check that all the "issued_at" timestamps and type metadata integrity values are the same across the
+        // credential copies.
+        assert_eq!(issued_ats.len(), 1);
+        match format {
+            Format::SdJwt => {
+                assert_eq!(vct_integrities.len(), 1);
+            }
+            Format::MsoMdoc => {
+                assert!(vct_integrities.iter().flatten().collect_vec().is_empty());
+            }
+        }
+
+        // Check that each issued credential has a distinct status claim.
+        assert_eq!(status_claims.len(), copy_count);
+
+        // Check that the holder public keys are exactly the same as the provided input of the credential endpoint.
+        assert_eq!(issued_public_keys.len(), copy_count);
+        assert_eq!(
+            issued_public_keys,
+            holder_public_keys.into_iter().map(PublicKey::from).collect_vec()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_malformed_token() {
+        let (issuer, _trust_anchors, _access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(Format::SdJwt, NonZeroUsize::MIN, CredentialRequestFailure::None);
+
+        // Processing a Credential Request with an Access Token that is too short to contain an appended Session Token
+        // should result in an error.
+        let error = issuer
+            .process_credential_request(
+                &"short".to_string().into(),
+                dpop,
+                &credential_request,
+                &MockTimeGenerator::default(),
+            )
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::MalformedToken);
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_unknown_session() {
+        let (issuer, _trust_anchors, _access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(Format::SdJwt, NonZeroUsize::MIN, CredentialRequestFailure::None);
+
+        // Processing a Credential Request with an unknown Session Token should result in an error.
+        let error = issuer
+            .process_credential_request(
+                &random_string(64).into(),
+                dpop,
+                &credential_request,
+                &MockTimeGenerator::default(),
+            )
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(
+            error,
+            CredentialRequestError::IssuanceError(IssuanceError::UnknownSession(_))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_unauthorized() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(Format::SdJwt, NonZeroUsize::MIN, CredentialRequestFailure::None);
+
+        let access_token = AccessToken::new(&access_token.code().unwrap());
+
+        // Processing a Credential Request with an unknown Access Token should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::Unauthorized);
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_dpop_invalid() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::WrongDpopNonce,
+            );
+
+        // Processing a Credential Request with an incorrect DPoP should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(
+            error,
+            CredentialRequestError::IssuanceError(IssuanceError::DpopInvalid(_))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_invalid_attestation_proof() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                3.try_into().unwrap(),
+                CredentialRequestFailure::SingleProofKey,
+            );
+
+        // Processing a Credential Request with multiple proof JWTs that all contain the same public key should result
+        // in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::InvalidAttestationProof(_));
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_decryption_deflate() {
+        // Compress the encrypted Credential Request with Deflate, which the Issuer should reject.
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::DeflateCompression,
+            );
+
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(
+            error,
+            CredentialRequestError::Decryption(JweJsonDecryptionError::JweDecryption(JweDecryptionError::Decryption(
+                _
+            )))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_proof_type_unsupported() {
+        // Replace the proofs with ones of the "jwt" proof type, which the issuer does not support.
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::JwtProofType,
+            );
+
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(
+            error,
+            CredentialRequestError::ProofTypeUnsupported(typ) if typ == HashSet::from_iter(["jwt".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_missing_proof_nonce() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::MissingProofNonce,
+            );
+
+        // Processing a Credential Request with a proof JWT that does not contain a nonce should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::MissingProofNonce);
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_invalid_nonce() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::UnknownProofNonce,
+            );
+
+        // Processing a Credential Request with a proof JWT that contains an unknown nonce should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::InvalidNonce);
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_too_many_copies_requested() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                5.try_into().unwrap(),
+                CredentialRequestFailure::None,
+            );
+
+        // Processing a Credential Request with too many proof JWT should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::TooManyCopiesRequested(copy_count) if copy_count.get() == 5);
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_unknown_credential_id() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::UnknownCredentialIdentifier,
+            );
+
+        // Processing a Credential Request with an unknown Credential ID should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::UnknownCredentialIdentifier(_));
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_credential_configuration_id_not_allowed() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::CredentialConfigurationId,
+            );
+
+        // Processing a Credential Request for a Credential Configuration ID should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::CredentialConfigurationIdNotAllowed);
+    }
+
+    #[tokio::test]
+    async fn test_process_credential_request_error_missing_credential_configuration() {
+        let (issuer, _trust_anchors, access_token, dpop, _holder_public_keys, credential_request) =
+            setup_mock_issuer_and_credential_request(
+                Format::SdJwt,
+                NonZeroUsize::MIN,
+                CredentialRequestFailure::IncorrectPreparedCredentialFormat,
+            );
+
+        // Processing a Credential Request when the issuer has an inconsistent `PreparedCredential` in its session state
+        // should result in an error.
+        let error = issuer
+            .process_credential_request(&access_token, dpop, &credential_request, &MockTimeGenerator::default())
+            .await
+            .expect_err("processing CredentialRequest should fail");
+
+        assert_matches!(error, CredentialRequestError::MissingCredentialConfiguration(_));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_task() {
+        let documents = mock_issuable_documents(NonZeroUsize::MIN);
+
+        let (sessions, mock_time) = memory_session_store_with_mock_time();
+        let sessions = Arc::new(sessions);
+
+        let (issuer, _, _, _, _) = setup_mock_issuer(
+            "https://example.com/".parse().unwrap(),
+            NonZeroUsize::MIN,
+            sessions.clone(),
+        );
+
+        let credential_offer = issuer.new_preauthorized_session(documents).await.unwrap();
+        let code = credential_offer
+            .grants
+            .unwrap()
+            .pre_authorized_code
+            .unwrap()
+            .pre_authorized_code;
+
+        // The Issuer doesn't schedules its own cleanup; start one explicitly so the expired session gets purged.
+        let _cleanup_task = start_cleanup_task(CLEANUP_INTERVAL, Arc::new(issuer));
+
+        test_memory_store_with_cleanup_task(sessions, code.into(), &mock_time, CLEANUP_INTERVAL).await;
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_metadata_credential_preview_endpoint(#[values(true, false)] credential_preview_endpoint: bool) {
+        let (issuer, _, _, _, _) = setup_mock_issuer_with_metadata(
+            "https://example.com/".parse().unwrap(),
+            vec![CredentialConfigurationFormat::new_sd_jwt_credential_metadata(
+                MOCK_ATTESTATION_TYPES[0].to_string(),
+                CredentialMetadata::new_example(&["first_name"]),
+            )],
+            credential_preview_endpoint,
+            Arc::new(MemorySessionStore::default()),
+        );
+
+        assert_eq!(issuer.has_credential_preview_endpoint(), credential_preview_endpoint);
     }
 }

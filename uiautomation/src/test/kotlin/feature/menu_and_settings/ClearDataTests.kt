@@ -7,8 +7,6 @@ import org.junit.jupiter.api.Assertions.assertAll
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Tag
-import org.junit.jupiter.api.Tags
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.TestMethodOrder
 import org.junitpioneer.jupiter.RetryingTest
@@ -35,8 +33,7 @@ class ClearDataTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC28 Delete App data")
-    @Tags(Tag("a11yBatch2"))
+    @DisplayName("LTC21 Delete App data")
     fun verifyClearData(testInfo: TestInfo) {
         setUp(testInfo)
         assertAll(
@@ -44,6 +41,7 @@ class ClearDataTests : TestBase() {
             { assertTrue(clearDataDialog.cancelButtonVisible(), "cancel button is not visible") },
             { assertTrue(clearDataDialog.confirmButtonVisible(), "confirm button is not visible") }
         )
+        clearDataDialog.captureA11ySnapshot("ClearDataDialog")
 
         clearDataDialog.clickConfirmButton()
         assertTrue(demoScreen.visible(), "demo screen is not visible")

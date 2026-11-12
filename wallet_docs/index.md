@@ -22,7 +22,9 @@ get-started/create-an-issuer
 :caption: Architecture
 :maxdepth: 2
 :glob:
-architecture/*
+architecture/architecture-overview
+architecture/use-cases
+architecture/gsn-overview
 ```
 
 ```{toctree}
@@ -33,6 +35,7 @@ functional-design/functional-design
 functional-design/use-cases
 functional-design/partial-flows
 functional-design/errors
+functional-design/notifications
 functional-design/logical-test-cases
 ```
 

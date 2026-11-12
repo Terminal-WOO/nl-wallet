@@ -1,16 +1,34 @@
-use reqwest::StatusCode;
+use std::error::Error;
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::str::FromStr;
+
+use http::StatusCode;
+use http_utils::error::HttpJsonError;
+use http_utils::error::HttpJsonErrorType;
+use oauth::errors::AuthorizationErrorCode;
+use oauth::errors::BodyOrRedirectErrorResponse;
+use oauth::errors::ErrorResponse;
+use oauth::errors::ErrorStatusCode;
+use oauth::errors::ErrorWithCode;
+use oauth::errors::RemoteErrorCode;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::skip_serializing_none;
+use strum::EnumString;
 use url::Url;
+use wscd::payload::wia::WiaVerificationError;
 
-use http_utils::error::HttpJsonError;
-use http_utils::error::HttpJsonErrorType;
-use http_utils::urls::BaseUrl;
-
+use crate::authorization_code_flow::InvalidAuthorizationRequest;
+use crate::authorizing_issuer::AuthorizationRequestError;
+use crate::authorizing_issuer::AuthorizeError;
+use crate::authorizing_issuer::CompleteAuthorizationError;
+use crate::authorizing_issuer::ParError;
+use crate::issuer::CredentialPreviewError;
 use crate::issuer::CredentialRequestError;
 use crate::issuer::IssuanceError;
 use crate::issuer::TokenRequestError;
+use crate::issuer::WiaError;
 use crate::verifier::CancelSessionError;
 use crate::verifier::DisclosedAttributesError;
 use crate::verifier::GetAuthRequestError;
@@ -21,45 +39,305 @@ use crate::verifier::SessionStatus;
 use crate::verifier::SessionStatusError;
 use crate::verifier::WithRedirectUri;
 
-/// Describes an error that occurred when processing an HTTP endpoint from the OAuth/OpenID protocol family.
-#[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorResponse<T> {
-    pub error: T,
-    pub error_description: Option<String>,
-    pub error_uri: Option<Url>,
-}
+pub type RemoteDisclosureErrorResponse<T> = DisclosureErrorResponse<RemoteErrorCode<T>>;
 
 /// Wrapper of [`ErrorResponse`] that has an optional redirect URI
 /// and is as an error response for disclosure endpoints.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisclosureErrorResponse<T> {
-    #[serde(flatten)]
+    #[serde(
+        flatten,
+        bound(serialize = "T: Display", deserialize = "T: FromStr, T::Err: Display")
+    )]
     pub error_response: ErrorResponse<T>,
-    pub redirect_uri: Option<BaseUrl>,
+    pub redirect_uri: Option<Box<Url>>,
 }
 
 impl<T> DisclosureErrorResponse<T> {
-    pub fn response_error(&self) -> &T {
+    pub fn error(&self) -> &T {
         &self.error_response.error
     }
 }
 
-pub trait ErrorStatusCode {
-    fn status_code(&self) -> StatusCode;
+#[cfg(any(test, feature = "test"))]
+impl<T> From<DisclosureErrorResponse<T>> for DisclosureErrorResponse<RemoteErrorCode<T>> {
+    fn from(value: DisclosureErrorResponse<T>) -> Self {
+        let DisclosureErrorResponse {
+            error_response,
+            redirect_uri,
+        } = value;
+
+        Self {
+            error_response: error_response.into(),
+            redirect_uri,
+        }
+    }
 }
 
-/// See
-/// <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-13.html#name-credential-error-response>
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+impl<E, T> From<WithRedirectUri<E>> for DisclosureErrorResponse<T>
+where
+    E: Into<ErrorResponse<T>> + Error,
+{
+    fn from(value: WithRedirectUri<E>) -> Self {
+        DisclosureErrorResponse {
+            error_response: value.error.into(),
+            redirect_uri: value.redirect_uri,
+        }
+    }
+}
+
+/// The list of error codes that can result from the PAR POST request.
+///
+/// According to <https://datatracker.ietf.org/doc/html/rfc9126#section-2.3>, these can be taken either from
+/// <https://datatracker.ietf.org/doc/html/rfc6749#section-5.2> or
+/// <https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1>, i.e. the token endpoint error codes or the
+/// authorization endpoint error codes.
+///
+/// This type represents a selection among these error codes, containing only those that this codebase's PAR
+/// endpoints return.
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum ParErrorCode {
+    // Token error code.
+    InvalidClient,
+    // Both token and authorization error code.
+    InvalidRequest,
+    // Authorization error code.
+    ServerError,
+
+    /// Invalid Client Attestation / WIA.
+    /// See <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-09#section-7.4-2.2.1>
+    InvalidClientAttestation,
+
+    /// Client Attestation / WIA is valid but not fresh enough.
+    /// See <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-09#section-7.4-2.3.1>
+    UseFreshAttestation,
+}
+
+impl ErrorStatusCode for ParErrorCode {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::InvalidClient => StatusCode::UNAUTHORIZED,
+            Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InvalidClientAttestation | Self::UseFreshAttestation => StatusCode::UNAUTHORIZED,
+        }
+    }
+}
+
+/// The list of error codes that can result from the Token Request.
+///
+/// See <https://www.rfc-editor.org/rfc/rfc6749.html#section-5.2>.
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum VciTokenErrorCode {
+    InvalidRequest,
+    InvalidClient,
+    InvalidGrant,
+    UnauthorizedClient,
+    UnsupportedGrantType,
+    InvalidScope,
+
+    /// Invalid Client Attestation / WIA.
+    /// See <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-09#section-7.4-2.2.1>
+    InvalidClientAttestation,
+
+    /// Client Attestation / WIA is valid but not fresh enough.
+    /// See <https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-09#section-7.4-2.3.1>
+    UseFreshAttestation,
+
+    /// This can be returned in case of internal server errors, i.e. with HTTP status code 5xx.
+    /// This error type is not defined in the specs, but then again the entire HTTP response in case
+    /// 5xx status codes is not defined by the specs, so we have freedom to return what we want.
+    ServerError,
+}
+
+impl ErrorStatusCode for VciTokenErrorCode {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::InvalidRequest
+            | Self::InvalidGrant
+            | Self::UnauthorizedClient
+            | Self::UnsupportedGrantType
+            | Self::InvalidScope => StatusCode::BAD_REQUEST,
+            Self::InvalidClient | Self::InvalidClientAttestation | Self::UseFreshAttestation => {
+                StatusCode::UNAUTHORIZED
+            }
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+// OpenID4VCI Error Codes
+
+impl From<AuthorizeError> for BodyOrRedirectErrorResponse<AuthorizationErrorCode> {
+    fn from(value: AuthorizeError) -> Self {
+        let status_code = match value {
+            // The errors at the Authorization Endpoint that can occur before the PAR is retrieved and the
+            // `redirect_uri` is known are represented as HTTP status code and plain-text bodies.
+            AuthorizeError::UnknownClient(_) | AuthorizeError::MismatchedClient { .. } => StatusCode::UNAUTHORIZED,
+            AuthorizeError::ParStore(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AuthorizeError::UnknownRequestUri(_) => StatusCode::NOT_FOUND,
+
+            // Once the `redirect_uri` is known, convert the error to a 303 redirect instead.
+            AuthorizeError::AuthorizationRequest(redirect_error) => {
+                return Self::new_redirect((redirect_error).into());
+            }
+        };
+
+        Self::new_body(status_code, value.to_string())
+    }
+}
+
+impl ErrorWithCode for AuthorizationRequestError {
+    type ErrorCode = AuthorizationErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::InvalidAuthorizationRequest(InvalidAuthorizationRequest::UnsupportedCodeChallenge) => {
+                AuthorizationErrorCode::InvalidRequest
+            }
+
+            Self::InvalidAuthorizationRequest(InvalidAuthorizationRequest::NoValidScope(_)) => {
+                AuthorizationErrorCode::InvalidScope
+            }
+
+            Self::AuthorizationCodeFlow(error) => error.error_code(),
+
+            Self::CompleteAuthorization(error) => error.error_code(),
+        }
+    }
+}
+
+impl ErrorWithCode for CompleteAuthorizationError {
+    type ErrorCode = AuthorizationErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::IssuableDocument(_) | Self::SessionStore(_) => AuthorizationErrorCode::ServerError,
+        }
+    }
+}
+
+impl ErrorWithCode for ParError {
+    type ErrorCode = ParErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::UnknownClient(_) => ParErrorCode::InvalidClient,
+
+            Self::Wia(WiaError::Verification(WiaVerificationError::Expired)) => ParErrorCode::UseFreshAttestation,
+
+            Self::Wia(WiaError::ChallengeStore(_)) => ParErrorCode::ServerError,
+
+            Self::Wia(WiaError::InvalidChallenge)
+            | Self::Wia(WiaError::MissingChallenge)
+            | Self::Wia(WiaError::Verification(_)) => ParErrorCode::InvalidClientAttestation,
+
+            Self::AuthorizationDetailsUnsupported | Self::InvalidRedirectUri(_) => ParErrorCode::InvalidRequest,
+
+            Self::Store(_) => ParErrorCode::ServerError,
+        }
+    }
+}
+
+impl ErrorWithCode for TokenRequestError {
+    type ErrorCode = VciTokenErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::IssuanceError(IssuanceError::SessionStore(_)) => VciTokenErrorCode::ServerError,
+
+            // A missing session (cleaned up) or a session in a terminal/wrong state (already used or
+            // expired) both mean the authorization grant presented at `/token` is no longer valid.
+            // Per RFC 6749 section 5.2 that is exactly `invalid_grant` ("invalid, expired, revoked ...").
+            //
+            // In the pre-authorized-code flow `invalid_grant` can *only* result from these two cases
+            // (there are no PKCE / client_id / scope / redirect_uri checks that also yield it), so the
+            // wallet can unambiguously map a pre-authorized `invalid_grant` onto a specific error without
+            // relying on a non-standard error code.
+            Self::SessionNotFound | Self::IssuanceError(IssuanceError::UnexpectedState) => {
+                VciTokenErrorCode::InvalidGrant
+            }
+
+            Self::IssuanceError(_) => VciTokenErrorCode::InvalidRequest,
+
+            Self::UnexpectedGrantType { .. } => VciTokenErrorCode::UnsupportedGrantType,
+
+            Self::Wia(WiaError::Verification(WiaVerificationError::Expired)) => VciTokenErrorCode::UseFreshAttestation,
+
+            Self::Wia(WiaError::ChallengeStore(_)) => VciTokenErrorCode::ServerError,
+
+            Self::Wia(WiaError::InvalidChallenge)
+            | Self::Wia(WiaError::MissingChallenge)
+            | Self::Wia(WiaError::Verification(_)) => VciTokenErrorCode::InvalidClientAttestation,
+
+            Self::MissingCodeVerifier | Self::PkceVerificationFailed => VciTokenErrorCode::InvalidGrant,
+
+            Self::UnknownClient(_) => VciTokenErrorCode::InvalidClient,
+
+            Self::ClientIdMismatch { .. } => VciTokenErrorCode::InvalidGrant,
+
+            Self::AuthorizationDetailsUnsupported => VciTokenErrorCode::InvalidRequest,
+
+            Self::ScopeMismatch { .. } | Self::PreAuthorizedScopeUnsupported(_) => VciTokenErrorCode::InvalidScope,
+
+            Self::MissingRedirectUri | Self::RedirectUriMismatch { .. } => VciTokenErrorCode::InvalidRequest,
+
+            Self::CredentialConfigNotOffered(_) => VciTokenErrorCode::ServerError,
+        }
+    }
+}
+
+/// Error codes for the credential preview endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum CredentialPreviewErrorCode {
+    InvalidRequest,
+    InvalidToken,
+    ServerError,
+}
+
+impl ErrorStatusCode for CredentialPreviewErrorCode {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::InvalidRequest => StatusCode::BAD_REQUEST,
+
+            Self::InvalidToken => StatusCode::UNAUTHORIZED,
+
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl ErrorWithCode for CredentialPreviewError {
+    type ErrorCode = CredentialPreviewErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::IssuanceError(IssuanceError::SessionStore(_)) => CredentialPreviewErrorCode::ServerError,
+
+            Self::IssuanceError(_) => CredentialPreviewErrorCode::InvalidRequest,
+
+            Self::MalformedToken | CredentialPreviewError::Unauthorized => CredentialPreviewErrorCode::InvalidToken,
+
+            Self::MissingCredentialConfiguration(_) => CredentialPreviewErrorCode::ServerError,
+        }
+    }
+}
+
+/// See <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-8.3.1>.
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum CredentialErrorCode {
     InvalidCredentialRequest,
-    UnsupportedCredentialType,
-    UnsupportedCredentialFormat,
+    UnknownCredentialConfiguration,
+    UnknownCredentialIdentifier,
     InvalidProof,
+    InvalidNonce,
     InvalidEncryptionParameters,
+    CredentialRequestDenied,
 
     // From https://www.rfc-editor.org/rfc/rfc6750.html#section-3.1
     InvalidRequest,
@@ -72,119 +350,82 @@ pub enum CredentialErrorCode {
     ServerError,
 }
 
-impl From<CredentialRequestError> for ErrorResponse<CredentialErrorCode> {
-    fn from(err: CredentialRequestError) -> ErrorResponse<CredentialErrorCode> {
-        let description = err.to_string();
-        ErrorResponse {
-            error: match err {
-                CredentialRequestError::IssuanceError(IssuanceError::SessionStore(_))
-                | CredentialRequestError::MissingAttestationTypeConfiguration(_)
-                | CredentialRequestError::PreviewConversion(_)
-                | CredentialRequestError::MdocConversion(_)
-                | CredentialRequestError::SdJwtConversion(_)
-                | CredentialRequestError::CredentialSigning(_)
-                | CredentialRequestError::IncorrectNumberOfStatusClaims(_)
-                | CredentialRequestError::ObtainStatusClaim(_) => CredentialErrorCode::ServerError,
-
-                CredentialRequestError::IssuanceError(_)
-                | CredentialRequestError::UseBatchIssuance
-                | CredentialRequestError::WrongNumberOfCredentialRequests
-                | CredentialRequestError::MissingWua
-                | CredentialRequestError::MissingPoa
-                | CredentialRequestError::CredentialTypeMismatch { .. }
-                | CredentialRequestError::Wua(_)
-                | CredentialRequestError::CredentialTypeNotOffered(_) => CredentialErrorCode::InvalidCredentialRequest,
-
-                CredentialRequestError::Unauthorized | CredentialRequestError::MalformedToken => {
-                    CredentialErrorCode::InvalidToken
-                }
-
-                CredentialRequestError::UnsupportedJwt(_)
-                | CredentialRequestError::IncorrectNonce
-                | CredentialRequestError::Jwt(_)
-                | CredentialRequestError::JwkConversion(_)
-                | CredentialRequestError::MissingCredentialRequestPoP
-                | CredentialRequestError::PoaVerification(_) => CredentialErrorCode::InvalidProof,
-            },
-            error_description: Some(description),
-            error_uri: None,
-        }
-    }
-}
-
 impl ErrorStatusCode for CredentialErrorCode {
     fn status_code(&self) -> StatusCode {
         match self {
-            CredentialErrorCode::InvalidCredentialRequest
-            | CredentialErrorCode::UnsupportedCredentialType
-            | CredentialErrorCode::UnsupportedCredentialFormat
-            | CredentialErrorCode::InvalidProof
-            | CredentialErrorCode::InvalidEncryptionParameters
-            | CredentialErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
-            CredentialErrorCode::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-            CredentialErrorCode::InvalidToken => StatusCode::UNAUTHORIZED,
-            CredentialErrorCode::InsufficientScope => StatusCode::FORBIDDEN,
+            Self::InvalidCredentialRequest
+            | Self::UnknownCredentialConfiguration
+            | Self::UnknownCredentialIdentifier
+            | Self::InvalidProof
+            | Self::InvalidNonce
+            | Self::InvalidEncryptionParameters
+            | Self::CredentialRequestDenied
+            | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+
+            Self::InvalidToken => StatusCode::UNAUTHORIZED,
+
+            Self::InsufficientScope => StatusCode::FORBIDDEN,
+
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
 
-/// <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-13.html#section-6.3>
-/// and <https://www.rfc-editor.org/rfc/rfc6749.html#section-5.2>.
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TokenErrorCode {
-    InvalidRequest,
-    InvalidClient,
-    InvalidGrant,
-    UnauthorizedClient,
-    UnsupportedGrantType,
-    InvalidScope,
-    AuthorizationPending, // OpenID4VCI-specific error type
-    SlowDown,             // OpenID4VCI-specific error type
+impl ErrorWithCode for CredentialRequestError {
+    type ErrorCode = CredentialErrorCode;
 
-    /// This can be returned in case of internal server errors, i.e. with HTTP status code 5xx.
-    /// This error type is not defined in the specs, but then again the entire HTTP response in case
-    /// 5xx status codes is not defined by the specs, so we have freedom to return what we want.
-    ServerError,
-}
-
-impl From<TokenRequestError> for ErrorResponse<TokenErrorCode> {
-    fn from(err: TokenRequestError) -> Self {
-        let description = err.to_string();
-        ErrorResponse {
-            error: match err {
-                TokenRequestError::IssuanceError(IssuanceError::SessionStore(_))
-                | TokenRequestError::AttributesError(_)
-                | TokenRequestError::AttributeService(_)
-                | TokenRequestError::CredentialTypeNotOffered(_) => TokenErrorCode::ServerError,
-                TokenRequestError::IssuanceError(_) => TokenErrorCode::InvalidRequest,
-                TokenRequestError::UnsupportedTokenRequestType => TokenErrorCode::UnsupportedGrantType,
-            },
-            error_description: Some(description),
-            error_uri: None,
-        }
-    }
-}
-
-impl ErrorStatusCode for TokenErrorCode {
-    fn status_code(&self) -> StatusCode {
+    fn error_code(&self) -> Self::ErrorCode {
         match self {
-            TokenErrorCode::InvalidRequest
-            | TokenErrorCode::InvalidGrant
-            | TokenErrorCode::UnauthorizedClient
-            | TokenErrorCode::UnsupportedGrantType
-            | TokenErrorCode::InvalidScope
-            | TokenErrorCode::AuthorizationPending
-            | TokenErrorCode::SlowDown => StatusCode::BAD_REQUEST,
-            TokenErrorCode::InvalidClient => StatusCode::UNAUTHORIZED,
-            TokenErrorCode::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+            // The session backing the access token is gone (cleaned up) or in a terminal/wrong state:
+            // the token is no longer valid, which per RFC 6750 is `invalid_token`. This is hit when the
+            // session expires during issuance (e.g. the holder dwells on the preview or PIN screen past the
+            // session timeout), so the wallet can translate this to a "session expired" error instead of a
+            // generic one.
+            Self::IssuanceError(IssuanceError::UnexpectedState)
+            | Self::IssuanceError(IssuanceError::UnknownSession(_)) => CredentialErrorCode::InvalidToken,
+
+            Self::IssuanceError(IssuanceError::DpopInvalid(_)) => CredentialErrorCode::InvalidCredentialRequest,
+
+            Self::IssuanceError(IssuanceError::SessionStore(_)) => CredentialErrorCode::ServerError,
+
+            Self::MalformedToken | Self::Unauthorized => CredentialErrorCode::InvalidToken,
+
+            Self::Decryption(_) => CredentialErrorCode::InvalidEncryptionParameters,
+
+            Self::MissingCredentialRequestProof | Self::ProofTypeUnsupported(..) => CredentialErrorCode::InvalidProof,
+
+            Self::TooManyCopiesRequested(_) => CredentialErrorCode::InvalidCredentialRequest,
+
+            Self::InvalidAttestationProof(_) => CredentialErrorCode::InvalidProof,
+
+            Self::MissingProofNonce => CredentialErrorCode::InvalidNonce,
+
+            Self::ProofNonceStore(_) => CredentialErrorCode::ServerError,
+
+            Self::InvalidNonce => CredentialErrorCode::InvalidNonce,
+
+            Self::UnknownCredentialIdentifier(_) => CredentialErrorCode::UnknownCredentialIdentifier,
+
+            Self::CredentialConfigurationIdNotAllowed => CredentialErrorCode::InvalidCredentialRequest,
+
+            Self::MissingCredentialConfiguration(_) => CredentialErrorCode::ServerError,
+
+            Self::StatusClaimBatchIdExists(_) => CredentialErrorCode::CredentialRequestDenied,
+
+            Self::ObtainStatusClaim(_) | Self::IncorrectNumberOfStatusClaims { .. } => CredentialErrorCode::ServerError,
+
+            Self::JwkConversion(_) | Self::MdocConversion(_) | Self::SdJwtConversion(_) => {
+                CredentialErrorCode::ServerError
+            }
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GetRequestErrorCode {
+// OpenID4VP Error Codes
+
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum GetAuthRequestErrorCode {
     InvalidRequest,
     ExpiredEphemeralId,
     ExpiredSession,
@@ -194,55 +435,59 @@ pub enum GetRequestErrorCode {
     ServerError,
 }
 
-impl From<GetAuthRequestError> for ErrorResponse<GetRequestErrorCode> {
-    fn from(err: GetAuthRequestError) -> Self {
-        let description = err.to_string();
-        ErrorResponse {
-            error: match err {
-                GetAuthRequestError::ExpiredEphemeralId(_) => GetRequestErrorCode::ExpiredEphemeralId,
-                GetAuthRequestError::Session(SessionError::UnexpectedState(SessionStatus::Expired)) => {
-                    GetRequestErrorCode::ExpiredSession
-                }
-                GetAuthRequestError::Session(SessionError::UnexpectedState(SessionStatus::Cancelled)) => {
-                    GetRequestErrorCode::CancelledSession
-                }
-                GetAuthRequestError::Session(SessionError::UnknownSession(_)) => GetRequestErrorCode::UnknownSession,
-                GetAuthRequestError::EncryptionKey(_)
-                | GetAuthRequestError::AuthRequest(_)
-                | GetAuthRequestError::Jwt(_)
-                | GetAuthRequestError::ReturnUrlConfigurationMismatch
-                | GetAuthRequestError::UnknownUseCase(_)
-                | GetAuthRequestError::Session(SessionError::SessionStore(_)) => GetRequestErrorCode::ServerError,
-                GetAuthRequestError::QueryParametersMissing
-                | GetAuthRequestError::QueryParametersDeserialization(_)
-                | GetAuthRequestError::InvalidEphemeralId(_)
-                | GetAuthRequestError::Session(SessionError::UnexpectedState(_)) => GetRequestErrorCode::InvalidRequest,
-            },
-            error_description: Some(description),
-            error_uri: None,
+impl ErrorStatusCode for GetAuthRequestErrorCode {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            Self::InvalidRequest => StatusCode::BAD_REQUEST,
+
+            // Per RFC 9110 we MUST include a `WWW-Authenticate` HTTP header with this, but we can't do that
+            // conveniently here. It seems this header is often skipped, and we use it internally here, we skip it too.
+            Self::ExpiredEphemeralId => StatusCode::UNAUTHORIZED,
+
+            Self::ExpiredSession | Self::CancelledSession | Self::UnknownSession => StatusCode::NOT_FOUND,
+
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
 
-impl ErrorStatusCode for GetRequestErrorCode {
-    fn status_code(&self) -> StatusCode {
-        match self {
-            GetRequestErrorCode::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-            GetRequestErrorCode::ExpiredSession
-            | GetRequestErrorCode::CancelledSession
-            | GetRequestErrorCode::UnknownSession => StatusCode::NOT_FOUND,
-            GetRequestErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+impl ErrorWithCode for GetAuthRequestError {
+    type ErrorCode = GetAuthRequestErrorCode;
 
-            // Per RFC 7235 we MUST include a `WWW-Authenticate` HTTP header with this, but we can't do that
-            // conveniently here. It seems this header is often skipped, and we use it internally here, we skip it too.
-            GetRequestErrorCode::ExpiredEphemeralId => StatusCode::UNAUTHORIZED,
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::Session(SessionError::SessionStore(_)) => GetAuthRequestErrorCode::ServerError,
+
+            Self::Session(SessionError::UnknownSession(_)) => GetAuthRequestErrorCode::UnknownSession,
+
+            Self::Session(SessionError::UnexpectedState(SessionStatus::Cancelled)) => {
+                GetAuthRequestErrorCode::CancelledSession
+            }
+
+            Self::Session(SessionError::UnexpectedState(SessionStatus::Expired)) => {
+                GetAuthRequestErrorCode::ExpiredSession
+            }
+
+            Self::Session(SessionError::UnexpectedState(_)) => GetAuthRequestErrorCode::InvalidRequest,
+
+            Self::InvalidEphemeralId(_) => GetAuthRequestErrorCode::InvalidRequest,
+
+            Self::ExpiredEphemeralId(_) => GetAuthRequestErrorCode::ExpiredEphemeralId,
+
+            Self::JwtSign(_) | Self::ReturnUrlConfigurationMismatch | Self::UnknownUseCase(_) => {
+                GetAuthRequestErrorCode::ServerError
+            }
+
+            Self::QueryParametersMissing | Self::QueryParametersDeserialization(_) => {
+                GetAuthRequestErrorCode::InvalidRequest
+            }
         }
     }
 }
 
 /// <https://openid.net/specs/openid-4-verifiable-presentations-1_0-20.html#name-error-response>
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum PostAuthResponseErrorCode {
     InvalidRequest,
     ExpiredSession,
@@ -256,57 +501,65 @@ pub enum PostAuthResponseErrorCode {
     NoIssuableAttestations,
 }
 
-impl From<PostAuthResponseError> for ErrorResponse<PostAuthResponseErrorCode> {
-    fn from(err: PostAuthResponseError) -> Self {
-        let description = err.to_string();
-        ErrorResponse {
-            error: match err {
-                PostAuthResponseError::Session(SessionError::UnexpectedState(SessionStatus::Expired)) => {
-                    PostAuthResponseErrorCode::ExpiredSession
-                }
-                PostAuthResponseError::Session(SessionError::UnexpectedState(SessionStatus::Cancelled)) => {
-                    PostAuthResponseErrorCode::CancelledSession
-                }
-                PostAuthResponseError::Session(SessionError::SessionStore(_))
-                | PostAuthResponseError::ResponseEncoding(_) => PostAuthResponseErrorCode::ServerError,
-                PostAuthResponseError::Session(SessionError::UnknownSession(_)) => {
-                    PostAuthResponseErrorCode::UnknownSession
-                }
-                PostAuthResponseError::AuthResponse(_)
-                | PostAuthResponseError::Session(SessionError::UnexpectedState(_)) => {
-                    PostAuthResponseErrorCode::InvalidRequest
-                }
-                PostAuthResponseError::HandlingDisclosureResult(err) => err.as_ref().to_error_code(),
-            },
-            error_description: Some(description),
-            error_uri: None,
-        }
-    }
-}
-
 impl ErrorStatusCode for PostAuthResponseErrorCode {
     fn status_code(&self) -> StatusCode {
         match self {
-            PostAuthResponseErrorCode::ExpiredSession
-            | PostAuthResponseErrorCode::CancelledSession
-            | PostAuthResponseErrorCode::UnknownSession
-            | PostAuthResponseErrorCode::NoIssuableAttestations => StatusCode::NOT_FOUND,
-            PostAuthResponseErrorCode::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-            PostAuthResponseErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::InvalidRequest => StatusCode::BAD_REQUEST,
+
+            Self::ExpiredSession | Self::CancelledSession | Self::UnknownSession => StatusCode::NOT_FOUND,
+
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+
+            Self::NoIssuableAttestations => StatusCode::NOT_FOUND,
         }
     }
 }
 
-impl<E, T> From<WithRedirectUri<E>> for DisclosureErrorResponse<T>
-where
-    E: Into<ErrorResponse<T>> + std::error::Error,
-{
-    fn from(value: WithRedirectUri<E>) -> Self {
-        DisclosureErrorResponse {
-            error_response: value.error.into(),
-            redirect_uri: value.redirect_uri,
+impl ErrorWithCode for PostAuthResponseError {
+    type ErrorCode = PostAuthResponseErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        match self {
+            Self::Session(SessionError::SessionStore(_)) => PostAuthResponseErrorCode::ServerError,
+
+            Self::Session(SessionError::UnknownSession(_)) => PostAuthResponseErrorCode::UnknownSession,
+
+            Self::Session(SessionError::UnexpectedState(SessionStatus::Cancelled)) => {
+                PostAuthResponseErrorCode::CancelledSession
+            }
+
+            Self::Session(SessionError::UnexpectedState(SessionStatus::Expired)) => {
+                PostAuthResponseErrorCode::ExpiredSession
+            }
+
+            Self::Session(SessionError::UnexpectedState(_)) | Self::AuthResponse(_) => {
+                PostAuthResponseErrorCode::InvalidRequest
+            }
+
+            Self::HandlingDisclosureResult(err) => err.error_code(),
+
+            Self::ResponseEncoding(_) => PostAuthResponseErrorCode::ServerError,
         }
     }
+}
+
+/// Error codes that the wallet sends to the verifier when it encounters an error or rejects the session.
+/// See <https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1> and
+/// <https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.5>
+#[derive(Debug, Clone, PartialEq, Eq, strum::Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
+pub enum VpAuthorizationErrorCode {
+    // Error codes from RFC 6749.
+    InvalidRequest,
+    AccessDenied,
+    UnsupportedResponseType,
+
+    // Error codes from OpenID4VP.
+    InvalidClient,
+    VpFormatsNotSupported,
+    InvalidRequestUriMethod,
+    InvalidTransactionData,
+    WalletUnavailable,
 }
 
 // The RP error types and `VerificationErrorCode` are handled differently from the errors above:
@@ -315,7 +568,7 @@ where
 // OAuth/OpenID family, which uses `ErrorResponse`, but instead they are specific to this implementation.
 
 /// Error codes sent to the Relying Party when an error occurs when handling their request.
-#[derive(Debug, Clone, Copy, strum::EnumString, strum::Display)]
+#[derive(Debug, Clone, strum::Display, EnumString)]
 #[strum(serialize_all = "snake_case")]
 pub enum VerificationErrorCode {
     ServerError,
@@ -326,24 +579,28 @@ pub enum VerificationErrorCode {
 }
 
 impl HttpJsonErrorType for VerificationErrorCode {
-    fn title(&self) -> String {
+    fn title(&self) -> &'static str {
         match self {
-            VerificationErrorCode::ServerError => "Internal server error occurred".to_string(),
-            VerificationErrorCode::InvalidRequest => "Invalid request".to_string(),
-            VerificationErrorCode::UnknownSession => "Unknown session".to_string(),
-            VerificationErrorCode::Nonce => "Redirect URI nonce incorrect or missing".to_string(),
-            VerificationErrorCode::SessionState => "Session is not in the required state".to_string(),
+            Self::ServerError => "Internal server error occurred",
+            Self::InvalidRequest => "Invalid request",
+            Self::UnknownSession => "Unknown session",
+            Self::Nonce => "Redirect URI nonce incorrect or missing",
+            Self::SessionState => "Session is not in the required state",
         }
     }
 
     fn status_code(&self) -> StatusCode {
         match self {
-            VerificationErrorCode::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
-            VerificationErrorCode::UnknownSession => StatusCode::NOT_FOUND,
-            VerificationErrorCode::InvalidRequest | VerificationErrorCode::SessionState => StatusCode::BAD_REQUEST,
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
 
-            // See the other comment on `StatusCode::UNAUTHORIZED`
-            VerificationErrorCode::Nonce => StatusCode::UNAUTHORIZED,
+            Self::InvalidRequest => StatusCode::BAD_REQUEST,
+
+            Self::UnknownSession => StatusCode::NOT_FOUND,
+
+            // See the comment on `StatusCode::UNAUTHORIZED` for `GetAuthRequestErrorCode`.
+            Self::Nonce => StatusCode::UNAUTHORIZED,
+
+            Self::SessionState => StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -455,76 +712,94 @@ impl From<DisclosedAttributesError> for HttpJsonError<VerificationErrorCode> {
     }
 }
 
-/// https://www.rfc-editor.org/rfc/rfc6750.html#section-3.1
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthBearerErrorCode {
-    InvalidRequest,
-    InvalidToken,
-    InsufficientScope,
-}
-
-/// Error codes that the wallet sends to the verifier when it encounters an error or rejects the session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VpAuthorizationErrorCode {
-    VpFormatsNotSupported,
-    InvalidPresentationDefinitionUri,
-    InvalidPresentationDefinitionReference,
-    InvalidRequestUriMethod,
-
-    #[serde(untagged)]
-    AuthorizationError(AuthorizationErrorCode),
-}
-
-/// https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2.1
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthorizationErrorCode {
-    InvalidRequest,
-    UnauthorizedClient,
-    AccessDenied,
-    UnsupportedResponseType,
-    InvalidScope,
-    ServerError,
-    TemporarilyUnavailable,
-    #[serde(untagged)]
-    Other(String),
-}
-
 #[cfg(feature = "axum")]
 mod axum {
     use std::fmt::Debug;
+    use std::fmt::Display;
 
     use axum::Json;
     use axum::response::IntoResponse;
     use axum::response::Response;
-    use serde::Serialize;
     use tracing::warn;
 
     use super::DisclosureErrorResponse;
-    use super::ErrorResponse;
     use super::ErrorStatusCode;
-
-    impl<T> IntoResponse for ErrorResponse<T>
-    where
-        T: ErrorStatusCode + Serialize + Debug,
-    {
-        fn into_response(self) -> Response {
-            warn!("Responding with error body: {:?}", &self);
-
-            (self.error.status_code(), Json(self)).into_response()
-        }
-    }
 
     impl<T> IntoResponse for DisclosureErrorResponse<T>
     where
-        T: ErrorStatusCode + Serialize + Debug,
+        T: ErrorStatusCode + Display + Debug,
     {
         fn into_response(self) -> Response {
             warn!("Responding with error body: {:?}", &self);
 
             (self.error_response.error.status_code(), Json(self)).into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use oauth::errors::RemoteErrorCode;
+    use oauth::errors::RemoteErrorResponse;
+    use rstest::rstest;
+    use serde_json::json;
+
+    use super::CredentialErrorCode;
+    use super::CredentialRequestError;
+    use super::ErrorWithCode;
+    use super::ParErrorCode;
+    use super::VciTokenErrorCode;
+    use crate::issuer::IssuanceError;
+    use crate::issuer::TokenRequestError;
+
+    #[rstest]
+    #[case(json!({"error": "invalid_client"}), RemoteErrorCode::Known(ParErrorCode::InvalidClient))]
+    #[case(json!({"error": "server_error"}), RemoteErrorCode::Known(ParErrorCode::ServerError))]
+    #[case(json!({"error": "invalid_request"}), RemoteErrorCode::Known(ParErrorCode::InvalidRequest))]
+    // A spec-compliant code the holder doesn't model explicitly falls through to the catch-all,
+    // preserving the original wire value rather than failing to decode.
+    #[case(
+        json!({"error": "temporarily_unavailable"}),
+        RemoteErrorCode::Unknown("temporarily_unavailable".to_string())
+    )]
+    fn test_par_error_code_deserializes_wire_format(
+        #[case] body: serde_json::Value,
+        #[case] expected: RemoteErrorCode<ParErrorCode>,
+    ) {
+        let response: RemoteErrorResponse<ParErrorCode> = serde_json::from_value(body).unwrap();
+        assert_eq!(response.error, expected);
+    }
+
+    #[test]
+    fn expired_or_used_session_maps_to_invalid_grant() {
+        // A missing session (cleaned up) and a session in a terminal/wrong state (already used or
+        // expired) both mean the authorization grant is no longer valid, which per RFC 6749 section
+        // 5.2 is `invalid_grant`. In the pre-authorized-code flow this is the only source of
+        // `invalid_grant`, which lets the wallet render the "QR code no longer valid" screen.
+        assert_eq!(
+            TokenRequestError::SessionNotFound.error_code(),
+            VciTokenErrorCode::InvalidGrant
+        );
+        assert_eq!(
+            TokenRequestError::IssuanceError(IssuanceError::UnexpectedState).error_code(),
+            VciTokenErrorCode::InvalidGrant
+        );
+    }
+
+    #[test]
+    fn expired_session_at_credential_endpoint_maps_to_invalid_token() {
+        // At the credential endpoint a missing session (cleaned up) or a session in a terminal/wrong
+        // state means the access token's session is gone or expired, which per RFC 6750 is
+        // `invalid_token` (401). This lets the wallet render the "session expired" screen when the
+        // holder dwells past the session timeout mid-issuance.
+        assert_eq!(
+            CredentialRequestError::IssuanceError(IssuanceError::UnexpectedState).error_code(),
+            CredentialErrorCode::InvalidToken
+        );
+        assert_eq!(
+            CredentialRequestError::IssuanceError(IssuanceError::UnknownSession(String::from("test").into()))
+                .error_code(),
+            CredentialErrorCode::InvalidToken
+        );
     }
 }

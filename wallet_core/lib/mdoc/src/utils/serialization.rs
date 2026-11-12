@@ -1,12 +1,12 @@
 //! CBOR serialization: wrapper types that modify serialization and specialized (de)serialization implementations.
+use core::fmt::Debug;
+use std::any::type_name;
 use std::borrow::Cow;
 
 use base64::prelude::*;
 use ciborium::tag;
 use ciborium::value::Value;
-use core::fmt::Debug;
-use coset::AsCborValue;
-use indexmap::IndexMap;
+use error_category::ErrorCategory;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de;
@@ -19,11 +19,7 @@ use serde_bytes::ByteBuf;
 use serde_with::DeserializeAs;
 use serde_with::SerializeAs;
 
-use error_category::ErrorCategory;
-
 use crate::iso::*;
-use crate::utils::cose::CoseKey;
-use crate::utils::cose::MdocCose;
 
 const CBOR_TAG_ENC_CBOR: u64 = 24;
 
@@ -49,10 +45,26 @@ pub fn cbor_serialize<T: Serialize>(o: &T) -> Result<Vec<u8>, CborError> {
     Ok(bts)
 }
 
+fn cbor_value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Integer(_) => "integer",
+        Value::Bytes(_) => "byte string",
+        Value::Float(_) => "float",
+        Value::Text(_) => "text",
+        Value::Bool(_) => "boolean",
+        Value::Null => "null",
+        Value::Tag(_, _) => "tag",
+        Value::Array(_) => "array",
+        Value::Map(_) => "map",
+        _ => "unknown",
+    }
+}
+
 /// Wrapper for `T` that serializes as `#6.24(bstr .cbor T)`: a tagged CBOR byte sequence, in which the byte sequence
 /// is the CBOR-serialization of `T`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaggedBytes<T>(pub T);
+
 impl<T> From<T> for TaggedBytes<T> {
     fn from(val: T) -> Self {
         TaggedBytes(val)
@@ -77,6 +89,7 @@ where
         tag::Required::<ByteBuf, CBOR_TAG_ENC_CBOR>(ByteBuf::from(buf)).serialize(serializer)
     }
 }
+
 impl<'de, T> Deserialize<'de> for TaggedBytes<T>
 where
     T: DeserializeOwned,
@@ -88,69 +101,49 @@ where
     }
 }
 
-fn serialize_as_cbor_value<T: Clone + AsCborValue, S: Serializer>(val: &T, serializer: S) -> Result<S::Ok, S::Error> {
-    val.clone()
-        .to_cbor_value()
-        .map_err(ser::Error::custom)?
-        .serialize(serializer)
-}
-
-fn deserialize_as_cbor_value<'de, T: AsCborValue, D: Deserializer<'de>>(deserializer: D) -> Result<T, D::Error> {
-    T::from_cbor_value(Value::deserialize(deserializer)?).map_err(de::Error::custom)
-}
-
-impl Serialize for CoseKey {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serialize_as_cbor_value(&self.0, serializer)
-    }
-}
-impl<'de> Deserialize<'de> for CoseKey {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let key = deserialize_as_cbor_value::<coset::CoseKey, _>(deserializer)?.into();
-        Ok(key)
-    }
-}
-
-impl<C, T> Serialize for MdocCose<C, T>
-where
-    T: Serialize,
-    C: AsCborValue + Clone,
-{
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serialize_as_cbor_value(&self.0, serializer)
-    }
-}
-impl<'de, C, T> Deserialize<'de> for MdocCose<C, T>
-where
-    T: Deserialize<'de>,
-    C: AsCborValue,
-{
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let cose = deserialize_as_cbor_value::<C, _>(deserializer)?.into();
-        Ok(cose)
-    }
-}
-
-/// Wrapper for structs that serializes from/to CBOR sequences (i.e., not including field names).
-/// Used to be able to refer by name instead of by an integer to refer to the contents of the
-/// data structure.
+/// Wrapper that serializes a named-field struct to/from a CBOR array (sequence), dropping all
+/// field names from the wire format.
+///
+/// Normally `serde` serializes struct fields as a map of `{ field_name: value, ... }`. `CborSeq`
+/// instead emits only the values in field declaration order, producing a compact CBOR array as
+/// required by ISO 18013-5 for some of the structs.
+///
+/// The idiomatic pattern in this codebase is to define a `...Keyed` struct with named fields for
+/// use in Rust code, then expose a type alias wrapping it in `CborSeq` as the canonical
+/// (wire-format) type. This keeps field names available for readability while ensuring the
+/// correct on-wire encoding.
+///
+/// - **Serialization**: the struct is encoded as a CBOR array of values in declaration order.
+/// - **Deserialization**: the array elements are zipped with the field names (via `serde_introspect`) and deserialized
+///   back into `T`.
+///
+/// # Example
+///
+/// `SessionTranscript` is a type alias for `CborSeq<SessionTranscriptKeyed>`:
+///
+/// ```ignore
+/// pub struct SessionTranscriptKeyed {       // <-- named fields, used in Rust code
+///     pub device_engagement_bytes: Option<DeviceEngagementBytes>,  // position 0
+///     pub ereader_key_bytes: Option<ESenderKeyBytes>,              // position 1
+///     pub handover: Handover,                                      // position 2
+/// }
+///
+/// pub type SessionTranscript = CborSeq<SessionTranscriptKeyed>;    // <-- wire type
+/// ```
+///
+/// `SessionTranscript` serializes as a CBOR array `[<device_engagement_bytes>, <ereader_key_bytes>, <handover>]`
+/// rather than a map `{"device_engagement_bytes": ..., "ereader_key_bytes": ..., "handover": ...}`.
+///
+/// ```ignore
+/// let transcript: SessionTranscript = SessionTranscriptKeyed { .. }.into();
+/// let bytes = cbor_serialize(&transcript)?; // encodes as [<val0>, <val1>, <val2>]
+/// ```
 #[derive(Debug, Clone)]
 pub struct CborSeq<T>(pub T);
+
 impl<T> From<T> for CborSeq<T> {
     fn from(val: T) -> Self {
         CborSeq(val)
-    }
-}
-
-/// Wrapper for structs that serializes from/to CBOR maps that have
-/// integers as keys instead of field names.
-/// Used to be able to refer by name instead of by an integer to refer to the contents of the
-/// data structure.
-#[derive(Debug, Clone)]
-pub struct CborIntMap<T>(pub T);
-impl<T> From<T> for CborIntMap<T> {
-    fn from(val: T) -> Self {
-        CborIntMap(val)
     }
 }
 
@@ -165,10 +158,15 @@ where
                 .map(|entry| &entry.1)
                 .collect::<Vec<&Value>>()
                 .serialize(serializer),
-            _ => panic!("struct serialization failed"),
+            unexpected_value => Err(ser::Error::custom(format!(
+                "CborSeq::serialize failed for {}: expected map, found {}",
+                type_name::<T>(),
+                cbor_value_type(&unexpected_value)
+            ))),
         }
     }
 }
+
 impl<'de, T> Deserialize<'de> for CborSeq<T>
 where
     T: Deserialize<'de>,
@@ -189,95 +187,12 @@ where
     }
 }
 
-impl<'de, T> Serialize for CborIntMap<T>
-where
-    T: Serialize + Deserialize<'de>,
-{
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let field_name_indices: IndexMap<String, Value> = serde_introspect::<T>()
-            .iter()
-            .enumerate()
-            .map(|(index, field_name)| (field_name.to_string(), Value::Integer(index.into())))
-            .collect();
-
-        match Value::serialized(&self.0).map_err(ser::Error::custom)? {
-            Value::Map(map) => Value::Map(
-                map.iter()
-                    .filter(|(_, val)| !val.is_null())
-                    .map(|(key, val)| {
-                        (
-                            field_name_indices.get(key.as_text().unwrap()).unwrap().clone(),
-                            val.clone(),
-                        )
-                    })
-                    .collect(),
-            )
-            .serialize(serializer),
-            _ => panic!("struct serialization failed"),
-        }
-    }
-}
-impl<'de, T> Deserialize<'de> for CborIntMap<T>
-where
-    T: Deserialize<'de>,
-{
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let ordered_map = match Value::deserialize(deserializer)? {
-            Value::Map(v) => Ok(v),
-            _ => Err(de::Error::custom("CborIntMap::deserialize failed: not a map")),
-        }?;
-
-        let fieldnames = serde_introspect::<T>();
-        let with_fieldnames: Vec<(Value, Value)> = ordered_map
-            .into_iter()
-            .map(|(index, val)| {
-                let index: usize = index
-                    .as_integer()
-                    .ok_or(de::Error::custom(
-                        "CborIntMap::deserialize failed: key was not an integer",
-                    ))?
-                    .try_into()
-                    .map_err(|e| de::Error::custom(format!("CborIntMap::deserialize failed: {e}")))?;
-                let fieldname = fieldnames
-                    .get(index)
-                    .ok_or(de::Error::custom("CborIntMap::deserialize failed: index out of bounds"))?;
-                Ok((Value::Text(fieldname.to_string()), val))
-            })
-            .collect::<Result<_, _>>()?;
-
-        Value::Map(with_fieldnames)
-            .deserialized()
-            .map(|v| CborIntMap(v))
-            .map_err(|e| de::Error::custom(format!("CborIntMap::deserialize failed: {e}")))
-    }
-}
-
-// We can't derive `Deserialize` with the `untagged` Serde enum deserializer, because unfortunately it is not able to
-// distinguish between the `NfcHandover` and `Oid4vpHandover` variants.
-// For the other direction (serializing), however, the `untagged` enum serializer is used and works fine.
-// Note that this implementation is only ever used to deserialize the examples from the spec in `examples.rs`.
-// For each variant a unit test is included to check that serializing and deserializing agree with each other.
-#[cfg(any(test, feature = "examples"))]
-impl<'de> Deserialize<'de> for Handover {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let val = Value::deserialize(deserializer)?;
-        match val {
-            Value::Null => Ok(Handover::QrHandover),
-            Value::Array(ref bts_vec) => match bts_vec.len() {
-                1 | 2 => Ok(Handover::NfcHandover(val.deserialized().map_err(de::Error::custom)?)),
-                3 => Ok(Handover::Oid4vpHandover(val.deserialized().map_err(de::Error::custom)?)),
-                _ => Err(de::Error::custom("CBOR array had unexpected length")),
-            },
-            _ => Err(de::Error::custom("CBOR value of unexpected type")),
-        }
-    }
-}
-
 /// Wrapper around `T`, representing a fixed constant. `T` which must implement `RequiredValueTrait`.
 /// Implements serde (de)serialization as follows:
 /// * During serialization, always serializes to `T::required_value()`.
 /// * During deserialization, accepts only `T::required_value()`.
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct RequiredValue<T: RequiredValueTrait>(pub T::Type);
 
 impl<T: RequiredValueTrait> Default for RequiredValue<T> {
@@ -307,6 +222,7 @@ where
         }
     }
 }
+
 impl<T: RequiredValueTrait> Serialize for RequiredValue<T>
 where
     T: RequiredValueTrait,
@@ -317,8 +233,9 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NullCborValue;
+
 impl RequiredValueTrait for NullCborValue {
     type Type = Value;
     const REQUIRED_VALUE: Value = Value::Null;
@@ -326,6 +243,7 @@ impl RequiredValueTrait for NullCborValue {
 
 #[derive(Debug, Clone)]
 pub struct DeviceAuthenticationString;
+
 impl RequiredValueTrait for DeviceAuthenticationString {
     // We can't use &'static str directly here, because then the deserialization implementation of
     // RequiredValue<DeviceAuthenticationString> would have to be able to deserialize into &'static str which is
@@ -337,9 +255,18 @@ impl RequiredValueTrait for DeviceAuthenticationString {
 
 #[derive(Debug, Clone)]
 pub struct ReaderAuthenticationString;
+
 impl RequiredValueTrait for ReaderAuthenticationString {
     type Type = Cow<'static, str>;
     const REQUIRED_VALUE: Cow<'static, str> = Cow::Borrowed("ReaderAuthentication");
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenID4VPHandoverString;
+
+impl RequiredValueTrait for OpenID4VPHandoverString {
+    type Type = Cow<'static, str>;
+    const REQUIRED_VALUE: Cow<'static, str> = Cow::Borrowed("OpenID4VPHandover");
 }
 
 // Don't (de)serialize the CBOR tag when we serialize to JSON
@@ -352,6 +279,7 @@ impl Serialize for Tdate {
         }
     }
 }
+
 impl<'de> Deserialize<'de> for Tdate {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
@@ -401,16 +329,33 @@ where
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
+    use std::assert_matches;
+
     use ciborium::value::Value::Array;
     use ciborium::value::Value::Bytes;
     use ciborium::value::Value::Null;
     use ciborium::value::Value::Text;
     use hex_literal::hex;
-
-    use crate::examples::Example;
+    use rstest::rstest;
 
     use super::*;
+    use crate::examples::Example;
+
+    #[rstest]
+    #[case::text(Text("sample value".to_string()), "text")]
+    #[case::array(Array(vec![Text("sample value".to_string())]), "array")]
+    fn test_cbor_serialization_rejects_non_map(#[case] value: Value, #[case] expected_cbor_type: &str) {
+        let error = cbor_serialize(&CborSeq(value)).unwrap_err();
+        let expected_message = format!(
+            "CborSeq::serialize failed for {}: expected map, found {expected_cbor_type}",
+            type_name::<Value>()
+        );
+
+        assert_matches!(
+            error,
+            CborError::Serialization(ciborium::ser::Error::Value(message)) if message == expected_message
+        );
+    }
 
     #[test]
     fn tagged_bytes() {
@@ -424,7 +369,7 @@ mod tests {
 
     // For each of the `Handover` variants, we manually construct the CBOR structure as defined by the specs
     // (ISO 18013-5 and OpenID4VP), and check that (1) this correctly deserializes to the expected
-    // variant and (2) serializing it back yields identical CBOR. This tests not only that the manual Deserialize
+    // variant and (2) serializing it back yields identical CBOR. This tests not only that the derived Deserialize
     // implementation agrees with the derived Serialize implementation but also that both of these align with
     // the specs.
 
@@ -460,16 +405,12 @@ mod tests {
     #[test]
     fn test_handover_serialization_openid4vp() {
         // The OpenID4VP handover is structured as an array of bytes/bytes/text.
-        let oid4vp_handover_cbor = Array(vec![
-            Bytes(b"bytes1".to_vec()),
-            Bytes(b"bytes2".to_vec()),
-            Text("nonce".to_string()),
-        ]);
+        let oid4vp_handover_cbor = Array(vec![Text("OpenID4VPHandover".to_string()), Bytes(b"bytes".to_vec())]);
 
         let oid4vp_handover: Handover = oid4vp_handover_cbor.deserialized().unwrap();
         assert_matches!(
             &oid4vp_handover,
-            Handover::Oid4vpHandover(CborSeq(OID4VPHandover { nonce, ..})) if nonce == "nonce"
+            Handover::Oid4vpHandover(CborSeq(OID4VPHandover { info_hash, ..})) if info_hash == b"bytes"
         );
 
         assert_eq!(Value::serialized(&oid4vp_handover).unwrap(), oid4vp_handover_cbor);

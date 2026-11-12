@@ -1,0 +1,17 @@
+renovate:
+  image:
+    name: "${HARBOR_REGISTRY}/docker-hub-proxy/renovate/renovate:41@sha256:e998e1218fe572e23278d8808186a310784f7cb2ac8055307183ffc51d3a59e5"
+    entrypoint: [""]
+  stage: qa
+  rules:
+    - !reference [.on-schedule-security, rules]
+  needs: []
+  variables:
+    RENOVATE_PLATFORM: gitlab
+    RENOVATE_ENDPOINT: $CI_SERVER_URL/api/v4
+    RENOVATE_TOKEN: $RENOVATE_GITLAB_TOKEN
+    RENOVATE_AUTODISCOVER: "false"
+    RENOVATE_REPOSITORIES: $CI_PROJECT_PATH
+    LOG_LEVEL: info
+  script:
+    - RENOVATE_GIT_PRIVATE_KEY="$(echo "$RENOVATE_GPG_PRIVATE_KEY_BASE64" | base64 -d)" renovate

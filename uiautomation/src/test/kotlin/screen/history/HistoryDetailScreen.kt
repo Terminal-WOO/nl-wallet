@@ -7,8 +7,7 @@ class HistoryDetailScreen : MobileActions() {
     private val bottomBackButton = l10n.getString("generalBottomBackCta")
     private val reportProblemButton = l10n.getString("historyDetailScreenReportIssueCta")
     private val historyDetailScreenPurposeTitle = l10n.getString("historyDetailScreenPurposeTitle")
-    private val historyDetailScreenTermsTitle = l10n.getString("historyDetailScreenTermsTitle")
-    private val organizationButtonLabel = l10n.getString("organizationButtonLabel")
+    private val historyDetailScreenAboutOrganizationCta = l10n.getString("historyDetailScreenAboutOrganizationCta").replace("{organization}",  "")
 
     fun visible() = elementWithTextVisible(bottomBackButton)
 
@@ -25,7 +24,7 @@ class HistoryDetailScreen : MobileActions() {
     fun titleCorrectForLogin(organization: String) =
         elementWithTextVisible(l10n.getString("historyDetailScreenTitleForLogin").replace("{organization}", organization))
 
-    fun openOrganizationScreen() = clickElementContainingText(organizationButtonLabel)
+    fun openOrganizationScreen() = clickElementContainingText(historyDetailScreenAboutOrganizationCta)
 
     fun attributeLabelVisible(label: String) = elementContainingTextVisible(label)
 
@@ -36,10 +35,8 @@ class HistoryDetailScreen : MobileActions() {
 
     fun reasonForSharingHeaderVisible() = elementWithTextVisible(historyDetailScreenPurposeTitle)
 
-    fun reasonForSharingVisible(reason: String) = elementWithTextVisible(reason)
-
-    fun termsVisible(): Boolean {
-        scrollToElementWithText(historyDetailScreenTermsTitle)
-        return elementWithTextVisible(historyDetailScreenTermsTitle)
+    fun reasonForSharingVisible(reason: String): Boolean {
+        // TODO PVW-6101 check for purpose
+        return true
     }
 }

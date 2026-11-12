@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:collection/collection.dart';
 import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
@@ -5,6 +7,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../domain/model/result/application_error.dart';
 import '../../domain/usecase/disclosure/accept_disclosure_usecase.dart';
 import '../../domain/usecase/disclosure/impl/accept_disclosure_usecase_impl.dart';
 import '../../navigation/wallet_routes.dart';
@@ -14,12 +17,11 @@ import '../../util/extension/localized_text_extension.dart';
 import '../../util/extension/object_extension.dart';
 import '../../util/launch_util.dart';
 import '../common/dialog/scan_with_wallet_dialog.dart';
+import '../common/dialog/stop_to_reset_pin_dialog.dart';
 import '../common/page/generic_loading_page.dart';
 import '../common/page/missing_attributes_page.dart';
-import '../common/page/network_error_page.dart';
 import '../common/widget/button/icon/back_icon_button.dart';
 import '../common/widget/button/icon/close_icon_button.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
 import '../common/widget/centered_loading_indicator.dart';
 import '../common/widget/fade_in_at_offset.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
@@ -27,6 +29,7 @@ import '../common/widget/text/title_text.dart';
 import '../common/widget/utility/scroll_offset_provider.dart';
 import '../common/widget/wallet_app_bar.dart';
 import '../error/error_page.dart';
+import '../forgot_pin/forgot_pin_screen.dart';
 import '../fraud_check/fraud_check_page.dart';
 import '../history/detail/argument/history_detail_screen_argument.dart';
 import '../login/login_detail_screen.dart';
@@ -38,8 +41,6 @@ import 'argument/disclosure_screen_argument.dart';
 import 'bloc/disclosure_bloc.dart';
 import 'page/disclosure_confirm_data_attributes_page.dart';
 import 'page/disclosure_confirm_pin_page.dart';
-import 'page/disclosure_generic_error_page.dart';
-import 'page/disclosure_relying_party_error_page.dart';
 import 'page/disclosure_report_submitted_page.dart';
 import 'page/disclosure_stopped_page.dart';
 import 'page/disclosure_success_page.dart';
@@ -49,7 +50,8 @@ class DisclosureScreen extends StatelessWidget {
   static DisclosureScreenArgument getArgument(RouteSettings settings) {
     final args = settings.arguments;
     try {
-      return tryCast<DisclosureScreenArgument>(args) ?? DisclosureScreenArgument.fromMap(args! as Map<String, dynamic>);
+      return tryCast<DisclosureScreenArgument>(args) ??
+          DisclosureScreenArgument.fromJson(args! as Map<String, dynamic>);
     } catch (exception, stacktrace) {
       Fimber.e('Failed to decode $args', ex: exception, stacktrace: stacktrace);
       throw UnsupportedError('Make sure to pass in [DisclosureScreenArgument] when opening the DisclosureScreen');
@@ -60,7 +62,7 @@ class DisclosureScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final progress = context.watch<DisclosureBloc>().state.stepperProgress;
+    final state = context.watch<DisclosureBloc>().state;
     return ScrollOffsetProvider(
       debugLabel: 'disclosure',
       child: Scaffold(
@@ -69,14 +71,13 @@ class DisclosureScreen extends StatelessWidget {
           leading: _buildBackButton(context),
           automaticallyImplyLeading: false,
           actions: [
-            const HelpIconButton(),
             CloseIconButton(
               onPressed: () => _stopDisclosure(context),
             ),
           ],
           fadeInTitleOnScroll: false /* Handled by _buildTitle */,
           title: _buildTitle(context),
-          progress: progress,
+          progress: state.stepperProgress,
         ),
         body: PopScope(
           canPop: false,
@@ -126,12 +127,10 @@ class DisclosureScreen extends StatelessWidget {
           DisclosureStopped() => _buildStoppedPage(context, state),
           DisclosureLeftFeedback() => _buildLeftFeedbackPage(context, state),
           DisclosureSuccess() => _buildSuccessPage(context, state),
-          DisclosureNetworkError() => _buildNetworkErrorPage(context, state),
-          DisclosureGenericError() => _buildGenericErrorPage(context, returnUrl: state.returnUrl),
+          DisclosureError() => _buildErrorPage(context, state.error, returnUrl: state.returnUrl),
           DisclosureSessionExpired() => _buildSessionExpiredPage(context, state),
-          DisclosureExternalScannerError() => _buildGenericErrorPage(context),
-          DisclosureSessionCancelled() => _buildCancelledSessionPage(context, state),
-          DisclosureRelyingPartyError() => _buildRelyingPartyErrorPage(context, state),
+          DisclosureExternalScannerError() => _buildErrorPage(context, state.error),
+          DisclosureCloseProximityDisconnected() => _buildCloseProximityDisconnected(context, state),
         };
 
         final skipAnim = !state.didGoBack && state is DisclosureCheckUrl;
@@ -155,7 +154,6 @@ class DisclosureScreen extends StatelessWidget {
     return FraudCheckPage(
       onDeclinePressed: () => _stopDisclosure(context),
       onAcceptPressed: () => context.bloc.add(const DisclosureUrlApproved()),
-      originUrl: state.originUrl,
     );
   }
 
@@ -167,28 +165,24 @@ class DisclosureScreen extends StatelessWidget {
       final attributeLabel = requestedAttribute?.label.l10nValue(context) ?? '';
       description = context.l10n.disclosureRequestedAttributeDescription(
         attributeLabel,
-        state.relyingParty.displayName.l10nValue(context),
+        state.relyingParty.displayName,
       );
     } else {
       description = context.l10n.disclosureRequestedAttributesDescription(
         attributes.length,
-        state.relyingParty.displayName.l10nValue(context),
+        state.relyingParty.displayName,
       );
     }
     return OrganizationApprovePage(
       onDeclinePressed: () => _stopDisclosure(context),
       onAcceptPressed: () => context.bloc.add(const DisclosureShareRequestedCardsApproved()),
       organization: state.relyingParty,
-      originUrl: state.originUrl,
-      sessionType: state.sessionType,
       purpose: ApprovalPurpose.login,
       description: description,
-      onReportIssuePressed: () => _onReportIssuePressed(context, _resolveReportingOptionsForState(context, state)),
       onShowDetailsPressed: () {
         LoginDetailScreen.show(
           context,
           state.relyingParty,
-          state.policy,
           state.cardRequests,
           onReportIssuePressed: () => _onReportIssuePressed(context, _resolveReportingOptionsForState(context, state)),
           sharedDataWithOrganizationBefore: state.sharedDataWithOrganizationBefore,
@@ -214,7 +208,6 @@ class DisclosureScreen extends StatelessWidget {
           context.bloc.add(DisclosureAlternativeCardSelected(updatedRequest)),
       relyingParty: state.relyingParty,
       cardRequests: state.cardRequests,
-      policy: state.policy,
       requestPurpose: state.requestPurpose,
     );
   }
@@ -229,6 +222,18 @@ class DisclosureScreen extends StatelessWidget {
         title: title,
         onPinValidated: (returnUrl) => context.bloc.add(DisclosurePinConfirmed(returnUrl: returnUrl)),
         onConfirmWithPinFailed: (context, state) => context.bloc.add(DisclosureConfirmPinFailed(error: state.error)),
+        onPinValidationStarted: () => context.bloc.add(const DisclosurePinValidationStarted()),
+        onForgotPinPressed: () async {
+          final stopped = await StopToResetPinDialog.show(
+            context,
+            state.isLoginFlow ? .login : .disclosure,
+            organizationName: state.relyingParty.displayName,
+          );
+          if (stopped && context.mounted) {
+            context.bloc.add(const DisclosureStopRequested());
+            await ForgotPinScreen.show(context, popToDashboard: true);
+          }
+        },
       ),
     );
   }
@@ -255,8 +260,8 @@ class DisclosureScreen extends StatelessWidget {
     return DisclosureSuccessPage(
       organizationDisplayName: state.relyingParty.displayName,
       returnUrl: state.returnUrl,
-      isLoginFlow: state.isLoginFlow,
-      onHistoryPressed: state.event == null
+      style: state.style,
+      onShowActivityPressed: state.event == null
           ? null
           : () {
               Navigator.pushNamed(
@@ -272,19 +277,17 @@ class DisclosureScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildNetworkErrorPage(BuildContext context, DisclosureNetworkError state) {
-    return NetworkErrorPage(
-      hasInternet: state.hasInternet,
-      onStopPressed: () => Navigator.pop(context),
-    );
-  }
-
-  Widget _buildGenericErrorPage(BuildContext context, {String? returnUrl}) {
-    return DisclosureGenericErrorPage(
-      onStopPressed: () {
+  Widget _buildErrorPage(BuildContext context, ApplicationError error, {String? returnUrl}) {
+    return ErrorPage.fromError(
+      context,
+      error,
+      onPrimaryActionPressed: () {
+        context.bloc.add(const DisclosureCancelRequested());
         returnUrl?.let((url) => launchUrlStringCatching(url, mode: LaunchMode.externalApplication));
         Navigator.pop(context);
       },
+      style: .close,
+      organizationName: context.bloc.relyingParty?.displayName,
     );
   }
 
@@ -316,10 +319,14 @@ class DisclosureScreen extends StatelessWidget {
       context,
       style: state.canRetry ? ErrorCtaStyle.retry : ErrorCtaStyle.close,
       cta: cta,
+      error: state.error,
       onPrimaryActionPressed: () {
         if (userShouldRetryScan) {
-          Navigator.popUntil(context, ModalRoute.withName(WalletRoutes.dashboardRoute));
-          Navigator.pushNamed(context, WalletRoutes.qrRoute);
+          Navigator.pushNamedAndRemoveUntil(
+            context,
+            WalletRoutes.qrScanRoute,
+            ModalRoute.withName(WalletRoutes.dashboardRoute),
+          );
         } else if (hasReturnUrl) {
           Navigator.maybePop(context);
           launchUrlStringCatching(state.returnUrl!, mode: LaunchMode.externalApplication);
@@ -330,34 +337,12 @@ class DisclosureScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildCancelledSessionPage(BuildContext context, DisclosureSessionCancelled state) {
-    return ErrorPage.cancelledSession(
-      context,
-      organizationName: state.relyingParty?.displayName.l10nValue(context) ?? context.l10n.organizationFallbackName,
-      onPrimaryActionPressed: () {
-        Navigator.pop(context);
-        state.returnUrl?.let((url) => launchUrlStringCatching(url, mode: LaunchMode.externalApplication));
-      },
-    );
-  }
-
-  Widget _buildRelyingPartyErrorPage(BuildContext context, DisclosureRelyingPartyError state) {
-    return DisclosureRelyingPartyErrorPage(
-      organizationName: state.organizationName?.l10nValue(context),
-      onClosePressed: () => Navigator.pop(context),
-    );
-  }
-
   String? _resolveTitleForState(BuildContext context, DisclosureState state) {
     return switch (state) {
       DisclosureInitial() => context.l10n.disclosureLoadingTitle,
-      DisclosureGenericError() => context.l10n.disclosureGenericErrorPageTitle,
-      DisclosureRelyingPartyError() => context.l10n.disclosureRelyingPartyErrorTitle,
+      DisclosureError(:final error) => ErrorPage.titleFromError(context, error),
       DisclosureSessionExpired() => context.l10n.errorScreenSessionExpiredHeadline,
-      DisclosureSessionCancelled() => context.l10n.errorScreenCancelledSessionHeadline,
-      DisclosureNetworkError() =>
-        state.hasInternet ? context.l10n.errorScreenServerHeadline : context.l10n.errorScreenNoInternetHeadline,
-      DisclosureCheckUrl() => context.l10n.fraudCheckPageTitle(state.originUrl),
+      DisclosureCheckUrl() => context.l10n.fraudCheckPageTitle,
       DisclosureCheckOrganizationForLogin() => OrganizationApprovePage.resolveTitle(
         context,
         ApprovalPurpose.login,
@@ -365,7 +350,7 @@ class DisclosureScreen extends StatelessWidget {
       ),
       DisclosureMissingAttributes() => context.l10n.missingAttributesPageTitle,
       DisclosureConfirmDataAttributes() => context.l10n.disclosureConfirmDataAttributesShareWithTitle(
-        state.relyingParty.displayName.l10nValue(context),
+        state.relyingParty.displayName,
       ),
       DisclosureSuccess() => context.l10n.disclosureSuccessPageTitle,
       DisclosureStopped() => context.l10n.disclosureStoppedPageTitle,
@@ -373,6 +358,7 @@ class DisclosureScreen extends StatelessWidget {
       DisclosureLoadInProgress() => null,
       DisclosureExternalScannerError() => null,
       DisclosureConfirmPin() => null,
+      DisclosureCloseProximityDisconnected() => context.l10n.disclosureDisconnectedPageTitle,
     };
   }
 
@@ -401,7 +387,7 @@ class DisclosureScreen extends StatelessWidget {
     final bloc = context.bloc;
     if (bloc.state.showStopConfirmation) {
       final availableReportOptions = _resolveReportingOptionsForState(context, bloc.state);
-      final organizationName = context.read<DisclosureBloc>().relyingParty?.displayName.l10nValue(context);
+      final organizationName = context.read<DisclosureBloc>().relyingParty?.displayName;
 
       StopDescriptionType stopType = bloc.isLoginFlow ? StopDescriptionType.forLogin : StopDescriptionType.generic;
       stopType = context.bloc.state is DisclosureCheckUrl ? StopDescriptionType.forUrlCheck : stopType;
@@ -419,6 +405,7 @@ class DisclosureScreen extends StatelessWidget {
       );
       if (stopPressed) bloc.add(const DisclosureStopRequested());
     } else {
+      context.bloc.add(const DisclosureCancelRequested());
       Navigator.pop(context);
     }
   }
@@ -429,6 +416,17 @@ class DisclosureScreen extends StatelessWidget {
     if (selectedOption != null) {
       bloc.add(DisclosureReportPressed(option: selectedOption));
     }
+  }
+
+  Widget _buildCloseProximityDisconnected(BuildContext context, DisclosureCloseProximityDisconnected state) {
+    final actionText = state.isLoginFlow
+        ? context.l10n.disclosureDisconnectedPageLoginAction
+        : context.l10n.disclosureDisconnectedPageSharingAction;
+    return ErrorPage.closeProximityDisconnected(
+      context,
+      actionText: actionText,
+      onPrimaryActionPressed: () => _stopDisclosure(context),
+    );
   }
 }
 

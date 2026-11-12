@@ -20,59 +20,57 @@ path = "tests/settings.rs"
 required-features = ["integration_test"]
 
 [features]
-default = ["postgres"]
-# Allow the disclosure return URL and its prefix to use http://
+# Allow the disclosure return URL to use "http://"
+# and allow Credential Issuer Identifiers to contain "http://".
 allow_insecure_url = ["openid4vc/allow_insecure_url"]
-# Include session storage in PostgreSQL
-postgres = [
-    "sea-orm/macros",
-    "sea-orm/runtime-tokio-rustls",
-    "sea-orm/sqlx-postgres",
-    "sea-orm/with-chrono",
-    "sea-orm/with-json",
-    "server_utils/postgres",
-]
 # Enable integration tests
-integration_test = []
+integration_test = ["allow_insecure_url"]
+# Enable test API endpoints and Swagger UI for the management API. This should not be used in production.
+test_internal_ui = ["utoipa-swagger-ui/axum", "utoipa-swagger-ui/vendored", "status_lists/test_api"]
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-axum = { workspace = true, features = ["form", "http1", "json", "query", "tokio", "tower-log", "tracing"] }
+axum.workspace = true
 config = { workspace = true, features = ["toml", "preserve_order"] }
-chrono.workspace = true
-futures = { workspace = true, features = ["std", "async-await"] }
+derive_more = { workspace = true, features = ["debug"] }
+futures.workspace = true
 itertools.workspace = true
 indexmap.workspace = true
-reqwest = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+reqwest.workspace = true
 rustls-pki-types.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_with = { workspace = true, features = ["base64"] }
-serde_urlencoded.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["parking_lot", "rt-multi-thread", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
 trait-variant.workspace = true
-sea-orm = { workspace = true, optional = true }
+
+utoipa-swagger-ui = { workspace = true, optional = true }
 
 attestation_data.path = "../../lib/attestation_data"
 attestation_types.path = "../../lib/attestation_types"
 crypto.path = "../../lib/crypto"
 dcql.path = "../../lib/dcql"
-issuer_settings.path = "../issuer_settings"
-hsm = { path = "../../lib/hsm", features = ["settings"] }
+issuer_common.path = "../issuer_common"
+health_checkers.path = "../../lib/health_checkers"
+hsm.path = "../../lib/hsm"
 http_utils.path = "../../lib/http_utils"
+oauth.path = "../../lib/oauth"
 openid4vc = { path = "../../lib/openid4vc", features = ["axum"] }
 openid4vc_server = { path = "../../lib/openid4vc_server", features = ["issuance", "disclosure"] }
-server_utils.path = "../server_utils"
-status_lists = { path = "../status_lists", features = ["axum"] }
+server_utils = { path = "../server_utils", features = ["postgres"] }
+status_lists = { path = "../../lib/status_lists", features = ["axum"] }
 token_status_list.path = "../../lib/token_status_list"
 utils.path = "../../lib/utils"
 
 [dev-dependencies]
+chrono = { workspace = true, features = ["now"] }
 indexmap.workspace = true
-p256 = { workspace = true, features = ["ecdsa"] }
-tokio = { workspace = true, features = ["macros", "test-util"] }
-uuid = { workspace = true, features = ["v4"] }
+p256.workspace = true
+tokio = { workspace = true, features = ["macros"] }
 
+attestation_data = { path = "../../lib/attestation_data", features = ["mock"] }
+crypto = { path = "../../lib/crypto", features = ["generate", "mock"] }
+sd_jwt_vc_metadata = { path = "../../lib/sd_jwt_vc_metadata", features = ["example_constructors"] }
 token_status_list = { path = "../../lib/token_status_list", features = ["mock"] }

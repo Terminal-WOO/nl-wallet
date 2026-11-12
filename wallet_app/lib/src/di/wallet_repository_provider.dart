@@ -11,24 +11,32 @@ import '../data/repository/card/data_attribute_repository.dart';
 import '../data/repository/card/impl/data_attribute_repository_impl.dart';
 import '../data/repository/card/impl/wallet_card_repository_impl.dart';
 import '../data/repository/card/wallet_card_repository.dart';
+import '../data/repository/close_proximity/close_proximity_repository.dart';
+import '../data/repository/close_proximity/impl/close_proximity_repository_impl.dart';
 import '../data/repository/configuration/configuration_repository.dart';
 import '../data/repository/configuration/impl/configuration_repository_impl.dart';
 import '../data/repository/disclosure/core/core_disclosure_repository.dart';
 import '../data/repository/disclosure/disclosure_repository.dart';
 import '../data/repository/event/core/core_wallet_event_repository.dart';
 import '../data/repository/event/wallet_event_repository.dart';
+import '../data/repository/help/help_content_repository.dart';
+import '../data/repository/help/impl/help_content_repository_impl.dart';
 import '../data/repository/issuance/core/core_issuance_repository.dart';
 import '../data/repository/issuance/issuance_repository.dart';
 import '../data/repository/language/impl/language_repository_impl.dart';
 import '../data/repository/language/language_repository.dart';
 import '../data/repository/network/impl/network_repository_impl.dart';
 import '../data/repository/network/network_repository.dart';
+import '../data/repository/notification/impl/notification_repository_impl.dart';
+import '../data/repository/notification/notification_repository.dart';
 import '../data/repository/pid/core/core_pid_repository.dart';
 import '../data/repository/pid/pid_repository.dart';
 import '../data/repository/pin/core/core_pin_repository.dart';
 import '../data/repository/pin/pin_repository.dart';
 import '../data/repository/qr/core/core_qr_repository.dart';
 import '../data/repository/qr/qr_repository.dart';
+import '../data/repository/revocation/impl/revocation_code_repository_impl.dart';
+import '../data/repository/revocation/revocation_code_repository.dart';
 import '../data/repository/sign/core/core_sign_repository.dart';
 import '../data/repository/sign/sign_repository.dart';
 import '../data/repository/tour/impl/tour_repository_impl.dart';
@@ -56,13 +64,14 @@ class WalletRepositoryProvider extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiRepositoryProvider(
       providers: [
-        RepositoryProvider<WalletRepository>(create: (context) => CoreWalletRepository(context.read())),
+        RepositoryProvider<WalletRepository>(create: (context) => CoreWalletRepository(context.read(), context.read())),
         RepositoryProvider<PinRepository>(create: (context) => CorePinRepository(context.read(), context.read())),
-        RepositoryProvider<WalletCardRepository>(create: (context) => WalletCardRepositoryImpl(context.read())),
+        RepositoryProvider<WalletCardRepository>(
+          create: (context) => WalletCardRepositoryImpl(context.read(), context.read(), context.read()),
+        ),
         RepositoryProvider<DataAttributeRepository>(create: (context) => DataAttributeRepositoryImpl(context.read())),
         RepositoryProvider<DisclosureRepository>(
           create: (context) => CoreDisclosureRepository(
-            context.read(),
             context.read(),
             context.read(),
             context.read(),
@@ -80,12 +89,13 @@ class WalletRepositoryProvider extends StatelessWidget {
             context.read(),
             context.read(),
             context.read(),
-            context.read(),
-            context.read(),
           ),
         ),
         RepositoryProvider<ConfigurationRepository>(
-          create: (context) => ConfigurationRepositoryImpl(context.read()),
+          create: (context) => ConfigurationRepositoryImpl(
+            context.read(),
+            context.read(),
+          ),
         ),
         RepositoryProvider<QrRepository>(
           create: (context) => CoreQrRepository(context.read()),
@@ -96,14 +106,17 @@ class WalletRepositoryProvider extends StatelessWidget {
         RepositoryProvider<TourRepository>(
           create: (context) => TourRepositoryImpl(context.read()),
         ),
+        RepositoryProvider<HelpContentRepository>(
+          create: (context) => HelpContentRepositoryImpl(context.read()),
+        ),
         RepositoryProvider<PidRepository>(
-          create: (context) => CorePidRepository(context.read(), context.read()),
+          create: (context) => CorePidRepository(context.read(), context.read(), context.read()),
         ),
         RepositoryProvider<UriRepository>(
           create: (context) => CoreUriRepository(context.read()),
         ),
         RepositoryProvider<WalletEventRepository>(
-          create: (context) => CoreWalletEventRepository(context.read(), context.read()),
+          create: (context) => CoreWalletEventRepository(context.read(), context.read(), context.read()),
         ),
         RepositoryProvider<BiometricRepository>(
           create: (context) => CoreBiometricRepository(context.read()),
@@ -114,7 +127,6 @@ class WalletRepositoryProvider extends StatelessWidget {
         RepositoryProvider<SignRepository>(
           create: (context) => CoreSignRepository(
             signingApi,
-            context.read(),
             context.read(),
             context.read(),
             context.read(),
@@ -129,6 +141,18 @@ class WalletRepositoryProvider extends StatelessWidget {
         RepositoryProvider<VersionStringRepository>(
           create: (context) => CoreVersionStringRepository(context.read()),
         ),
+        RepositoryProvider<RevocationRepository>(
+          create: (context) => RevocationRepositoryImpl(context.read(), context.read()),
+        ),
+        RepositoryProvider<NotificationRepository>(
+          create: (context) => NotificationRepositoryImpl(
+            context.read(),
+            context.read(),
+            context.read(),
+            context.read(),
+            context.read(),
+          ),
+        ),
         RepositoryProvider<NetworkRepository>(
           lazy: false /* false to make sure [CoreErrorExtension.networkRepository] is available */,
           create: (context) {
@@ -136,6 +160,9 @@ class WalletRepositoryProvider extends StatelessWidget {
             CoreErrorExtension.networkRepository = networkRepository;
             return networkRepository;
           },
+        ),
+        RepositoryProvider<CloseProximityRepository>(
+          create: (context) => CloseProximityRepositoryImpl(context.read(), context.read(), context.read()),
         ),
       ],
       child: child,

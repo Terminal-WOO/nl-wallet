@@ -14,7 +14,6 @@ import '../../../../util/extension/object_extension.dart';
 import '../../../../util/extension/string_extension.dart';
 import '../../../../util/mapper/card/status/card_status_metadata_mapper.dart';
 import '../../../../util/mapper/card/status/card_status_render_type.dart';
-import '../../decoration/shadow_decoration.dart';
 import '../animated_fade_in.dart';
 import '../animated_fade_out.dart';
 import '../text/body_text.dart';
@@ -22,6 +21,7 @@ import '../text/headline_small_text.dart';
 import '../utility/disable_text_scaling.dart';
 import 'bottom_clip_shadow.dart';
 import 'card_logo.dart';
+import 'card_shadow_container.dart';
 import 'mock_card_background.dart';
 import 'mock_card_holograph.dart';
 import 'show_details_cta.dart';
@@ -75,6 +75,9 @@ class WalletCardItem extends StatefulWidget {
   /// Card status UI metadata (null if no status should be shown)
   final CardStatusMetadata? cardStatusMetadata;
 
+  /// Shown full width along the bottom of the card.
+  final Widget? footer;
+
   const WalletCardItem({
     required this.title,
     this.subtitle,
@@ -87,6 +90,7 @@ class WalletCardItem extends StatefulWidget {
     this.scaleText = true,
     this.ctaAnimation,
     this.cardStatusMetadata,
+    this.footer,
     super.key,
   });
 
@@ -97,6 +101,7 @@ class WalletCardItem extends StatefulWidget {
     CtaAnimation ctaAnimation = CtaAnimation.visible,
     bool scaleText = true,
     bool showText = true,
+    Widget? footer,
     Key? key,
   }) {
     return WalletCardItem(
@@ -111,6 +116,7 @@ class WalletCardItem extends StatefulWidget {
       scaleText: scaleText,
       showText: showText,
       cardStatusMetadata: CardStatusMetadataMapper.map(context, card, CardStatusRenderType.walletCardItem),
+      footer: footer,
       key: key,
     );
   }
@@ -123,7 +129,37 @@ class WalletCardItem extends StatefulWidget {
     WalletCard card, {
     CtaAnimation ctaAnimation = CtaAnimation.visible,
   }) {
-    final scaleTween = TweenSequence<double>(
+    final scaleTween = _buildScaleTween();
+    final perspectiveTween = _buildPerspectiveTween();
+    final VoidCallback? onPressed = _buildOnPressedStub(ctaAnimation);
+
+    return AnimatedBuilder(
+      animation: animation,
+      child: Builder(
+        builder: (context) => WalletCardItem.fromWalletCard(
+          context,
+          card,
+          ctaAnimation: ctaAnimation,
+          onPressed: onPressed,
+        ),
+      ),
+      builder: (context, child) {
+        final scale = scaleTween.evaluate(animation);
+        return Transform(
+          alignment: FractionalOffset.center,
+          transform: Matrix4.identity()
+            ..scaleByDouble(scale, scale, scale, scale)
+            ..setEntry(3, 2, 0.001)
+            ..rotateX(perspectiveTween.evaluate(animation)),
+          child: child,
+        );
+      },
+    );
+  }
+
+  /// Builds the scale animation sequence for the shuttle card.
+  static TweenSequence<double> _buildScaleTween() {
+    return TweenSequence<double>(
       <TweenSequenceItem<double>>[
         TweenSequenceItem<double>(
           tween: Tween<double>(begin: 1, end: 1.05).chain(CurveTween(curve: Curves.easeIn)),
@@ -139,8 +175,11 @@ class WalletCardItem extends StatefulWidget {
         ),
       ],
     );
+  }
 
-    final perspectiveTween = TweenSequence<double>(
+  /// Builds the perspective rotation sequence for the shuttle card.
+  static TweenSequence<double> _buildPerspectiveTween() {
+    return TweenSequence<double>(
       <TweenSequenceItem<double>>[
         TweenSequenceItem<double>(
           tween: Tween<double>(begin: 0, end: 0.2).chain(CurveTween(curve: Curves.easeInCubic)),
@@ -156,38 +195,16 @@ class WalletCardItem extends StatefulWidget {
         ),
       ],
     );
+  }
 
-    final VoidCallback? onPressed = switch (ctaAnimation) {
+  /// Returns an [onPressed] callback stub based on the [ctaAnimation].
+  static VoidCallback? _buildOnPressedStub(CtaAnimation ctaAnimation) {
+    return switch (ctaAnimation) {
       CtaAnimation.fadeIn => () {},
       CtaAnimation.fadeOut => () {},
       CtaAnimation.visible => () {},
       CtaAnimation.invisible => null,
     };
-
-    return AnimatedBuilder(
-      animation: animation,
-      child: Builder(
-        builder: (context) {
-          return WalletCardItem.fromWalletCard(
-            context,
-            card,
-            ctaAnimation: ctaAnimation,
-            onPressed: onPressed,
-          );
-        },
-      ),
-      builder: (context, child) {
-        final scale = scaleTween.evaluate(animation);
-        return Transform(
-          alignment: FractionalOffset.center,
-          transform: Matrix4.identity()
-            ..scaleByDouble(scale, scale, scale, scale)
-            ..setEntry(3, 2, 0.001)
-            ..rotateX(perspectiveTween.evaluate(animation)),
-          child: child,
-        );
-      },
-    );
   }
 }
 
@@ -227,21 +244,31 @@ class _WalletCardItemState extends State<WalletCardItem> {
         child: FittedBox(
           child: ConstrainedBox(
             constraints: _kCardSizeConstraints,
-            child: DecoratedBox(
-              decoration: const CardShadowDecoration(),
+            child: CardShadowContainer(
               child: Material(
                 color: Colors.transparent,
                 borderRadius: _kCardBorderRadius,
                 clipBehavior: Clip.antiAlias,
-                child: MergeSemantics(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(child: _buildBackground()),
-                      _buildContent(context),
-                      _buildPositionedBottomSection(context),
-                      Positioned.fill(child: _buildRippleAndFocus(context)),
-                    ],
-                  ),
+                child: Stack(
+                  // Keeps the background filling the card's minimum height.
+                  fit: StackFit.passthrough,
+                  children: [
+                    MergeSemantics(
+                      child: Stack(
+                        children: [
+                          Positioned.fill(child: _buildBackground()),
+                          Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [_buildContent(context), ?_buildFooterSpace()],
+                          ),
+                          _buildPositionedBottomSection(context),
+                          Positioned.fill(child: _buildRippleAndFocus(context)),
+                        ],
+                      ),
+                    ),
+                    // Outside MergeSemantics, so the footer stays separately focusable.
+                    if (widget.footer != null) Positioned(left: 0, right: 0, bottom: 0, child: widget.footer!),
+                  ],
                 ),
               ),
             ),
@@ -313,10 +340,33 @@ class _WalletCardItemState extends State<WalletCardItem> {
 
   Widget _buildPositionedBottomSection(BuildContext context) {
     return Positioned(
-      bottom: _kCardContentPadding,
-      left: _kCardContentPadding,
-      right: _kCardContentPadding,
-      child: _buildBottomSection(context),
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(_kCardContentPadding, 0, _kCardContentPadding, _kCardContentPadding),
+            child: _buildBottomSection(context),
+          ),
+          ?_buildFooterSpace(),
+        ],
+      ),
+    );
+  }
+
+  /// Invisible, unfocusable copy of the footer that reserves its height, so the footer can't cover the card's text.
+  Widget? _buildFooterSpace() {
+    final footer = widget.footer;
+    if (footer == null) return null;
+    return Visibility(
+      visible: false,
+      maintainSize: true,
+      maintainAnimation: true,
+      maintainState: true,
+      child: footer,
     );
   }
 

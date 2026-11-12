@@ -1,0 +1,149 @@
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mockito/mockito.dart';
+import 'package:wallet/environment.dart';
+import 'package:wallet/src/data/repository/close_proximity/impl/close_proximity_repository_impl.dart';
+import 'package:wallet/src/domain/model/close_proximity/ble_connection_event.dart';
+import 'package:wallet/src/wallet_core/error/core_error.dart';
+import 'package:wallet_core/core.dart' as core;
+
+import '../../../../mocks/wallet_mocks.dart';
+
+void main() {
+  late CloseProximityRepositoryImpl repository;
+  late MockCloseProximitySettingsStore settings;
+  late MockTypedWalletCore mockTypedWalletCore;
+  late MockMapper<core.CloseProximityDisclosureFlutterUpdate, BleConnectionEvent> mockMapper;
+
+  setUp(() {
+    mockTypedWalletCore = MockTypedWalletCore();
+    mockMapper = MockMapper();
+    settings = MockCloseProximitySettingsStore();
+    when(settings.getWrprcStrictMode()).thenAnswer((_) async => true);
+    repository = CloseProximityRepositoryImpl(mockTypedWalletCore, mockMapper, settings);
+  });
+
+  group('CloseProximityRepositoryImpl', () {
+    test('only an enabled build may honor a saved strict-mode opt-out', () async {
+      when(settings.getWrprcStrictMode()).thenAnswer((_) async => false);
+      await repository.startCloseProximityDisclosure();
+      verify(
+        mockTypedWalletCore.startCloseProximityDisclosure(
+          wrprcStrictMode: !Environment.enableWrprcStrictModeToggle,
+          callback: anyNamed('callback'),
+        ),
+      ).called(1);
+      if (!Environment.enableWrprcStrictModeToggle) verifyZeroInteractions(settings);
+    });
+
+    test('startCloseProximityDisclosure calls core and emits events', () async {
+      const engagement = 'mdoc:engagement_data';
+
+      // Capture the callback passed to the core
+      late FutureOr<void> Function(core.CloseProximityDisclosureFlutterUpdate) capturedCallback;
+      when(
+        mockTypedWalletCore.startCloseProximityDisclosure(
+          wrprcStrictMode: true,
+          callback: anyNamed('callback'),
+        ),
+      ).thenAnswer((invocation) async {
+        capturedCallback = invocation.namedArguments[#callback];
+        return engagement;
+      });
+
+      final observedEvents = <BleConnectionEvent>[];
+      final subscription = repository.observeBleConnectionEvents().listen(observedEvents.add);
+
+      final engagementResult = await repository.startCloseProximityDisclosure();
+
+      expect(engagementResult, engagement);
+      verify(mockTypedWalletCore.startCloseProximityDisclosure(wrprcStrictMode: true, callback: anyNamed('callback')))
+          .called(1);
+
+      // Verify initial BleAdvertising event is emitted
+      await Future.microtask(() {});
+      expect(observedEvents, contains(const BleAdvertising(engagement)));
+
+      // Simulate core update
+      const update = core.CloseProximityDisclosureFlutterUpdate.connected();
+      const mappedEvent = BleConnected();
+      when(mockMapper.map(update)).thenReturn(mappedEvent);
+
+      // Push Connected into the captured callback
+      await capturedCallback(update);
+
+      // Verify the mapped update is emitted
+      expect(observedEvents, contains(mappedEvent));
+
+      await subscription.cancel();
+    });
+
+    test('observeBleConnectionEvents returns a stream of events', () async {
+      final stream = repository.observeBleConnectionEvents();
+      expect(stream, isA<Stream<BleConnectionEvent>>());
+    });
+
+    test('multiple core updates are correctly mapped and emitted', () async {
+      const engagement = 'mdoc:engagement_data';
+      late FutureOr<void> Function(core.CloseProximityDisclosureFlutterUpdate) capturedCallback;
+
+      when(
+        mockTypedWalletCore.startCloseProximityDisclosure(
+          wrprcStrictMode: true,
+          callback: anyNamed('callback'),
+        ),
+      ).thenAnswer((invocation) async {
+        capturedCallback = invocation.namedArguments[#callback];
+        return engagement;
+      });
+
+      final observedEvents = <BleConnectionEvent>[];
+      final subscription = repository.observeBleConnectionEvents().listen(observedEvents.add);
+
+      await repository.startCloseProximityDisclosure();
+
+      // Define updates and their expected mappings
+      const genericError = CoreGenericError('test');
+      const genericJsonError = '{"type":"Generic", "description":"test"}';
+      final updates = [
+        (const core.CloseProximityDisclosureFlutterUpdate.connected(), const BleConnected()),
+        (const core.CloseProximityDisclosureFlutterUpdate.deviceRequestReceived(), const BleDeviceRequestReceived()),
+        (const core.CloseProximityDisclosureFlutterUpdate.disconnected(), const BleDisconnected()),
+        (
+          const core.CloseProximityDisclosureFlutterUpdate.errored(error: genericJsonError),
+          const BleError(genericError),
+        ),
+      ];
+
+      // Publish all updates into the captured callback
+      for (final (update, expectedEvent) in updates) {
+        when(mockMapper.map(update)).thenReturn(expectedEvent);
+        await capturedCallback(update);
+      }
+
+      // Verify these updates are emitted in order (with initial advertising event)
+      await Future.microtask(() {});
+      expect(observedEvents, [
+        const BleAdvertising(engagement),
+        const BleConnected(),
+        const BleDeviceRequestReceived(),
+        const BleDisconnected(),
+        const BleError(genericError),
+      ]);
+
+      await subscription.cancel();
+    });
+
+    test('startCloseProximityDisclosure propagates error from core', () async {
+      when(
+        mockTypedWalletCore.startCloseProximityDisclosure(
+          wrprcStrictMode: true,
+          callback: anyNamed('callback'),
+        ),
+      ).thenThrow(Exception('Core error'));
+
+      expect(() => repository.startCloseProximityDisclosure(), throwsException);
+    });
+  });
+}

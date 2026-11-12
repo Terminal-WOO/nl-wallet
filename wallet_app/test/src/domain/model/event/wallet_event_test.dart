@@ -5,6 +5,27 @@ import 'package:wallet/src/util/extension/string_extension.dart';
 import '../../../mocks/wallet_mock_data.dart';
 
 void main() {
+  test('DeletionEvent', () {
+    final event = WalletEvent.deletion(
+      dateTime: DateTime(2024),
+      status: EventStatus.success,
+      card: WalletMockData.card,
+    );
+    final identicalEvent = WalletEvent.deletion(
+      dateTime: DateTime(2024),
+      status: EventStatus.success,
+      card: WalletMockData.card,
+    );
+    final differentEvent = WalletEvent.deletion(
+      dateTime: DateTime(2025),
+      status: EventStatus.success,
+      card: WalletMockData.card,
+    );
+    expect(event, identicalEvent);
+    expect(event, isNot(equals(differentEvent)));
+    expect(event.sharedAttributes, WalletMockData.card.attributes);
+  });
+
   test('DisclosureEvent', () {
     final event = WalletEvent.disclosure(
       dateTime: DateTime(2024),
@@ -12,7 +33,6 @@ void main() {
       relyingParty: WalletMockData.organization,
       purpose: 'purpose'.untranslated,
       cards: [WalletMockData.card],
-      policy: WalletMockData.policy,
       type: DisclosureType.regular,
     );
     final identicalEvent = WalletEvent.disclosure(
@@ -21,7 +41,6 @@ void main() {
       relyingParty: WalletMockData.organization,
       purpose: 'purpose'.untranslated,
       cards: [WalletMockData.card],
-      policy: WalletMockData.policy,
       type: DisclosureType.regular,
     );
     final differentEvent = WalletEvent.disclosure(
@@ -30,7 +49,6 @@ void main() {
       relyingParty: WalletMockData.organization,
       purpose: 'purpose'.untranslated,
       cards: [WalletMockData.card],
-      policy: WalletMockData.policy,
       type: DisclosureType.login,
     );
     expect(event, identicalEvent);
@@ -65,21 +83,18 @@ void main() {
       dateTime: DateTime(2024),
       status: EventStatus.success,
       relyingParty: WalletMockData.organization,
-      policy: WalletMockData.policy,
       document: WalletMockData.document,
     );
     final identicalEvent = WalletEvent.sign(
       dateTime: DateTime(2024),
       status: EventStatus.success,
       relyingParty: WalletMockData.organization,
-      policy: WalletMockData.policy,
       document: WalletMockData.document,
     );
     final differentEvent = WalletEvent.sign(
       dateTime: DateTime(2023),
       status: EventStatus.success,
       relyingParty: WalletMockData.organization,
-      policy: WalletMockData.policy,
       document: WalletMockData.document,
     );
     expect(event, identicalEvent);

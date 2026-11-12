@@ -5,13 +5,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wallet/src/domain/usecase/sign/accept_sign_agreement_usecase.dart';
 import 'package:wallet/src/feature/common/widget/centered_loading_indicator.dart';
+import 'package:wallet/src/feature/error/error_page.dart';
 import 'package:wallet/src/feature/organization/approve/organization_approve_page.dart';
 import 'package:wallet/src/feature/pin/bloc/pin_bloc.dart';
 import 'package:wallet/src/feature/sign/bloc/sign_bloc.dart';
 import 'package:wallet/src/feature/sign/page/check_agreement_page.dart';
 import 'package:wallet/src/feature/sign/page/confirm_agreement_page.dart';
 import 'package:wallet/src/feature/sign/page/sign_confirm_pin_page.dart';
-import 'package:wallet/src/feature/sign/page/sign_generic_error_page.dart';
 import 'package:wallet/src/feature/sign/page/sign_stopped_page.dart';
 import 'package:wallet/src/feature/sign/page/sign_success_page.dart';
 import 'package:wallet/src/feature/sign/sign_screen.dart';
@@ -27,16 +27,6 @@ class MockSignBloc extends MockBloc<SignEvent, SignState> implements SignBloc {}
 
 void main() {
   group('goldens', () {
-    testGoldens('SignInitial Light', (tester) async {
-      await tester.pumpWidgetWithAppWrapper(
-        const SignScreen().withState<SignBloc, SignState>(
-          MockSignBloc(),
-          const SignInitial(),
-        ),
-      );
-      await screenMatchesGolden('initial.light');
-    });
-
     testGoldens('SignLoadInProgress Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const SignScreen().withState<SignBloc, SignState>(
@@ -97,7 +87,6 @@ void main() {
             relyingParty: WalletMockData.organization,
             document: WalletMockData.document,
             trustProvider: WalletMockData.organization,
-            policy: WalletMockData.policy,
             requestedAttributes: [WalletMockData.textDataAttribute],
           ),
         ),
@@ -112,7 +101,6 @@ void main() {
           SignConfirmAgreement(
             relyingParty: WalletMockData.organization,
             requestedAttributes: [WalletMockData.textDataAttribute],
-            policy: WalletMockData.policy,
             trustProvider: WalletMockData.organization,
             document: WalletMockData.document,
           ),
@@ -175,16 +163,6 @@ void main() {
       expect(find.byType(SignSuccessPage), findsOneWidget);
     });
 
-    testWidgets('SignInitial state renders loader', (tester) async {
-      await tester.pumpWidgetWithAppWrapper(
-        const SignScreen().withState<SignBloc, SignState>(
-          MockSignBloc(),
-          const SignInitial(),
-        ),
-      );
-      expect(find.byType(CenteredLoadingIndicator), findsOneWidget);
-    });
-
     testWidgets('SignLoadInProgress state renders loader', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const SignScreen().withState<SignBloc, SignState>(
@@ -227,7 +205,6 @@ void main() {
             relyingParty: WalletMockData.organization,
             trustProvider: WalletMockData.organization,
             document: WalletMockData.document,
-            policy: WalletMockData.policy,
             requestedAttributes: const [],
           ),
         ),
@@ -256,7 +233,7 @@ void main() {
           const SignError(),
         ),
       );
-      expect(find.byType(SignGenericErrorPage), findsOneWidget);
+      expect(find.byType(ErrorPage), findsOneWidget);
     });
 
     testWidgets('SignStopped state renders SignStoppedPage', (tester) async {

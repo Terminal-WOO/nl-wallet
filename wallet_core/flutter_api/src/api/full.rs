@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
+use flutter_api_macros::flutter_api_error;
+use flutter_rust_bridge::DartFnFuture;
 use flutter_rust_bridge::frb;
-use flutter_rust_bridge::setup_default_user_utils;
 use itertools::Itertools;
 use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 use url::Url;
-
-use flutter_api_macros::flutter_api_error;
 use wallet::DisclosureUriSource;
+use wallet::Pagination;
+use wallet::PidIssuancePurpose;
 use wallet::UnlockMethod;
 use wallet::Wallet;
 use wallet::errors::WalletInitError;
@@ -17,10 +20,16 @@ use crate::logging::init_logging;
 use crate::models::attestation::AttestationPresentation;
 use crate::models::config::FlutterConfiguration;
 use crate::models::disclosure::AcceptDisclosureResult;
+use crate::models::disclosure::CloseProximityDisclosureFlutterUpdate;
 use crate::models::disclosure::StartDisclosureResult;
-use crate::models::instruction::DisclosureBasedIssuanceResult;
+use crate::models::instruction::DisclosureBasedIssuanceInstructionResult;
 use crate::models::instruction::PidIssuanceResult;
+use crate::models::instruction::RevocationCodeResult;
 use crate::models::instruction::WalletInstructionResult;
+use crate::models::issuance::IssuanceContinueResult;
+use crate::models::issuance::IssuanceStartResult;
+use crate::models::notification::AppNotification;
+use crate::models::notification::NotificationType;
 use crate::models::pin::PinValidationResult;
 use crate::models::transfer::TransferSessionState;
 use crate::models::uri::IdentifyUriResult;
@@ -37,6 +46,17 @@ fn wallet() -> &'static RwLock<Wallet> {
         .expect("Wallet must be initialized. Please execute `init()` first.")
 }
 
+fn set_env_if_unset(name: &str, value: &str) {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => unsafe { std::env::set_var(name, value) },
+        Ok(value) => tracing::info!("Skip setting env var `{name}` because it is already set to: {value}"),
+        Err(std::env::VarError::NotUnicode(value)) => tracing::info!(
+            "Skip setting env var `{name}` because it is already set to: {}",
+            value.to_string_lossy()
+        ),
+    }
+}
+
 #[frb(init)]
 #[flutter_api_error]
 pub async fn init() -> anyhow::Result<()> {
@@ -46,14 +66,12 @@ pub async fn init() -> anyhow::Result<()> {
         // init_logging() should not fail when being called more than once.
         init_logging();
 
-        // Setup logging to console and enable RUST_BACKTRACE to be caught on panics (but not errors) for Sentry.
-        setup_default_user_utils();
-        unsafe {
-            std::env::set_var("RUST_LIB_BACKTRACE", "0");
-        }
+        // Setup logging to console and enable standard panic backtraces. Handled Sentry errors attach
+        // stacktraces through the Rust Sentry client options.
+        set_env_if_unset("RUST_BACKTRACE", "1");
+        set_env_if_unset("RUST_LIB_BACKTRACE", "0");
 
         // Initialize Sentry for Rust panics.
-        // This MUST be called before initializing the async runtime.
         init_sentry();
 
         create_wallet().await?;
@@ -83,9 +101,34 @@ async fn create_wallet() -> Result<(), WalletInitError> {
 
 #[flutter_api_error]
 pub fn is_valid_pin(pin: String) -> anyhow::Result<PinValidationResult> {
-    let result = wallet::validate_pin(&pin).into();
+    let result = wallet::validate_pin(&pin.into()).into();
 
     Ok(result)
+}
+
+pub fn clear_sentry_breadcrumb_callback() {
+    error_category::sentry::clear_breadcrumb_sink();
+}
+
+pub fn set_sentry_breadcrumb_callback(
+    callback: impl Fn(String) -> DartFnFuture<()> + Send + Sync + 'static,
+) -> anyhow::Result<()> {
+    let callback = Arc::new(callback);
+    error_category::sentry::set_breadcrumb_sink(Arc::new(move |message| {
+        let callback = Arc::clone(&callback);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                _ = handle.spawn(async move {
+                    callback(message).await;
+                });
+            }
+            Err(error) => {
+                tracing::debug!("could not forward Rust Sentry breadcrumb to Dart: {error}");
+            }
+        }
+    }));
+
+    Ok(())
 }
 
 pub async fn set_lock_stream(sink: StreamSink<bool>) {
@@ -106,6 +149,22 @@ pub async fn set_configuration_stream(sink: StreamSink<FlutterConfiguration>) {
 
 pub async fn clear_configuration_stream() {
     wallet().read().await.clear_config_callback();
+}
+
+/// Reports whether the wallet configuration is expired and could not be refreshed. While this is `true` the app
+/// should block all interaction, as the key material and trust anchors it holds can no longer be trusted. It reverts to
+/// `false` as soon as a fresh, valid configuration has been received.
+pub async fn set_config_expired_stream(sink: StreamSink<bool>) {
+    wallet()
+        .read()
+        .await
+        .set_config_expired_callback(Box::new(move |expired| {
+            let _ = sink.add(expired);
+        }));
+}
+
+pub async fn clear_config_expired_stream() {
+    wallet().read().await.clear_config_expired_callback();
 }
 
 pub async fn set_version_state_stream(sink: StreamSink<FlutterVersionState>) {
@@ -134,6 +193,51 @@ pub async fn clear_attestations_stream() {
     wallet().write().await.clear_attestations_callback();
 }
 
+pub async fn set_scheduled_notifications_stream(sink: StreamSink<Vec<AppNotification>>) -> anyhow::Result<()> {
+    wallet()
+        .write()
+        .await
+        .set_scheduled_notifications_callback(Box::new(move |notifications| {
+            let _ = sink.add(notifications.into_iter().map(AppNotification::from).collect());
+        }))
+        .await?;
+
+    Ok(())
+}
+
+pub async fn clear_scheduled_notifications_stream() {
+    wallet().write().await.clear_scheduled_notifications_callback();
+}
+
+pub async fn clear_direct_notifications_callback() {
+    wallet().write().await.clear_direct_notifications_callback();
+}
+
+pub async fn set_direct_notifications_callback(
+    callback: impl Fn(Vec<(i32, NotificationType)>) -> DartFnFuture<()> + Send + Sync + 'static,
+) -> anyhow::Result<()> {
+    let callback = Arc::new(callback);
+    let _ = wallet()
+        .write()
+        .await
+        .set_direct_notifications_callback(Arc::new(move |notifications| {
+            let callback = Arc::clone(&callback);
+            let notifications = notifications
+                .into_iter()
+                .map(|(id, notification_type)| (id, notification_type.into()))
+                .collect();
+            Box::pin(async move { callback(notifications).await })
+        }))?;
+
+    Ok(())
+}
+
+pub async fn perform_background_sync() -> anyhow::Result<()> {
+    wallet().write().await.perform_revocation_checks().await?;
+
+    Ok(())
+}
+
 #[flutter_api_error]
 pub async fn set_recent_history_stream(sink: StreamSink<Vec<WalletEvent>>) -> anyhow::Result<()> {
     wallet()
@@ -157,7 +261,7 @@ pub async fn clear_recent_history_stream() {
 pub async fn unlock_wallet(pin: String) -> anyhow::Result<WalletInstructionResult> {
     let mut wallet = wallet().write().await;
 
-    let result = wallet.unlock(pin).await.try_into()?;
+    let result = wallet.unlock(pin.into()).await.try_into()?;
 
     Ok(result)
 }
@@ -170,9 +274,9 @@ pub async fn lock_wallet() {
 
 #[flutter_api_error]
 pub async fn check_pin(pin: String) -> anyhow::Result<WalletInstructionResult> {
-    let wallet = wallet().read().await;
+    let mut wallet = wallet().write().await;
 
-    let result = wallet.check_pin(pin).await.try_into()?;
+    let result = wallet.check_pin(pin.into()).await.try_into()?;
 
     Ok(result)
 }
@@ -181,16 +285,19 @@ pub async fn check_pin(pin: String) -> anyhow::Result<WalletInstructionResult> {
 pub async fn change_pin(old_pin: String, new_pin: String) -> anyhow::Result<WalletInstructionResult> {
     let mut wallet = wallet().write().await;
 
-    let result = wallet.begin_change_pin(old_pin, new_pin).await.try_into()?;
+    let result = wallet
+        .begin_change_pin(old_pin.into(), new_pin.into())
+        .await
+        .try_into()?;
 
     Ok(result)
 }
 
 #[flutter_api_error]
 pub async fn continue_change_pin(pin: &str) -> anyhow::Result<WalletInstructionResult> {
-    let wallet = wallet().read().await;
+    let mut wallet = wallet().write().await;
 
-    let result = wallet.continue_change_pin(pin).await.try_into()?;
+    let result = wallet.continue_change_pin(&pin.into()).await.try_into()?;
 
     Ok(result)
 }
@@ -203,7 +310,7 @@ pub async fn has_registration() -> bool {
 pub async fn register(pin: &str) -> anyhow::Result<()> {
     let mut wallet = wallet().write().await;
 
-    wallet.register(pin).await?;
+    wallet.register(pin.into()).await?;
 
     Ok(())
 }
@@ -221,15 +328,20 @@ pub async fn identify_uri(uri: String) -> anyhow::Result<IdentifyUriResult> {
 pub async fn create_pid_issuance_redirect_uri() -> anyhow::Result<String> {
     let mut wallet = wallet().write().await;
 
-    let auth_url = wallet.create_pid_issuance_auth_url().await?;
+    let auth_url = wallet
+        .create_pid_issuance_auth_url(PidIssuancePurpose::Enrollment)
+        .await?;
 
     Ok(auth_url.into())
 }
 
 #[flutter_api_error]
 pub async fn create_pid_renewal_redirect_uri() -> anyhow::Result<String> {
-    // TODO: Implement as part of PVW-4586
-    Ok("pid_renewal_url".into())
+    let mut wallet = wallet().write().await;
+
+    let auth_url = wallet.create_pid_issuance_auth_url(PidIssuancePurpose::Renewal).await?;
+
+    Ok(auth_url.into())
 }
 
 #[flutter_api_error]
@@ -256,7 +368,7 @@ pub async fn continue_pin_recovery(uri: String) -> anyhow::Result<()> {
 pub async fn complete_pin_recovery(pin: String) -> anyhow::Result<()> {
     let mut wallet = wallet().write().await;
 
-    wallet.complete_pin_recovery(pin).await?;
+    wallet.complete_pin_recovery(pin.into()).await?;
 
     Ok(())
 }
@@ -271,34 +383,42 @@ pub async fn cancel_pin_recovery() -> anyhow::Result<()> {
 }
 
 #[flutter_api_error]
+pub async fn start_issuance_from_offer(offer_uri: String) -> anyhow::Result<IssuanceStartResult> {
+    let offer_uri = Url::parse(&offer_uri)?;
+
+    let mut wallet = wallet().write().await;
+
+    let issuance_start_result = wallet.start_issuance_from_offer(offer_uri).await?;
+
+    Ok(issuance_start_result.into())
+}
+
+// TODO remove this function (PVW-5927)
+#[flutter_api_error]
 pub async fn cancel_issuance() -> anyhow::Result<()> {
     let mut wallet = wallet().write().await;
 
-    wallet.cancel_issuance().await?;
+    wallet.cancel_session().await?;
 
     Ok(())
 }
 
 #[flutter_api_error]
-pub async fn continue_pid_issuance(uri: String) -> anyhow::Result<Vec<AttestationPresentation>> {
+pub async fn continue_issuance(uri: String) -> anyhow::Result<IssuanceContinueResult> {
     let url = Url::parse(&uri)?;
 
     let mut wallet = wallet().write().await;
 
-    let wallet_attestations = wallet.continue_pid_issuance(url).await?;
-    let attestations = wallet_attestations
-        .into_iter()
-        .map(AttestationPresentation::from)
-        .collect();
+    let issuance_continue_result = wallet.continue_issuance(url).await?;
 
-    Ok(attestations)
+    Ok(issuance_continue_result.into())
 }
 
 #[flutter_api_error]
 pub async fn accept_issuance(pin: String) -> anyhow::Result<WalletInstructionResult> {
     let mut wallet = wallet().write().await;
 
-    let result = wallet.accept_issuance(pin).await.try_into()?;
+    let result = wallet.accept_issuance(pin.into()).await.try_into()?;
 
     Ok(result)
 }
@@ -307,18 +427,9 @@ pub async fn accept_issuance(pin: String) -> anyhow::Result<WalletInstructionRes
 pub async fn accept_pid_issuance(pin: String) -> anyhow::Result<PidIssuanceResult> {
     let mut wallet = wallet().write().await;
 
-    let result = wallet.accept_issuance(pin).await.try_into()?;
+    let result = wallet.accept_issuance(pin.into()).await.try_into()?;
 
     Ok(result)
-}
-
-#[flutter_api_error]
-pub async fn has_active_issuance_session() -> anyhow::Result<bool> {
-    let wallet = wallet().read().await;
-
-    let has_active_session = wallet.has_active_issuance_session()?;
-
-    Ok(has_active_session)
 }
 
 #[flutter_api_error]
@@ -336,10 +447,42 @@ pub async fn start_disclosure(uri: String, is_qr_code: bool) -> anyhow::Result<S
 }
 
 #[flutter_api_error]
+pub async fn start_close_proximity_disclosure(
+    wrprc_strict_mode: bool,
+    callback: impl Fn(CloseProximityDisclosureFlutterUpdate) -> DartFnFuture<()> + Send + Sync + 'static,
+) -> anyhow::Result<String> {
+    let mut wallet = wallet().write().await;
+    let result = wallet
+        .start_close_proximity_disclosure(wrprc_strict_mode, Box::new(move |update| callback(update.into())))
+        .await?;
+
+    Ok(result.into())
+}
+
+#[flutter_api_error]
+pub async fn continue_close_proximity_disclosure() -> anyhow::Result<StartDisclosureResult> {
+    let mut wallet = wallet().write().await;
+
+    let result: StartDisclosureResult = wallet.continue_close_proximity_disclosure().await.try_into()?;
+
+    Ok(result)
+}
+
+#[flutter_api_error]
+pub async fn cancel_session() -> anyhow::Result<Option<String>> {
+    let mut wallet = wallet().write().await;
+
+    let return_url = wallet.cancel_session().await?.map(String::from);
+
+    Ok(return_url)
+}
+
+// TODO remove this function (PVW-5927)
+#[flutter_api_error]
 pub async fn cancel_disclosure() -> anyhow::Result<Option<String>> {
     let mut wallet = wallet().write().await;
 
-    let return_url = wallet.cancel_disclosure().await?.map(String::from);
+    let return_url = wallet.cancel_session().await?.map(String::from);
 
     Ok(return_url)
 }
@@ -350,31 +493,25 @@ pub async fn accept_disclosure(selected_indices: Vec<u16>, pin: String) -> anyho
 
     let mut wallet = wallet().write().await;
 
-    let result = wallet.accept_disclosure(&selected_indices, pin).await.try_into()?;
+    let result = wallet
+        .accept_disclosure(&selected_indices, pin.into())
+        .await
+        .try_into()?;
 
     Ok(result)
-}
-
-#[flutter_api_error]
-pub async fn has_active_disclosure_session() -> anyhow::Result<bool> {
-    let wallet = wallet().read().await;
-
-    let has_active_session = wallet.has_active_disclosure_session()?;
-
-    Ok(has_active_session)
 }
 
 #[flutter_api_error]
 pub async fn continue_disclosure_based_issuance(
     selected_indices: Vec<u16>,
     pin: String,
-) -> anyhow::Result<DisclosureBasedIssuanceResult> {
+) -> anyhow::Result<DisclosureBasedIssuanceInstructionResult> {
     let selected_indices = selected_indices.into_iter().map(usize::from).collect_vec();
 
     let mut wallet = wallet().write().await;
 
     let result = wallet
-        .continue_disclosure_based_issuance(&selected_indices, pin)
+        .continue_disclosure_based_issuance(&selected_indices, pin.into())
         .await
         .try_into()?;
 
@@ -419,7 +556,7 @@ pub async fn init_wallet_transfer() -> anyhow::Result<String> {
 
     let transfer_uri = wallet.init_transfer().await?;
 
-    Ok(transfer_uri.to_string())
+    Ok(transfer_uri.into())
 }
 
 #[flutter_api_error]
@@ -437,7 +574,7 @@ pub async fn pair_wallet_transfer(uri: String) -> anyhow::Result<()> {
 pub async fn confirm_wallet_transfer(pin: String) -> anyhow::Result<WalletInstructionResult> {
     let mut wallet = wallet().write().await;
 
-    let result = wallet.confirm_transfer(pin).await.try_into()?;
+    let result = wallet.confirm_transfer(pin.into()).await.try_into()?;
 
     Ok(result)
 }
@@ -497,9 +634,13 @@ pub async fn get_wallet_state() -> anyhow::Result<WalletState> {
 }
 
 #[flutter_api_error]
-pub async fn get_history() -> anyhow::Result<Vec<WalletEvent>> {
+pub async fn get_history(page: u32, page_size: u32) -> anyhow::Result<Vec<WalletEvent>> {
     let wallet = wallet().read().await;
-    let history = wallet.get_history().await?;
+    let pagination = (page_size != 0).then_some(Pagination {
+        page: page as usize,
+        size: page_size as usize,
+    });
+    let history = wallet.get_history(pagination).await?;
     let history = history.into_iter().map(WalletEvent::from).collect();
     Ok(history)
 }
@@ -510,6 +651,33 @@ pub async fn get_history_for_card(attestation_id: String) -> anyhow::Result<Vec<
     let history = wallet.get_history_for_card(&attestation_id).await?;
     let history = history.into_iter().map(WalletEvent::from).collect();
     Ok(history)
+}
+
+#[flutter_api_error]
+pub async fn get_registration_revocation_code() -> anyhow::Result<String> {
+    let wallet = wallet().read().await;
+
+    let revocation_code = wallet.get_revocation_code_before_pid().await?;
+
+    Ok(revocation_code.clone().into())
+}
+
+#[flutter_api_error]
+pub async fn get_revocation_code(pin: String) -> anyhow::Result<RevocationCodeResult> {
+    let mut wallet = wallet().write().await;
+
+    let result = wallet.get_revocation_code_with_pin(pin.into()).await.try_into()?;
+
+    Ok(result)
+}
+
+#[flutter_api_error]
+pub async fn delete_attestation(pin: String, attestation_id: String) -> anyhow::Result<WalletInstructionResult> {
+    let mut wallet = wallet().write().await;
+
+    let result = wallet.delete_attestation(pin.into(), attestation_id).await.try_into()?;
+
+    Ok(result)
 }
 
 #[flutter_api_error]
@@ -532,6 +700,16 @@ mod tests {
             is_valid_pin(pin.to_string()).expect("Could not validate PIN"),
             PinValidationResult::Ok
         )
+    }
+
+    #[test]
+    fn sentry_breadcrumb_callback_does_not_panic_without_tokio_runtime() {
+        clear_sentry_breadcrumb_callback();
+        set_sentry_breadcrumb_callback(|_| Box::pin(async {}) as DartFnFuture<()>).unwrap();
+
+        error_category::sentry::add_breadcrumb("test.breadcrumb");
+
+        clear_sentry_breadcrumb_callback();
     }
 
     #[test]

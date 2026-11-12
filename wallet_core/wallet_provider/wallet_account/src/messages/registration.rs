@@ -1,16 +1,19 @@
 use chrono::DateTime;
 use chrono::Utc;
 use chrono::serde::ts_seconds;
-use serde::Deserialize;
-use serde::Serialize;
-use serde_with::base64::Base64;
-use serde_with::serde_as;
-
 use crypto::p256_der::DerVerifyingKey;
 use jwt::JwtSub;
 use jwt::JwtTyp;
 use jwt::UnverifiedJwt;
+use jwt::headers::HeaderWithKid;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_with::DisplayFromStr;
+use serde_with::base64::Base64;
+use serde_with::serde_as;
 use utils::vec_at_least::VecAtLeastTwo;
+
+use crate::RevocationCode;
 
 /// Registration challenge, sent by account server to wallet after the latter requests enrollment.
 #[serde_as]
@@ -46,12 +49,15 @@ pub enum RegistrationAttestation {
 }
 
 /// Wallet certificate provisioning message, sent by account server to wallet after successful registration.
+#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Certificate {
     pub certificate: WalletCertificate,
+    #[serde_as(as = "DisplayFromStr")]
+    pub revocation_code: RevocationCode,
 }
 
-pub type WalletCertificate = UnverifiedJwt<WalletCertificateClaims>;
+pub type WalletCertificate = UnverifiedJwt<WalletCertificateClaims, HeaderWithKid>;
 
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +73,9 @@ pub struct WalletCertificateClaims {
 
     #[serde(with = "ts_seconds")]
     pub iat: DateTime<Utc>,
+
+    #[serde(with = "ts_seconds")]
+    pub exp: DateTime<Utc>,
 }
 
 impl JwtSub for WalletCertificateClaims {
@@ -77,19 +86,17 @@ impl JwtTyp for WalletCertificateClaims {}
 
 #[cfg(feature = "client")]
 mod client {
-    use futures::TryFutureExt;
-
     use crypto::keys::EphemeralEcdsaKey;
     use crypto::keys::SecureEcdsaKey;
     use crypto::p256_der::DerVerifyingKey;
+    use futures::TryFutureExt;
     use platform_support::attested_key::AppleAttestedKey;
     use utils::vec_at_least::VecAtLeastTwo;
 
-    use crate::error::EncodeError;
-    use crate::signed::ChallengeResponse;
-
     use super::Registration;
     use super::RegistrationAttestation;
+    use crate::error::EncodeError;
+    use crate::signed::ChallengeResponse;
 
     // Constructors for ChallengeResponse<Registration>.
     impl ChallengeResponse<Registration> {

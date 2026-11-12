@@ -2,18 +2,16 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use attestation_types::claim_path::ClaimPath;
 use indexmap::IndexMap;
 use itertools::Either;
 use itertools::Itertools;
-
-use attestation_types::claim_path::ClaimPath;
 use utils::vec_at_least::VecNonEmpty;
 
+use super::MissingAttributesError;
 use crate::iso::disclosure::IssuerSigned;
 use crate::iso::mdocs::Attributes;
 use crate::utils::serialization::TaggedBytes;
-
-use super::MissingAttributesError;
 
 /// Helper function for converting a claim path to a tuple of name space and element identifier.
 /// This will return `None` if:
@@ -140,23 +138,22 @@ impl IssuerSigned {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashSet;
 
-    use assert_matches::assert_matches;
+    use attestation_types::claim_path::ClaimPath;
     use itertools::Itertools;
     use rstest::rstest;
-
-    use attestation_types::claim_path::ClaimPath;
     use utils::vec_at_least::VecNonEmpty;
+    use utils::vec_nonempty;
 
+    use super::super::MissingAttributesError;
+    use super::claim_path_to_mdoc_path;
     use crate::IssuerNameSpaces;
     use crate::examples::Example;
     use crate::iso::disclosure::DeviceResponse;
     use crate::iso::disclosure::IssuerSigned;
     use crate::utils::serialization::TaggedBytes;
-
-    use super::super::MissingAttributesError;
-    use super::claim_path_to_mdoc_path;
 
     fn issuer_signed_example() -> IssuerSigned {
         DeviceResponse::example()
@@ -174,7 +171,7 @@ mod tests {
             .map(|key| ClaimPath::SelectByKey(key.to_string()))
             .collect_vec()
             .try_into()
-            .unwrap()
+            .expect("`claim_path` should be called with a non-empty slice")
     }
 
     #[rstest]
@@ -222,8 +219,8 @@ mod tests {
         ].into_iter().collect()),
     )]
     #[case(
-        vec![vec![ClaimPath::SelectAll].try_into().unwrap()],
-        Some(HashSet::from([vec![ClaimPath::SelectAll].try_into().unwrap()]))
+        vec![vec_nonempty![ClaimPath::SelectAll]],
+        Some(HashSet::from([vec_nonempty![ClaimPath::SelectAll]]))
     )]
     fn test_issuer_signed_matches_requested_attributes(
         #[case] claim_paths: Vec<VecNonEmpty<ClaimPath>>,

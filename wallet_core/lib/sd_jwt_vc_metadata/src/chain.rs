@@ -15,7 +15,7 @@ use serde_with::serde_as;
 use ssri::Algorithm;
 use ssri::Integrity;
 use ssri::IntegrityChecker;
-
+use utils::vec_at_least::IntoNonEmptyIterator;
 use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
 
@@ -169,6 +169,9 @@ impl TypeMetadataDocuments {
             });
         }
 
+        // Convert the collected indices into a `VecNonEmpty` (safe because `documents` is non-empty).
+        let metadata_chain_indices: VecNonEmpty<_> = metadata_chain_indices.try_into().unwrap();
+
         // Be extra strict by checking that the set of `vct`s that have not been processed is now 0, as they should have
         // all been consumed by walking the chain.
         if !index_by_vct.is_empty() {
@@ -185,25 +188,20 @@ impl TypeMetadataDocuments {
 
         // Collect an owned `Vec` of the metadata documents by consuming the indices, which are all guaranteed to exist.
         let metadata_chain = metadata_chain_indices
-            .iter()
+            .nonempty_iter()
             .map(|index| metadata_by_index.remove(index).unwrap())
-            .collect_vec()
-            // Converting to a `VecNonEmpty` cannot fail, as the input is also `VecNonEmpty`.
-            .try_into()
-            .unwrap();
+            .collect();
 
         // Normalize the chain of type metadata by combining the individual entries into
         // one type and move the documents to a `SortedTypeMetadataDocuments` type.
         let normalized = NormalizedTypeMetadata::try_from_sorted_metadata(SortedTypeMetadata(metadata_chain))?;
 
         let sorted_documents = documents
-            .into_iter()
+            .into_nonempty_iter()
             .zip(metadata_chain_indices)
             .sorted_by_key(|(_, index)| *index)
             .map(|(json, _)| json)
-            .collect_vec()
-            .try_into()
-            .unwrap();
+            .collect();
         let sorted = SortedTypeMetadataDocuments(sorted_documents);
 
         Ok((normalized, sorted))
@@ -286,22 +284,18 @@ impl From<VerifiedTypeMetadataDocuments> for TypeMetadataDocuments {
 #[cfg(any(test, feature = "example_constructors"))]
 mod example_constructors {
     use ssri::Integrity;
-
     use utils::vec_at_least::VecNonEmpty;
+    use utils::vec_nonempty;
 
+    use super::TypeMetadataDocuments;
+    use super::VerifiedTypeMetadataDocuments;
     use crate::examples::DEGREE_METADATA_BYTES;
     use crate::examples::EUDI_ADDRESS_METADATA_BYTES;
     use crate::examples::EUDI_PID_METADATA_BYTES;
-    use crate::examples::EXAMPLE_METADATA_BYTES;
-    use crate::examples::EXAMPLE_V2_METADATA_BYTES;
-    use crate::examples::EXAMPLE_V3_METADATA_BYTES;
     use crate::examples::NL_ADDRESS_METADATA_BYTES;
     use crate::examples::NL_PID_METADATA_BYTES;
     use crate::metadata::MetadataExtends;
     use crate::metadata::TypeMetadata;
-
-    use super::TypeMetadataDocuments;
-    use super::VerifiedTypeMetadataDocuments;
 
     impl TypeMetadataDocuments {
         /// Construct a [`TypeMetadataDocuments`] chain for transmission by JSON encoding an ordered sequence of
@@ -341,80 +335,50 @@ mod example_constructors {
         }
 
         pub fn from_single_example(example_metadata: TypeMetadata) -> (String, Integrity, Self) {
-            Self::new_metadata_chain(vec![example_metadata].try_into().unwrap()).unwrap()
-        }
-
-        pub fn example() -> (Integrity, Self) {
-            (
-                Integrity::from(EXAMPLE_METADATA_BYTES),
-                Self::new(vec![EXAMPLE_METADATA_BYTES.to_vec()].try_into().unwrap()),
-            )
+            Self::new_metadata_chain(vec_nonempty![example_metadata]).unwrap()
         }
 
         pub fn nl_pid_example() -> (Integrity, Self) {
             (
                 Integrity::from(NL_PID_METADATA_BYTES),
-                Self::new(
-                    vec![NL_PID_METADATA_BYTES.to_vec(), EUDI_PID_METADATA_BYTES.to_vec()]
-                        .try_into()
-                        .unwrap(),
-                ),
+                Self::new(vec_nonempty![
+                    NL_PID_METADATA_BYTES.to_vec(),
+                    EUDI_PID_METADATA_BYTES.to_vec()
+                ]),
             )
         }
 
         pub fn nl_address_example() -> (Integrity, Self) {
             (
                 Integrity::from(NL_ADDRESS_METADATA_BYTES),
-                Self::new(
-                    vec![NL_ADDRESS_METADATA_BYTES.to_vec(), EUDI_ADDRESS_METADATA_BYTES.to_vec()]
-                        .try_into()
-                        .unwrap(),
-                ),
+                Self::new(vec_nonempty![
+                    NL_ADDRESS_METADATA_BYTES.to_vec(),
+                    EUDI_ADDRESS_METADATA_BYTES.to_vec()
+                ]),
             )
         }
 
         pub fn degree_example() -> (Integrity, Self) {
             (
                 Integrity::from(DEGREE_METADATA_BYTES),
-                Self::new(vec![DEGREE_METADATA_BYTES.to_vec()].try_into().unwrap()),
-            )
-        }
-
-        pub fn example_with_extensions() -> (Integrity, Self) {
-            (
-                Integrity::from(EXAMPLE_V3_METADATA_BYTES),
-                Self::new(
-                    vec![
-                        EXAMPLE_V3_METADATA_BYTES.to_vec(),
-                        EXAMPLE_V2_METADATA_BYTES.to_vec(),
-                        EXAMPLE_METADATA_BYTES.to_vec(),
-                    ]
-                    .try_into()
-                    .unwrap(),
-                ),
+                Self::new(vec_nonempty![DEGREE_METADATA_BYTES.to_vec()]),
             )
         }
     }
 
     impl VerifiedTypeMetadataDocuments {
-        pub fn example() -> Self {
-            Self(vec![EXAMPLE_METADATA_BYTES.to_vec()].try_into().unwrap())
-        }
-
         pub fn nl_pid_example() -> Self {
-            Self(
-                vec![NL_PID_METADATA_BYTES.to_vec(), EUDI_PID_METADATA_BYTES.to_vec()]
-                    .try_into()
-                    .unwrap(),
-            )
+            Self(vec_nonempty![
+                NL_PID_METADATA_BYTES.to_vec(),
+                EUDI_PID_METADATA_BYTES.to_vec()
+            ])
         }
 
-        pub fn nl_address_example() -> Self {
-            Self(
-                vec![NL_ADDRESS_METADATA_BYTES.to_vec(), EUDI_ADDRESS_METADATA_BYTES.to_vec()]
-                    .try_into()
-                    .unwrap(),
-            )
+        pub(crate) fn nl_address_example() -> Self {
+            Self(vec_nonempty![
+                NL_ADDRESS_METADATA_BYTES.to_vec(),
+                EUDI_ADDRESS_METADATA_BYTES.to_vec()
+            ])
         }
     }
 
@@ -429,37 +393,39 @@ mod example_constructors {
 
 #[cfg(test)]
 mod test {
+    use std::assert_matches;
     use std::collections::HashSet;
 
-    use assert_matches::assert_matches;
+    use attestation_types::pid_constants::ADDRESS_ATTESTATION_TYPE;
+    use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
     use itertools::Itertools;
     use rstest::rstest;
     use serde_json::json;
     use ssri::Algorithm;
     use ssri::Integrity;
     use ssri::IntegrityOpts;
-
     use utils::vec_at_least::NonEmptyIterator;
+    use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
-
-    use crate::examples::EXAMPLE_METADATA_BYTES;
-    use crate::examples::EXAMPLE_V2_METADATA_BYTES;
-    use crate::examples::EXAMPLE_V3_METADATA_BYTES;
-    use crate::examples::PID_METADATA_BYTES;
-    use crate::examples::VCT_EXAMPLE_CREDENTIAL;
-    use crate::examples::VCT_EXAMPLE_CREDENTIAL_V2;
-    use crate::examples::VCT_EXAMPLE_CREDENTIAL_V3;
-    use crate::metadata::MetadataExtends;
-    use crate::metadata::TypeMetadata;
-    use crate::metadata::UncheckedTypeMetadata;
 
     use super::SortedTypeMetadata;
     use super::TypeMetadataChainError;
     use super::TypeMetadataDocuments;
+    use crate::VerifiedTypeMetadataDocuments;
+    use crate::examples::EXAMPLE_METADATA_BYTES;
+    use crate::examples::PID_METADATA_BYTES;
+    use crate::examples::test::EXAMPLE_V2_METADATA_BYTES;
+    use crate::examples::test::EXAMPLE_V3_METADATA_BYTES;
+    use crate::examples::test::VCT_EXAMPLE_CREDENTIAL;
+    use crate::examples::test::VCT_EXAMPLE_CREDENTIAL_V2;
+    use crate::examples::test::VCT_EXAMPLE_CREDENTIAL_V3;
+    use crate::metadata::MetadataExtends;
+    use crate::metadata::TypeMetadata;
+    use crate::metadata::UncheckedTypeMetadata;
 
     impl SortedTypeMetadata {
-        pub fn new_mock(chain: Vec<TypeMetadata>) -> Self {
-            Self(chain.try_into().unwrap())
+        pub fn new_mock(chain: VecNonEmpty<TypeMetadata>) -> Self {
+            Self(chain)
         }
 
         pub fn example_with_extensions() -> Self {
@@ -470,6 +436,32 @@ mod test {
             ];
 
             Self(chain)
+        }
+    }
+
+    impl TypeMetadataDocuments {
+        pub fn example() -> (Integrity, Self) {
+            (
+                Integrity::from(EXAMPLE_METADATA_BYTES),
+                Self::new(vec_nonempty![EXAMPLE_METADATA_BYTES.to_vec()]),
+            )
+        }
+
+        pub fn example_with_extensions() -> (Integrity, Self) {
+            (
+                Integrity::from(EXAMPLE_V3_METADATA_BYTES),
+                Self::new(vec_nonempty![
+                    EXAMPLE_V3_METADATA_BYTES.to_vec(),
+                    EXAMPLE_V2_METADATA_BYTES.to_vec(),
+                    EXAMPLE_METADATA_BYTES.to_vec(),
+                ]),
+            )
+        }
+    }
+
+    impl VerifiedTypeMetadataDocuments {
+        pub fn example() -> Self {
+            Self(vec_nonempty![EXAMPLE_METADATA_BYTES.to_vec()])
         }
     }
 
@@ -484,8 +476,8 @@ mod test {
 
     #[rstest]
     #[case(VCT_EXAMPLE_CREDENTIAL, TypeMetadataDocuments::example())]
-    #[case("urn:eudi:pid:nl:1", TypeMetadataDocuments::nl_pid_example())]
-    #[case("urn:eudi:pid-address:nl:1", TypeMetadataDocuments::nl_address_example())]
+    #[case(PID_ATTESTATION_TYPE, TypeMetadataDocuments::nl_pid_example())]
+    #[case(ADDRESS_ATTESTATION_TYPE, TypeMetadataDocuments::nl_address_example())]
     #[case("com.example.degree", TypeMetadataDocuments::degree_example())]
     #[case(VCT_EXAMPLE_CREDENTIAL_V3, TypeMetadataDocuments::example_with_extensions())]
     #[case(VCT_EXAMPLE_CREDENTIAL_V3, reversed_example_with_extension())]
@@ -521,15 +513,12 @@ mod test {
 
     #[test]
     fn test_type_metadata_documents_error_json() {
-        let document = serde_json::to_vec(&json!({
-            "vct": "abc"
-        }))
-        .unwrap();
-        let documents = TypeMetadataDocuments::new(vec![document].try_into().unwrap());
+        let document = serde_json::to_vec(&json!({})).unwrap();
+        let documents = TypeMetadataDocuments::new(vec_nonempty![document]);
 
         let error = documents
             .into_normalized("abc")
-            .expect_err("parsing metadata document chain should not succeed");
+            .expect_err("parsing metadata document without `vct` should not succeed");
 
         assert_matches!(error, TypeMetadataChainError::Json(_));
     }
@@ -556,10 +545,9 @@ mod test {
         });
         let example_metadata = TypeMetadata::try_new(example_metadata).unwrap();
 
-        let (vct, _, documents) = TypeMetadataDocuments::new_metadata_chain(
-            vec![TypeMetadata::example_v2(), example_metadata].try_into().unwrap(),
-        )
-        .unwrap();
+        let (vct, _, documents) =
+            TypeMetadataDocuments::new_metadata_chain(vec_nonempty![TypeMetadata::example_v2(), example_metadata])
+                .unwrap();
 
         let error = documents
             .into_normalized(&vct)
@@ -574,17 +562,14 @@ mod test {
 
     #[test]
     fn test_type_metadata_documents_error_excess_documents() {
-        let (_, documents) = TypeMetadataDocuments::example_with_extensions();
-        let TypeMetadataDocuments(documents_vec) = documents;
-        let mut json_documents = documents_vec.into_inner();
-        json_documents.push(PID_METADATA_BYTES.to_vec());
-        let documents = TypeMetadataDocuments::new(json_documents.try_into().unwrap());
+        let (_, mut documents) = TypeMetadataDocuments::example_with_extensions();
+        documents.0.push(PID_METADATA_BYTES.to_vec());
 
         let error = documents
             .into_normalized(VCT_EXAMPLE_CREDENTIAL_V3)
             .expect_err("parsing metadata document chain should not succeed");
 
-        assert_matches!(error, TypeMetadataChainError::ExcessDocuments(vcts) if vcts == vec!["urn:eudi:pid:nl:1"]);
+        assert_matches!(error, TypeMetadataChainError::ExcessDocuments(vcts) if vcts == vec![PID_ATTESTATION_TYPE]);
     }
 
     fn test_type_metadata_documents_incorrect_extended_resource_integrity(
@@ -594,14 +579,10 @@ mod test {
         extension_metadata.extends.as_mut().unwrap().extends_integrity = integrity.into();
         let extension_metadata = TypeMetadata::try_new(extension_metadata).unwrap();
 
-        let documents = TypeMetadataDocuments::new(
-            vec![
-                serde_json::to_vec(&extension_metadata).unwrap(),
-                EXAMPLE_METADATA_BYTES.to_vec(),
-            ]
-            .try_into()
-            .unwrap(),
-        );
+        let documents = TypeMetadataDocuments::new(vec_nonempty![
+            serde_json::to_vec(&extension_metadata).unwrap(),
+            EXAMPLE_METADATA_BYTES.to_vec(),
+        ]);
 
         documents
             .into_normalized(VCT_EXAMPLE_CREDENTIAL_V2)

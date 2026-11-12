@@ -6,37 +6,79 @@ class DashboardScreen : MobileActions() {
 
     private val menuButton = l10n.getString("dashboardScreenMenuWCAGLabel")
     private val pidIdTitleText = cardMetadata.getPidDisplayName()
-    private val pidAddressTitleText = cardMetadata.getAddressDisplayName()
     private val showDetailsText = l10n.getString("showDetailsCta")
-    private val scanQRButton = l10n.getString("menuScreenScanQrCta")
+    private val actionButton = l10n.getString("qrActionButtonTitle")
     private val appTourBannerTitle = l10n.getString("tourBannerTitle")
+    private val revokedLabel = l10n.getString("cardStatusMetadataWalletItemRevoked")
+    private val cardRevocationBannerTitle = l10n.getString("cardRevocationBannerTitle")
+    private val actionDrawerScanQrButton = l10n.getString("qrActionSheetScanQrTitle")
+    private val actionDrawerShowQrButton = l10n.getString("qrActionSheetShowQrTitle")
+    private val activitiesButtonTitle = l10n.getString("activitySummaryToday")
+    private val requestNotificationPermissionSheetNegativeCta = l10n.getString("requestNotificationPermissionSheetNegativeCta")
 
-    fun visible() = elementContainingTextVisible(menuButton) && elementWithTextVisible(scanQRButton)
+    fun visible() = elementContainingTextVisible(menuButton) && elementContainingTextVisible(actionButton)
 
     fun cardFaceTextsInActiveLanguage() =
         elementContainingTextVisible(pidIdTitleText) && elementContainingTextVisible(showDetailsText)
 
-    fun checkCardSorting(): Boolean {
-        scrollToElementContainingText(pidAddressTitleText)
-        val (_, pidY) = getTopLeftOfElementContainingText(pidIdTitleText)!!
-        scrollToElementContainingText(pidAddressTitleText)
-        val (_, addressY) = getTopLeftOfElementContainingText(pidAddressTitleText)!!
-        return pidY < addressY
-    }
-
     fun clickMenuButton() = clickElementContainingText(menuButton)
 
-    fun clickCard(displayName: String) = clickElementContainingText(displayName)
+    // Sometimes the display name of a card is present in the activities button there for it is needed to
+    // click an element that does not contain the activities button title. The card is scrolled into view first,
+    // so that it does not depend on where an earlier step left the dashboard.
+    fun clickCard(displayName: String) {
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
+        scrollToElementContainingTextExcludingText(displayName, activitiesButtonTitle).click()
+    }
 
     fun appTourBannerVisible() = elementContainingTextVisible(appTourBannerTitle.substringBefore("'"))
 
-    fun cardTitlesVisible() = elementContainingTextVisible(pidIdTitleText) && elementContainingTextVisible(pidAddressTitleText)
+    fun cardTitleVisible() = elementContainingTextVisible(pidIdTitleText)
 
     fun cardButtonsVisible() = elementContainingTextVisible(showDetailsText)
 
     fun cardSubtitleVisible(subtitle: String) = elementContainingTextVisible(subtitle)
 
-    fun openQRScanner() = clickElementWithText(scanQRButton)
+    fun openQRScanner() {
+        clickElementContainingText(actionButton)
+        clickElementContainingText(actionDrawerScanQrButton)
+    }
 
-    fun cardVisible(displayName: String) = elementContainingTextVisible(displayName)
+    fun showQRCode() {
+        clickElementContainingText(actionButton)
+        clickElementContainingText(actionDrawerShowQrButton)
+    }
+
+    // Sometimes the display name of a card is present in the activities button there for it is needed to
+    // click an element that does not contain the activities button title
+    fun cardVisible(cardDisplayContent: String): Boolean = try {
+        scrollToElementContainingTextExcludingText(cardDisplayContent, activitiesButtonTitle)
+        elementContainingTextExcludingTextVisible(cardDisplayContent, activitiesButtonTitle)
+    } catch (e: NoSuchElementException) {
+        false
+    }
+
+    fun cardRevocationVisible(cardDisplayContent: String): Boolean {
+        scrollToElementContainingTexts(listOf(cardDisplayContent, revokedLabel))
+        return elementContainingTextsVisible(listOf(cardDisplayContent, revokedLabel))
+    }
+
+    fun checkCardSorting(topCardDisplayName: String, bottomCardDisplayName: String): Boolean {
+        scrollToElementContainingText(topCardDisplayName)
+        val (_, pidY) = getTopLeftOfElementContainingText(topCardDisplayName)!!
+        scrollToElementContainingText(bottomCardDisplayName)
+        val (_, addressY) = getTopLeftOfElementContainingText(bottomCardDisplayName)!!
+        return pidY < addressY
+    }
+
+    fun tapRevocationNotification(cardDisplayName: String) {
+        val bannerTitle = cardRevocationBannerTitle.replace("{card}", cardDisplayName)
+        scrollToElementContainingText(bannerTitle)
+        clickTallestElementContainingText(bannerTitle)
+    }
+
+    fun notificationsDrawerVisible(timeoutInSeconds: Long = 5) =
+        elementWithTextVisible(requestNotificationPermissionSheetNegativeCta, timeoutInSeconds)
+
+    fun dismissNotificationsDrawer() = clickElementContainingText(requestNotificationPermissionSheetNegativeCta)
 }

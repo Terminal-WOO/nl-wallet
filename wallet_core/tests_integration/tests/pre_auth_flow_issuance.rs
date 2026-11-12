@@ -1,0 +1,72 @@
+use db_test::DbSetup;
+use hsm::test::HsmSetup;
+use http_utils::reqwest::default_reqwest_client_builder;
+use openid4vc::issuable_document::IssuableDocument;
+use pacf_issuance_server::offer::OfferRequest;
+use pacf_issuance_server::offer::OfferResponse;
+use serial_test::serial;
+use tests_integration::common::*;
+use utils::vec_nonempty;
+use wallet::IssuanceStartResult;
+use wallet::Pin;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(hsm)]
+async fn test_pre_authorized_code_issuance() {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+
+    let pin: Pin = "112233".into();
+
+    let wallet = setup_wallet_env(&db_setup, &hsm_setup, &tempdir, WalletDeviceVendor::Apple).await;
+    let pacf_issuance_server = setup_pre_auth_env(&db_setup).await;
+    let mut wallet = do_wallet_registration(wallet, pin.clone()).await;
+
+    // Create a pre-authorized issuance session on the issuance server.
+    let documents = vec_nonempty![IssuableDocument::new_mock_museum_maandkaart()];
+
+    let offer_response = default_reqwest_client_builder()
+        .build()
+        .unwrap()
+        .post(pacf_issuance_server.internal.join("offer"))
+        .json(&OfferRequest { documents })
+        .send()
+        .await
+        .unwrap()
+        .json::<OfferResponse>()
+        .await
+        .unwrap();
+
+    // The wallet should resolve the offer and return credential previews immediately.
+    let IssuanceStartResult::Previews(previews) = wallet
+        .start_issuance_from_offer(offer_response.credential_offer_url)
+        .await
+        .expect("should start issuance from offer")
+    else {
+        panic!("expected Previews, got authorization redirect");
+    };
+
+    assert_eq!(previews.len().get(), 1);
+
+    // Accept the issuance with the wallet PIN.
+    wallet.accept_issuance(pin).await.expect("should accept issuance");
+
+    // Check that every preview attestation is present in the wallet database after issuance.
+    let attestations = wallet_attestations(&mut wallet).await;
+
+    for preview in &previews {
+        assert!(
+            attestations
+                .iter()
+                .any(|a| a.attestation_type == preview.attestation_type && a.attributes == preview.attributes),
+            "attestation for '{}' not found in wallet",
+            preview.attestation_type,
+        );
+    }
+
+    assert_eq!(
+        attestations.first().unwrap().attestation_type,
+        "com.example.museum_maandkaart".to_string()
+    );
+}

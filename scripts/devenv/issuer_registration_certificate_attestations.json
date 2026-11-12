@@ -1,0 +1,48 @@
+{
+  "pid": [
+    {
+      "format": "mso_mdoc",
+      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" }
+    },
+    {
+      "format": "dc+sd-jwt",
+      "meta": { "vct_values": ["urn:eudi:pid:nl:1"] }
+    }
+  ],
+  "issuance_server": [
+    {
+      "format": "dc+sd-jwt",
+      "meta": {
+        "vct_values": [
+          "com.example.degree",
+          "com.example.housing",
+          "https://www.dezi.nl/vct/v1/deziVerklaringDcSdJwt"
+        ]
+      }
+    }
+  ],
+  "acf_demo_issuer": [
+    {
+      "format": "mso_mdoc",
+      "meta": { "doctype_value": "com.example.insurance" }
+    },
+    {
+      "format": "dc+sd-jwt",
+      "meta": { "vct_values": ["com.example.jum.bonuskaart"] }
+    }
+  ],
+  "pacf_issuance_server": [
+    {
+      "format": "mso_mdoc",
+      "meta": { "doctype_value": "com.example.museum_maandkaart" }
+    },
+    {
+      "format": "mso_mdoc",
+      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" }
+    },
+    {
+      "format": "mso_mdoc",
+      "meta": { "doctype_value": "org.iso.7367.2.1.mVC" }
+    }
+  ]
+}

@@ -1,33 +1,106 @@
 # The commented out lines show optional configuration with their default value.
 # All key material should be replaced with secret values.
 
-# Identifier for key used to sign JWT's sent from wallet_provider to wallet
-certificate_signing_key_identifier = "certificate_signing_key"
+# The URL at which the Wallet Provider is publicly reachable
+# public_url = "https://localhost:8001/"
 
-# Identifier for key used to sign instruction results sent from wallet_provider to wallet
-instruction_result_signing_key_identifier = "instruction_result_signing_key"
+# key identifier for the current certificate signing key and PIN HMAC key
+current_certificate_kid = "0"
 
-# Identifier for key used to wrap attestation private keys that will be persisted
-attestation_wrapping_key_identifier = "attestation_wrapping_key"
+# key identifier used to sign instruction results sent from wallet_provider to wallet
+current_instruction_result_kid = "0"
 
-# Identifier for key used to encrypt the pin public key
-pin_pubkey_encryption_key_identifier = "pin_pubkey_encryption_key"
+# Identifier for key used to generate revocation code HMACs that are stored in the database
+revocation_code_key_identifier = "revocation_code_key"
 
-# Identifier for key used to sign the hash of the pin public key for use in the wallet certificate
-pin_public_disclosure_protection_key_identifier = "pin_public_disclosure_protection_key"
+# Certificate with which the WIA is signed
+wia_certificate = "MIIBlDCC..."
 
-# Identifier for key used to issue WUAs to wallets
-wua_signing_key_identifier = "wua_signing_key"
+# Identifier for key used to issue WIAs to wallets
+wia_signing_key_identifier = "wia_signing_key"
 
-# Identifier for the WUA issuer. Must equal the CN from the WUA trust anchor CA certificate.
-wua_issuer_identifier = "wua-issuer.example.com"
+# Number of days a WIA remains valid for status tracking purposes
+# wia_status_tracking_validity_in_days = 365
+
+# Human-readable name of the wallet solution
+# wia_wallet_name = "NL Wallet"
+
+# URL linking to the wallet solution (optional)
+# wia_wallet_link = "https://wallet.edi.rijksoverheid.nl"
+
+# Version of the wallet solution
+wia_wallet_version = "1.0.0"
+
+# Certification information for the wallet solution
+# wia_wallet_solution_certification_information = "https://wallet.edi.rijksoverheid.nl"
+
+# Certificate with which OpenID4VCI key attestations are signed
+key_attestation_certificate = "MIIBlDCC..."
+
+# Identifier for the private key used to issue OpenID4VCI key attestations to wallets
+key_attestation_signing_key_identifier = "key_attestation_signing_key"
+
+# Certification information about the WSCD or keystore, in the form of a URL
+# key_attestation_certification = "https://wallet.edi.rijksoverheid.nl"
+
+# Delay in seconds for background job that refreshes flags
+# flags_refresh_delay_in_seconds = 300
+
+# How long, in days, a Wallet Certificate is valid
+# wallet_certificate_validity_in_days = 90
+
+# Indicates if the revoke-solution API endpoint should be enabled
+#revoke_solution_enabled = false
 
 # Indicates whether logging should be output in a structured (JSON) manner.
 #structured_logging = false
 
+# Admin Portal OIDC login, see wallet_docs/development/keycloak-setup.md
+[admin_portal]
+# keycloak_url = "https://localhost:11443"
+# keycloak_realm = "nl-wallet"
+# keycloak_client_id = "wallet-backend"
+# # CA certificate(s) (DER, base64-encoded) the OIDC client pins its TLS connection to Keycloak to.
+# keycloak_trust_anchors = ["..."]
+# public_url = "http://localhost:5173/"
+# session_ttl_in_ms = 900_000
+# login_attempt_ttl_in_ms = 600_000
+
+# Identifier for the key used to wrap attestation private keys that will be persisted
+[attestation_wrapping_kid]
+current = "1"
+# previous = "0"
+
+# Identifier for the key used to encrypt the pin public key
+[pin_pubkey_encryption_kid]
+current = "1"
+# previous = "0"
+
 # Recovery code claim path for every attestation type
 [recovery_code_paths]
 "urn:eudi:pid:nl:1" = ["recovery_code"]
+
+# Status List configuration for the WIA
+[wia_status_list]
+# Base URL for the Status List Claims
+base_url = "http://cdn.example.com/tsl"
+# Directory to publish the Status List Tokens
+publish_dir = "/srv/html/tsl"
+# Identifier for key used to sign Status List Token
+key_identifier = "wia_tsl_key_identifier"
+# Base64 DER encoded certificate containing the public key
+key_certificate = "MIJ..."
+
+# Status List configuration for Key Storage types as included in OpenID4VCI Key Attestations.
+[key_storage_status_list]
+# Identifier for key used to sign Status List Token.
+# key_identifier = "key_storage_tsl_key"
+# Base64 DER encoded Status List Token certificate containing the public key.
+key_certificate = "MIJ..."
+# Number of hours a signed Key Storage Status List Token is valid.
+# expiry_in_hours = 24
+# Number of days a Key Storage Status List remains valid for status tracking purposes.
+# tracking_validity_in_days = 365
 
 [database]
 # host = "localhost"
@@ -38,6 +111,12 @@ wua_issuer_identifier = "wua-issuer.example.com"
 [webserver]
 # ip = "0.0.0.0"
 # port = 8001
+
+# Enables TLS for the webserver, using the provided DER-encoded private key and
+# certificate as a Base64 string. Note that both value must be provided.
+# [tls_config]
+# cert = "MIIDNzCCAh+gAwIBAgIUXn8d5it83cq2hiNAjbQ6LJXKmCYwDQYJKoZIhvcNAQELBQAwKjELMAkGA1UEBhMCTkwxGzAZBgNVBAMMEm5sLXdhbGxldC1wcm92aWRlcjAeFw0yNjAyMTcxNTI2MDhaFw0yNzA3MDIxNTI2MDhaMCExCzAJBgNVBAYTAlVTMRIwEAYDVQQDDAlsb2NhbGhvc3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC4JJxT5TAkTRVuU5R+sdR9mSmZT9klQPdr1F4bgBXJIv69/VKa/c4WYKFjqDe4y6n0zWzRXjdRGMrEou6Jca89t/BaXz+H0mLtyItsCr6tEgfYUW2DrZ+VthbkDx32/gvtodU3ouqwN+OAsojra56OCle6UR15mcozV8Myohx/MCFZlkwZTiLYO6dYSCyk61Fhw4Ervb7c1AQc9RhI0Geaz//h2m2DXJUyeaPL6A2WjEe5Bd/SktWMkzLuZ77ajImQJaPi8kqgAQflU9Oqcol7icG9LpwsUw52ARQXomAXHWwLgEA1jy9I9cAiBIvno4eRx0INP930Z1FRGOl0PIQhAgMBAAGjXjBcMBoGA1UdEQQTMBGHBAoAAgKCCWxvY2FsaG9zdDAdBgNVHQ4EFgQUW8WDBj17CbNehwvYBdJuJvkyR80wHwYDVR0jBBgwFoAUgEN7thYFmN4uyShmLGqFtJusUEcwDQYJKoZIhvcNAQELBQADggEBAL/DXritB88FtlI6ebkbkaBNAT1IuHenyOwmN+Dk9M3l2uhBLo7bbV+Xukw+p1zGpROUYW7QGKZwPxQoeSBNy7p3QFK+ooVBtIfuERYaeMk50V5XRwRAx+c3YKik1Gi3Qfe11V+7AKOANrsSllNd4oLMXPwaQnpqPxxHVhHAC3xasNXrS3WhqRtCpred5RMSJRAHM1DQopSatsh8POd1SAXsee/uFhCVokXlLSvYjg4GdzJg51KtceH3dyaNXotQVvUkDXS6Ky9hhwOPs8Yu9lr2sHuhMKFVRDwlwQxWaiXqpVf/fqFLyvodQY9jna6F5RoREdUK+UfpBA2fdJNt+WI="
+# key = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC4JJxT5TAkTRVuU5R+sdR9mSmZT9klQPdr1F4bgBXJIv69/VKa/c4WYKFjqDe4y6n0zWzRXjdRGMrEou6Jca89t/BaXz+H0mLtyItsCr6tEgfYUW2DrZ+VthbkDx32/gvtodU3ouqwN+OAsojra56OCle6UR15mcozV8Myohx/MCFZlkwZTiLYO6dYSCyk61Fhw4Ervb7c1AQc9RhI0Geaz//h2m2DXJUyeaPL6A2WjEe5Bd/SktWMkzLuZ77ajImQJaPi8kqgAQflU9Oqcol7icG9LpwsUw52ARQXomAXHWwLgEA1jy9I9cAiBIvno4eRx0INP930Z1FRGOl0PIQhAgMBAAECggEAAumNUWRcDQ7tClgnDpPobO4ZstOI9yZeY2Wx8VRmw84aYk3Z2xqtgjwYAVf9PZ52+yiukmcfj9hJCLAc/q5+G4dHtV4xRogkyWb1EYnf9yPEXP74sO7zia4eEZBNpITjEmiPUzhv5saTggsQ0Exc7xkpxwgWY8Bzarl2HFxk//vve736EZP+uZenZq3CYpqrBkm0Qba5A2FlCoZSqKWyTjTY2A+tTPK4O7xOkOSMHSrZVrWg61hVLa0pEnJ2kdW45ZdoMJtn9WHlW5kpA/hAixELk2OiR+kMo/pWvijvK6D75N4Dgpmv+xs9zYoDLb1fvLUbpf+kcyaI0TP5BkbamQKBgQDwfa2X9JjgXX78C+hO2lkGdplkkhydvdwHvrJVmMQn8vwDE3H23BUvaswtH9aosquUoq8z8ZIQXsW1CjFC8ISp36J1ykf/k0XbVn33IvYutSDCu1/uubyxN5NrsiHshsjaBMNXLHWuqtqkfOqPRUYTCqJZEKO1iqJD2MBzV0dEjQKBgQDEBKveXUB8AV+uTbF6qReCYKxDBs1InPQtSokbHZ8Xyp2DzmcjorRli0ehmSVGVZ+eFD9MrDWehgQjOKxKsMgYK+4OG7qT9mo6JMA43pr6P6hvpgAn8PZOK8k8GAc5Qn3vTMfucOh0sJMqRXC/kRAnkmuVWyIo9VH3Lsu/SFV65QKBgHuhcEts3+Z/yhcSnANldly/PY4ZGwLwppuIqi8c0MJkxK9kILMyYuW0dnBALN8estw/YehHKLqnreWq7rYl5V1a7S62pZq6gDAI38rbu0k5rjTNlLyp2VoVYwD7Wzs38ys5RZ6b6Ye4p5vl58Ntbl+9mMZGqpJaSZ6tYAordSTFAoGBALg4z7Jfn9ArlloBqNBoBLFC3ALubJZW9GFwkKTMVQ4OHbWXkXV7X+GjYcHtZYvRwv7Vdpw/qPEAcPkNNVfJB3U4LDZUNykCSNm2WnXYOH0CwPGVaMYg/8t9+VWiG3/kDumNFsXwlXe9z8HFm25fDniycqvfB57I2Kzf7RssBzJFAoGBANkr4eP+q9kwG+MKbCl3bK/0HEJikCvdntonVpgk9NHPR+CLifbpWgBZpv/Q9gYEeatk7HjHT7o8o3Dp5OlQYdh4g0imgSiattl/VwtczI9zHYSE2MDGRO0eRgokOKsnY/t8QDfYaPxN6VR/kQaq9htbl8QDnHge8mi0OX5LWn8u"
 
 [pin_policy]
 # rounds = 4
@@ -58,10 +137,11 @@ root_certificates = [
 ]
 
 [android]
-# The root certificate received during key attestation is checked against all of these public keys.
+# The root certificate received during Android key attestation is checked against all of these public keys.
 # They can be either RSA or ECDSA keys, base64 encoded in PKCS 8 format.
 root_public_keys = [
     "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr7bHgiuxpwHsK7Qui8xUFmOr75gvMsd/dTEDDJdSSxtf6An7xyqpRR90PL2abxM1dEqlXnf2tqw1Ne4Xwl5jlRfdnJLmN0pTy/4lj4/7tv0Sk3iiKkypnEUtR6WfMgH0QZfKHM1+di+y9TFRtv6y//0rb+T+W8a9nsNL/ggjnar86461qO0rOs2cXjp3kOG1FEJ5MVmFmBGtnrKpa73XpXyTqRxB/M0n1n/W9nGqC4FSYa04T6N5RIZGBN2z2MT5IKGbFlbC8UrW0DxW7AYImQQcHtGl/m00QLVWutHQoVJYnFPlXTcHYvASLu+RhhsbDmxMgJJ0mcDpvsC4PjvB+TxywElgS70vE0XmLD+OJtvsBslHZvPBKCOdT0MS+tgSOIfga+z1Z1g7+DVagf7quvmag8jfPioyKvxnK/EgsTUVi2ghzq8wm27ud/mIM7AY2qEORR8Go3TVB4HzWQgpZrt3i5MIlCaY504LzSRiigHCzAPlHws+W0rB5N+er5/2pJKnfBSDiCiFAVtCLOZ7gLiMm0jhO2B6tUXHI/+MRPjy02i59lINMRRev56GKtcd9qO/0kUJWdZTdA2XoS82ixPvZtXQpUpuL12ab+9EaDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+NpUFgNPN9PvQi8WEg5UmAGMCAwEAAQ==",
+    "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEI9ojcU7fPlsFCjxy6IRqzgeOoK0b+YsV9FPQywiyw8EQRTkJ9u3qwfnI4DGoSLlBqClTXJfgfCcZvs60FikNMHnu4fkRzObfgDkU2KNXezT9/RQ+XvNslxPHrHCowhGr",
 ]
 package_name = "com.example.wallet-app"
 # If this value is set to :"false" (which is the default), the Android app has to be installed through the Play Store.

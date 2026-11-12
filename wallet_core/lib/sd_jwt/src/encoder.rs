@@ -3,12 +3,11 @@
 //! It encodes a claims object by substituting selected claim values with digests derived from disclosures.
 //!
 //! See the decoder [`SdObjectDecoder`] on how to reconstruct original values given the disclosures.
-use base64::prelude::*;
-use rand::Rng;
-use serde_json::Value;
-
 use attestation_types::claim_path::ClaimPath;
+use base64::prelude::*;
 use crypto::utils::random_bytes;
+use rand::RngExt;
+use serde_json::Value;
 use utils::vec_at_least::VecNonEmpty;
 
 use crate::claims::ClaimValue;
@@ -98,13 +97,13 @@ impl<H: Hasher> SdObjectEncoder<H> {
     }
 
     pub(crate) fn random_digest(hasher: &H, salt_len: usize, array_entry: bool) -> Result<String, EncoderError> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let salt = Self::gen_rand(salt_len);
-        let decoy_value_length = rng.gen_range(20..=100);
+        let decoy_value_length = rng.random_range(20..=100);
         let decoy_claim_name = if array_entry {
             None
         } else {
-            let decoy_claim_name_length = rng.gen_range(4..=10);
+            let decoy_claim_name_length = rng.random_range(4..=10);
             Some(Self::gen_rand(decoy_claim_name_length))
         };
         let decoy_value = Self::gen_rand(decoy_value_length);
@@ -127,20 +126,20 @@ impl<H: Hasher> SdObjectEncoder<H> {
 
 #[cfg(test)]
 mod test {
+    use std::assert_matches;
+    use std::num::NonZeroUsize;
     use std::vec;
 
-    use assert_matches::assert_matches;
+    use attestation_types::claim_path::ClaimPath;
     use serde_json::Value;
     use serde_json::json;
+    use utils::vec_nonempty;
 
-    use attestation_types::claim_path::ClaimPath;
-
+    use super::SdObjectEncoder;
     use crate::claims::ClaimName;
     use crate::claims::ObjectClaims;
     use crate::error::ClaimError;
     use crate::error::EncoderError;
-
-    use super::SdObjectEncoder;
 
     impl<H> SdObjectEncoder<H> {
         pub fn object_claims(&self) -> &ObjectClaims {
@@ -150,7 +149,6 @@ mod test {
 
     fn object() -> Value {
         json!({
-            "iss": "https://issuer.example.com/",
             "iat": 1683000000,
             "id": "did:value",
             "claim1": {
@@ -173,17 +171,13 @@ mod test {
     fn simple() {
         let mut encoder = SdObjectEncoder::try_from(object()).unwrap();
         encoder
-            .conceal(
-                vec![
-                    ClaimPath::SelectByKey(String::from("claim1")),
-                    ClaimPath::SelectByKey(String::from("abc")),
-                ]
-                .try_into()
-                .unwrap(),
-            )
+            .conceal(vec_nonempty![
+                ClaimPath::SelectByKey(String::from("claim1")),
+                ClaimPath::SelectByKey(String::from("abc")),
+            ])
             .unwrap();
         encoder
-            .conceal(vec![ClaimPath::SelectByKey(String::from("id"))].try_into().unwrap())
+            .conceal(vec_nonempty![ClaimPath::SelectByKey(String::from("id"))])
             .unwrap();
         encoder.add_decoys(&[], 10).unwrap();
         encoder
@@ -196,10 +190,7 @@ mod test {
                 .claims
                 .contains_key(&"id".parse::<ClaimName>().unwrap())
         );
-        assert_eq!(
-            encoder.object.claims()._sd.as_ref().unwrap().len(),
-            11.try_into().unwrap()
-        );
+        assert_eq!(encoder.object.claims()._sd.as_ref().unwrap().len().get(), 11);
         assert_eq!(
             encoder
                 .object
@@ -229,7 +220,7 @@ mod test {
             .unwrap();
 
         encoder
-            .conceal(vec![ClaimPath::SelectByKey(String::from("claim1"))].try_into().unwrap())
+            .conceal(vec_nonempty![ClaimPath::SelectByKey(String::from("claim1"))])
             .unwrap();
 
         assert!(
@@ -239,35 +230,24 @@ mod test {
                 .claims
                 .contains_key(&"claim1".parse::<ClaimName>().unwrap())
         );
-        assert_eq!(
-            encoder.object.claims()._sd.as_ref().unwrap().len(),
-            1.try_into().unwrap()
-        );
+        assert_eq!(encoder.object.claims()._sd.as_ref().unwrap().len(), NonZeroUsize::MIN);
     }
 
     #[test]
     fn errors() {
         let mut encoder = SdObjectEncoder::try_from(object()).unwrap();
         encoder
-            .conceal(
-                vec![
-                    ClaimPath::SelectByKey(String::from("claim1")),
-                    ClaimPath::SelectByKey(String::from("abc")),
-                ]
-                .try_into()
-                .unwrap(),
-            )
+            .conceal(vec_nonempty![
+                ClaimPath::SelectByKey(String::from("claim1")),
+                ClaimPath::SelectByKey(String::from("abc")),
+            ])
             .unwrap();
         assert_matches!(
             encoder
-                .conceal(
-                    vec![
-                        ClaimPath::SelectByKey(String::from("claim2")),
-                        ClaimPath::SelectByIndex(2),
-                    ]
-                    .try_into()
-                    .unwrap(),
-                )
+                .conceal(vec_nonempty![
+                    ClaimPath::SelectByKey(String::from("claim2")),
+                    ClaimPath::SelectByIndex(2),
+                ],)
                 .unwrap_err(),
             EncoderError::ClaimStructure(ClaimError::IndexOutOfBounds(2, _))
         );
@@ -279,23 +259,17 @@ mod test {
         assert_matches!(
             encoder
                 .conceal(
-                    vec![ClaimPath::SelectByKey(String::from("claim12"))]
-                        .try_into()
-                        .unwrap()
+                    vec_nonempty![ClaimPath::SelectByKey(String::from("claim12"))]
                 )
                 .unwrap_err(),
             EncoderError::ClaimStructure(ClaimError::ObjectFieldNotFound(key, _)) if key == "claim12".parse().unwrap()
         );
         assert_matches!(
             encoder
-                .conceal(
-                    vec![
-                        ClaimPath::SelectByKey(String::from("claim12")),
-                        ClaimPath::SelectByIndex(0),
-                    ]
-                    .try_into()
-                    .unwrap(),
-                )
+                .conceal(vec_nonempty![
+                    ClaimPath::SelectByKey(String::from("claim12")),
+                    ClaimPath::SelectByIndex(0),
+                ])
                 .unwrap_err(),
             EncoderError::ClaimStructure(ClaimError::ParentNotFound(_))
         );

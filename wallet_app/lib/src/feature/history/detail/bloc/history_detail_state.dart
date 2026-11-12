@@ -5,6 +5,8 @@ sealed class HistoryDetailState extends Equatable {
 }
 
 class HistoryDetailInitial extends HistoryDetailState {
+  const HistoryDetailInitial();
+
   @override
   List<Object> get props => [];
 }
@@ -21,25 +23,16 @@ class HistoryDetailLoadSuccess extends HistoryDetailState {
 
   const HistoryDetailLoadSuccess(this.event);
 
-  WalletCard? cardById(String attestationId) {
-    final event = this.event;
-    switch (event) {
-      case DisclosureEvent():
-        return event.cards.firstWhereOrNull((card) => card.attestationId == attestationId);
-      case IssuanceEvent():
-        return event.card.takeIf((card) => card.attestationId == attestationId);
-      case SignEvent():
-        return null;
-    }
-  }
-
   @override
   List<Object> get props => [event];
 }
 
-class HistoryDetailLoadFailure extends HistoryDetailState {
-  const HistoryDetailLoadFailure();
+class HistoryDetailLoadFailure extends HistoryDetailState implements ErrorState {
+  @override
+  final ApplicationError error;
+
+  const HistoryDetailLoadFailure(this.error);
 
   @override
-  List<Object> get props => [];
+  List<Object> get props => [error];
 }

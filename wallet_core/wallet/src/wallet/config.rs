@@ -1,22 +1,25 @@
 use std::sync::Arc;
 
 use openid4vc::disclosure_session::DisclosureClient;
+use openid4vc::wallet_issuance::IssuanceDiscovery;
 use platform_support::attested_key::AttestedKeyHolder;
 use update_policy_model::update_policy::VersionState;
+use utils::generator::Generator;
+use utils::generator::TimeGenerator;
 use wallet_configuration::wallet_config::WalletConfiguration;
 
-use crate::digid::DigidClient;
+use super::Wallet;
+use crate::config::ObservableConfigExpiry;
+use crate::config::is_expired;
 use crate::repository::ObservableRepository;
 use crate::repository::Repository;
 use crate::repository::RepositoryCallback;
 
-use super::Wallet;
-
-impl<CR, UR, S, AKH, APC, DC, IS, DCC> Wallet<CR, UR, S, AKH, APC, DC, IS, DCC>
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
 where
     UR: Repository<VersionState>,
     AKH: AttestedKeyHolder,
-    DC: DigidClient,
+    CID: IssuanceDiscovery,
     DCC: DisclosureClient,
 {
     pub fn is_blocked(&self) -> bool {
@@ -24,12 +27,42 @@ where
     }
 }
 
-impl<CR, UR, S, AKH, APC, DC, IS, DCC> Wallet<CR, UR, S, AKH, APC, DC, IS, DCC>
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
+where
+    CR: Repository<Arc<WalletConfiguration>>,
+    AKH: AttestedKeyHolder,
+    CID: IssuanceDiscovery,
+    DCC: DisclosureClient,
+{
+    /// Whether the wallet configuration currently held has expired. Operations that rely on the key material or trust
+    /// anchors it contains should refuse to run when this is the case, until a fresh configuration has been fetched.
+    ///
+    /// Note that this includes unlocking the wallet, so that its contents cannot be reached at all while the
+    /// configuration is expired. Resetting the wallet is deliberately left available, so that a user whose
+    /// configuration cannot be refreshed still has a way out.
+    pub fn is_config_expired(&self) -> bool {
+        is_expired(&self.config_repository.get(), TimeGenerator.generate())
+    }
+}
+
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
+where
+    AKH: AttestedKeyHolder,
+    CID: IssuanceDiscovery,
+    DCC: DisclosureClient,
+{
+    #[cfg(any(test, feature = "test"))]
+    pub fn config_repository(&self) -> &Arc<CR> {
+        &self.config_repository
+    }
+}
+
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
 where
     CR: ObservableRepository<Arc<WalletConfiguration>>,
     UR: ObservableRepository<VersionState>,
     AKH: AttestedKeyHolder,
-    DC: DigidClient,
+    CID: IssuanceDiscovery,
     DCC: DisclosureClient,
 {
     pub fn set_config_callback(
@@ -57,19 +90,38 @@ where
     }
 }
 
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
+where
+    CR: ObservableConfigExpiry,
+    AKH: AttestedKeyHolder,
+    CID: IssuanceDiscovery,
+    DCC: DisclosureClient,
+{
+    /// Registers a callback that reports whether the wallet configuration should be considered expired.
+    pub fn set_config_expired_callback(
+        &self,
+        mut callback: RepositoryCallback<bool>,
+    ) -> Option<RepositoryCallback<bool>> {
+        callback(self.config_repository.config_expired());
+        self.config_repository.register_config_expiry_callback(callback)
+    }
+
+    pub fn clear_config_expired_callback(&self) -> Option<RepositoryCallback<bool>> {
+        self.config_repository.clear_config_expiry_callback()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use parking_lot::Mutex;
     use tokio::sync::Notify;
-
     use wallet_configuration::wallet_config::WalletConfiguration;
-
-    use crate::config::default_wallet_config;
 
     use super::super::test::TestWalletMockStorage;
     use super::super::test::WalletDeviceVendor;
+    use crate::config::test_wallet_config;
 
     // Tests both setting and clearing the configuration callback.
     #[tokio::test]
@@ -106,8 +158,8 @@ mod tests {
 
             assert_eq!(configs.len(), 1);
             assert_eq!(
-                configs.first().unwrap().account_server.http_config.base_url,
-                default_wallet_config().account_server.http_config.base_url
+                configs.first().unwrap().account_server.http_config.base_url(),
+                test_wallet_config().account_server.http_config.base_url()
             );
         }
 

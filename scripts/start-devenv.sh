@@ -9,6 +9,7 @@
 # - verification_server
 # - issuance_server
 # - pid_issuer
+# - acf_demo_issuer
 # - wallet_provider
 # - wallet
 
@@ -22,7 +23,6 @@ set -o pipefail
 ########################################################################
 
 SCRIPTS_DIR="$(cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd -P)"
-DOCKER_COMPOSE_FILE=${SCRIPTS_DIR}/docker-compose.yml
 
 source "${SCRIPTS_DIR}/utils.sh"
 source "${SCRIPTS_DIR}/configuration.sh"
@@ -37,44 +37,50 @@ function usage() {
 
 Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS] <SERVICES>
 
-  Starts or restarts the services that are part of the development environment.
+  Starts or restarts the services that are part of the development environment
 
 Where:
 
-  SERVICE is any of:
-    wallet:                     Start the wallet Flutter application.
-                                This requires a simulator to be running.
-    wp, wallet_provider:        Start the wallet_provider.
-                                This requires a PostgreSQL database to be running, which can be provided by the
-                                'docker' service.
-    vs, verification_server:    Start the verification_server.
-    is, issuance_server:        Start the issuance_server.
-    pi, pid_issuer:             Start the pid_issuer.
-    drp, demo_relying_party:    Start the demo_relying_party.
-    di, demo_issuer:            Start the demo_issuer.
-    dx, demo_index:             Start the demo_index.
-    digid, digid_connector:     Start the digid_connector and a redis on docker.
-    cs, configuration_server:   Start the configuration server
+  SERVICES is any of:
+    wallet:                     Start the wallet Flutter application. Requires
+                                an ios simulator or android emulator to run
+    wp, wallet_provider:        Start the wallet_provider. This requires a
+                                PostgreSQL database to be running
+    vs, verification_server:    Start the verification_server
+    is, issuance_server:        Start the issuance_server
+    pis, pacf_issuance_server:  Start the pacf_issuance_server
+    pi, pid_issuer:             Start the pid_issuer
+    acf, acf_demo_issuer:       Start the acf_demo_issuer
+    drp, demo_relying_party:    Start the demo_relying_party
+    di, demo_issuer:            Start the demo_issuer
+    dx, demo_index:             Start the demo_index
+    rvp, revocation_portal:     Start the revocation_portal
+    digid, digid_connector:     Start the digid_connector and a redis instance
+    kc, keycloak:               Start the keycloak server
+    static, static_server:      Start the static server
     ups, update_policy_server:  Start the update policy server
-    brp:                        Start the Haal-Centraal BRP proxy with GBA HC converter.
-    brpproxy:                   Start the Haal-Centraal BRP proxy.
-    gba, gba_hc_converter:      Start the GBA HC converter.
-    postgres:                   Start a PostgreSQL database, using Docker.
+    brp:                        Start the HC BRP proxy with GBA HC converter
+    brpproxy:                   Start the Haal-Centraal BRP proxy
+    gba, gba_hc_converter:      Start the GBA Haal-Centraal converter
+    postgres:                   Start a PostgreSQL database
 
-  OPTION is any of:
-    --all                       Start all of the above services.
-    --default                   Start all of the above services, excluding postgres and wallet.
-                                This option is provided when a PostgreSQL database is run and managed by the user.
-    --stop                      Combine with --all, --default or specific service name(s) to stop said services.
+  OPTIONS is any of:
+    --all                       Start all of the above services
+    --default                   Start all of the above services, excluding
+                                postgres and wallet This option is provided for
+                                when a PostgreSQL database is run outside of
+                                this script and managed by the user
+    --stop                      Combine with --all, --default or specific
+                                service name(s) to stop said services
     -h, --help                  Show this help
 "
 }
 
 ########################################################################
-# Check prerequisites
+# Check base prerequisites
 ########################################################################
 
-have cargo docker flutter
+have cargo
 
 ########################################################################
 # Commandline arguments
@@ -83,13 +89,17 @@ have cargo docker flutter
 DEMO_RELYING_PARTY=1
 DEMO_ISSUER=1
 DEMO_INDEX=1
+REVOCATION_PORTAL=1
 WALLET_PROVIDER=1
 VERIFICATION_SERVER=1
 ISSUANCE_SERVER=1
+PACF_ISSUANCE_SERVER=1
 PID_ISSUER=1
+ACF_DEMO_ISSUER=1
 WALLET=1
 DIGID_CONNECTOR=1
-CONFIG_SERVER=1
+KEYCLOAK=1
+STATIC_SERVER=1
 UPDATE_POLICY_SERVER=1
 BRP_PROXY=1
 GBA_HC=1
@@ -100,12 +110,12 @@ USAGE=1
 STOP=0
 START=0
 
-if [ "$#" == "0" ]
+if [[ $# -eq 0 ]]
 then
     USAGE=0
 fi
 
-if [ "$#" == "1" ] && [ "$1" == "--stop" ]; then
+if [[ $# -eq "1" && $1 == '--stop' ]]; then
     error "The --stop argument requires at least one service, --default, or --all to be specified."
     usage
     exit 1
@@ -130,8 +140,16 @@ do
             ISSUANCE_SERVER=0
             shift # past argument
             ;;
+        pis|pacf_issuance_server)
+            PACF_ISSUANCE_SERVER=0
+            shift # past argument
+            ;;
         pi|pid_issuer)
             PID_ISSUER=0
+            shift # past argument
+            ;;
+        acf|acf_demo_issuer)
+            ACF_DEMO_ISSUER=0
             shift # past argument
             ;;
         drp|demo_relying_party)
@@ -146,12 +164,20 @@ do
             DEMO_INDEX=0
             shift # past argument
             ;;
+        rvp|revocation_portal)
+            REVOCATION_PORTAL=0
+            shift # past argument
+            ;;
         digid|digid_connector)
             DIGID_CONNECTOR=0
             shift # past argument
             ;;
-        cs|configuration_server)
-            CONFIG_SERVER=0
+        kc|keycloak)
+            KEYCLOAK=0
+            shift # past argument
+            ;;
+        static|static_server)
+            STATIC_SERVER=0
             shift
             ;;
         ups|update_policy_server)
@@ -177,14 +203,18 @@ do
             ;;
         --default)
             DIGID_CONNECTOR=0
+            KEYCLOAK=0
             DEMO_RELYING_PARTY=0
             DEMO_INDEX=0
             DEMO_ISSUER=0
+            REVOCATION_PORTAL=0
             VERIFICATION_SERVER=0
             ISSUANCE_SERVER=0
+            PACF_ISSUANCE_SERVER=0
             PID_ISSUER=0
+            ACF_DEMO_ISSUER=0
             WALLET_PROVIDER=0
-            CONFIG_SERVER=0
+            STATIC_SERVER=0
             UPDATE_POLICY_SERVER=0
             BRP_PROXY=0
             GBA_HC=0
@@ -192,16 +222,20 @@ do
             ;;
         --all)
             DIGID_CONNECTOR=0
+            KEYCLOAK=0
             POSTGRES=0
             DEMO_RELYING_PARTY=0
             DEMO_INDEX=0
             DEMO_ISSUER=0
+            REVOCATION_PORTAL=0
             VERIFICATION_SERVER=0
             ISSUANCE_SERVER=0
+            PACF_ISSUANCE_SERVER=0
             PID_ISSUER=0
+            ACF_DEMO_ISSUER=0
             WALLET_PROVIDER=0
             WALLET=0
-            CONFIG_SERVER=0
+            STATIC_SERVER=0
             UPDATE_POLICY_SERVER=0
             BRP_PROXY=0
             GBA_HC=0
@@ -224,32 +258,64 @@ do
     esac
 done
 
-if [ "${USAGE}" == "0" ]
+if [[ $USAGE == '0' ]]
 then
     usage
     exit 0
 fi
 
 ########################################################################
+# Check special prerequisites
+########################################################################
+
+if [[ $DIGID_CONNECTOR == '0' || $KEYCLOAK == '0' || $POSTGRES == '0' || $BRP_PROXY == '0' ]]; then
+    have docker
+fi
+if [[ $WALLET == '0' ]]; then
+    have flutter
+fi
+
+########################################################################
 # Manage digid-connector
 ########################################################################
 
-if [ "${DIGID_CONNECTOR}" == "0" ]
+if [[ $DIGID_CONNECTOR == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage digid-connector${NC}"
 
     cd "${DIGID_CONNECTOR_PATH}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Stopping ${ORANGE}digid-connector${NC}"
         docker compose down || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
-        echo -e "Building and starting ${ORANGE}digid-connector${NC}"
-        docker compose up --detach --build --force-recreate
+        echo -e "Starting ${ORANGE}digid-connector${NC}"
+        docker compose up --detach
+    fi
+fi
+
+########################################################################
+# Manage keycloak
+########################################################################
+
+if [[ $KEYCLOAK == '0' ]]
+then
+    echo
+    echo -e "${SECTION}Manage keycloak${NC}"
+
+    if [[ $STOP == '0' ]]
+    then
+        echo -e "${INFO}Stopping ${ORANGE}keycloak${NC}"
+        docker compose --file "${DOCKER_COMPOSE_FILE}" down keycloak || true
+    fi
+    if [[ $START == '0' ]]
+    then
+        echo -e "Starting ${ORANGE}keycloak${NC}"
+        docker compose --file "${DOCKER_COMPOSE_FILE}" up --detach keycloak
     fi
 fi
 
@@ -257,17 +323,17 @@ fi
 # Manage postgres
 ########################################################################
 
-if [ "${POSTGRES}" == "0" ]
+if [[ $POSTGRES == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage postgres services${NC}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Stopping postgres services${NC}"
         docker compose --file "${DOCKER_COMPOSE_FILE}" down postgres || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         echo -e "${INFO}Starting postgres services${NC}"
         docker compose --file "${DOCKER_COMPOSE_FILE}" up --detach postgres
@@ -278,19 +344,19 @@ fi
 # Manage demo_index
 ########################################################################
 
-if [ "${DEMO_INDEX}" == "0" ]
+if [[ $DEMO_INDEX == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage demo_index${NC}"
 
     cd "${DEMO_INDEX_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}demo_index${NC}"
-        killall demo_index || true
+        pkill -f 'demo_index$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         echo -e "${INFO}Start ${ORANGE}demo_index${NC}"
         RUST_LOG=debug cargo run --package demo_index --bin demo_index > "${TARGET_DIR}/demo_index.log" 2>&1 &
@@ -303,19 +369,19 @@ fi
 # Manage demo_relying_party
 ########################################################################
 
-if [ "${DEMO_RELYING_PARTY}" == "0" ]
+if [[ $DEMO_RELYING_PARTY == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage demo_relying_party${NC}"
 
     cd "${DEMO_RELYING_PARTY_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}demo_relying_party${NC}"
-        killall demo_relying_party || true
+        pkill -f 'demo_relying_party$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         echo -e "${INFO}Start ${ORANGE}demo_relying_party${NC}"
         RUST_LOG=debug cargo run --package demo_relying_party --features "allow_insecure_url" --bin demo_relying_party > "${TARGET_DIR}/demo_relying_party.log" 2>&1 &
@@ -328,22 +394,22 @@ fi
 # Manage demo_issuer
 ########################################################################
 
-if [ "${DEMO_ISSUER}" == "0" ]
+if [[ $DEMO_ISSUER == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage demo_issuer${NC}"
 
     cd "${DEMO_ISSUER_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}demo_issuer${NC}"
-        killall demo_issuer || true
+        pkill -f 'demo_issuer$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         echo -e "${INFO}Start ${ORANGE}demo_issuer${NC}"
-        RUST_LOG=debug cargo run --package demo_issuer --bin demo_issuer > "${TARGET_DIR}/demo_issuer.log" 2>&1 &
+        RUST_LOG=debug cargo run --package demo_issuer --features "allow_insecure_url" --bin demo_issuer > "${TARGET_DIR}/demo_issuer.log" 2>&1 &
 
         echo -e "demo_issuer logs can be found at ${CYAN}${TARGET_DIR}/demo_issuer.log${NC}"
     fi
@@ -353,33 +419,67 @@ fi
 # Manage pid_issuer
 ########################################################################
 
-if [ "${PID_ISSUER}" == "0" ]
+if [[ $PID_ISSUER == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage pid_issuer${NC}"
 
     cd "${PID_ISSUER_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}pid_issuer${NC}"
-        killall pid_issuer || true
+        pkill -f 'pid_issuer$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         pushd "${WALLET_CORE_DIR}"
         echo -e "${INFO}Running pid_issuer database migrations${NC}"
         DATABASE_URL="postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/pid_issuer" cargo run --package pid_issuer_migrations --bin pid_issuer_migrations -- fresh
         popd
 
-        echo -e "${INFO}Cleaning status lists${NC}"
-        rm -rf "${PID_ISSUER_DIR}/resources/status-lists"
-        mkdir "${PID_ISSUER_DIR}/resources/status-lists"
+        echo -e "${INFO}Cleaning status lists for pid_issuer${NC}"
+        rm -rf "${WALLET_CORE_DIR}/target/status-lists/pid_issuer"
+        mkdir -p "${WALLET_CORE_DIR}/target/status-lists/pid_issuer"
 
         echo -e "${INFO}Start ${ORANGE}pid_issuer${NC}"
-        RUST_LOG=debug cargo run --package pid_issuer --no-default-features --features "postgres" --bin pid_issuer > "${TARGET_DIR}/pid_issuer.log" 2>&1 &
+        RUST_LOG=debug cargo run --package pid_issuer --features "allow_insecure_url,test_internal_ui" --bin pid_issuer > "${TARGET_DIR}/pid_issuer.log" 2>&1 &
 
         echo -e "pid_issuer logs can be found at ${CYAN}${TARGET_DIR}/pid_issuer.log${NC}"
+    fi
+fi
+
+########################################################################
+# Manage acf_demo_issuer
+########################################################################
+
+if [[ $ACF_DEMO_ISSUER == '0' ]]
+then
+    echo
+    echo -e "${SECTION}Manage acf_demo_issuer${NC}"
+
+    cd "${ACF_DEMO_ISSUER_DIR}"
+
+    if [[ $STOP == '0' ]]
+    then
+        echo -e "${INFO}Kill any running ${ORANGE}acf_demo_issuer${NC}"
+        pkill -f 'acf_demo_issuer$' || true
+    fi
+    if [[ $START == '0' ]]
+    then
+        pushd "${WALLET_CORE_DIR}"
+        echo -e "${INFO}Running acf_demo_issuer database migrations${NC}"
+        DATABASE_URL="postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/acf_demo_issuer" cargo run --package acf_demo_issuer_migrations --bin acf_demo_issuer_migrations -- fresh
+        popd
+
+        echo -e "${INFO}Cleaning status lists for acf_demo_issuer${NC}"
+        rm -rf "${WALLET_CORE_DIR}/target/status-lists/acf_demo_issuer"
+        mkdir -p "${WALLET_CORE_DIR}/target/status-lists/acf_demo_issuer"
+
+        echo -e "${INFO}Start ${ORANGE}acf_demo_issuer${NC}"
+        RUST_LOG=debug cargo run --package acf_demo_issuer --features "allow_insecure_url,test_internal_ui" --bin acf_demo_issuer > "${TARGET_DIR}/acf_demo_issuer.log" 2>&1 &
+
+        echo -e "acf_demo_issuer logs can be found at ${CYAN}${TARGET_DIR}/acf_demo_issuer.log${NC}"
     fi
 fi
 
@@ -387,7 +487,7 @@ fi
 # Manage verification_server
 ########################################################################
 
-if [ "${VERIFICATION_SERVER}" == "0" ]
+if [[ $VERIFICATION_SERVER == '0' ]]
 then
     # As part of the demo RP a verification_server is started
     echo
@@ -395,12 +495,12 @@ then
 
     cd "${VERIFICATION_SERVER_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}verification_server${NC}"
-        killall verification_server || true
+        pkill -f 'verification_server$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         pushd "${WALLET_CORE_DIR}"
         echo -e "${INFO}Running verification_server database migrations${NC}"
@@ -408,7 +508,7 @@ then
         popd
 
         echo -e "${INFO}Start ${ORANGE}verification_server${NC}"
-        RUST_LOG=debug cargo run --package verification_server --no-default-features --features "allow_insecure_url,postgres" --bin verification_server > "${TARGET_DIR}/demo_rp_verification_server.log" 2>&1 &
+        RUST_LOG=debug cargo run --package verification_server --features "allow_insecure_url" --bin verification_server > "${TARGET_DIR}/demo_rp_verification_server.log" 2>&1 &
 
         echo -e "verification_server logs can be found at ${CYAN}${TARGET_DIR}/demo_rp_verification_server.log${NC}"
     fi
@@ -418,34 +518,70 @@ fi
 # Manage issuance_server
 ########################################################################
 
-if [ "${ISSUANCE_SERVER}" == "0" ]
+if [[ $ISSUANCE_SERVER == '0' ]]
 then
-    # As part of the demo RP a issuance_server is started
+    # As part of the demo issuer an issuance_server is started
     echo
     echo -e "${SECTION}Manage issuance_server${NC}"
 
     cd "${ISSUANCE_SERVER_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}issuance_server${NC}"
-        killall issuance_server || true
+        pkill -f 'issuance_server$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         pushd "${WALLET_CORE_DIR}"
         echo -e "${INFO}Running issuance_server database migrations${NC}"
         DATABASE_URL="postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/issuance_server" cargo run --package issuance_server_migrations --bin issuance_server_migrations -- fresh
         popd
 
-        echo -e "${INFO}Cleaning status lists${NC}"
-        rm -rf "${ISSUANCE_SERVER_DIR}/resources/status-lists"
-        mkdir "${ISSUANCE_SERVER_DIR}/resources/status-lists"
+        echo -e "${INFO}Cleaning status lists for issuance_server${NC}"
+        rm -rf "${WALLET_CORE_DIR}/target/status-lists/issuance_server"
+        mkdir -p "${WALLET_CORE_DIR}/target/status-lists/issuance_server"
 
         echo -e "${INFO}Start ${ORANGE}issuance_server${NC}"
-        RUST_LOG=debug cargo run --package issuance_server --no-default-features --features "allow_insecure_url,postgres" --bin issuance_server > "${TARGET_DIR}/demo_issuer_issuance_server.log" 2>&1 &
+        RUST_LOG=debug cargo run --package issuance_server --features "allow_insecure_url,test_internal_ui" --bin issuance_server > "${TARGET_DIR}/demo_issuer_issuance_server.log" 2>&1 &
 
         echo -e "issuance_server logs can be found at ${CYAN}${TARGET_DIR}/demo_issuer_issuance_server.log${NC}"
+    fi
+fi
+
+
+########################################################################
+# Manage pacf_issuance_server
+########################################################################
+
+if [[ $PACF_ISSUANCE_SERVER == '0' ]]
+then
+    # As part of the demo issuer a pacf_issuance_server is started
+    echo
+    echo -e "${SECTION}Manage pacf_issuance_server${NC}"
+
+    cd "${PACF_ISSUANCE_SERVER_DIR}"
+
+    if [[ $STOP == '0' ]]
+    then
+        echo -e "${INFO}Kill any running ${ORANGE}pacf_issuance_server${NC}"
+        pkill -f 'pacf_issuance_server$' || true
+    fi
+    if [[ $START == '0' ]]
+    then
+        pushd "${WALLET_CORE_DIR}"
+        echo -e "${INFO}Running pacf_issuance_server database migrations${NC}"
+        DATABASE_URL="postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/pacf_issuance_server" cargo run --package pacf_issuance_server_migrations --bin pacf_issuance_server_migrations -- fresh
+        popd
+
+        echo -e "${INFO}Cleaning status lists for pacf_issuance_server${NC}"
+        rm -rf "${WALLET_CORE_DIR}/target/status-lists/pacf_issuance_server"
+        mkdir -p "${WALLET_CORE_DIR}/target/status-lists/pacf_issuance_server"
+
+        echo -e "${INFO}Start ${ORANGE}pacf_issuance_server${NC}"
+        RUST_LOG=debug cargo run --package pacf_issuance_server --features "allow_insecure_url,test_internal_ui" --bin pacf_issuance_server > "${TARGET_DIR}/demo_issuer_pacf_issuance_server.log" 2>&1 &
+
+        echo -e "pacf_issuance_server logs can be found at ${CYAN}${TARGET_DIR}/demo_issuer_pacf_issuance_server.log${NC}"
     fi
 fi
 
@@ -453,77 +589,83 @@ fi
 # Manage wallet_provider
 ########################################################################
 
-if [ "${WALLET_PROVIDER}" == "0" ]
+if [[ $WALLET_PROVIDER == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage wallet_provider${NC}"
 
     cd "${WP_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}wallet_provider${NC}"
-        killall wallet_provider || true
+        pkill -f 'wallet_provider$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
+        echo -e "${INFO}Running audit_log database migrations${NC}"
+        pushd "${WALLET_CORE_DIR}"
+        DATABASE_URL="postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/wallet_provider_audit_log" cargo run --package audit_log_migrations --bin audit_log_migrations -- fresh
+        popd
+
         echo -e "${INFO}Running wallet_provider database migrations${NC}"
         pushd "${WALLET_CORE_DIR}"
         DATABASE_URL="postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/wallet_provider" cargo run --package wallet_provider_migrations --bin wallet_provider_migrations -- fresh
         popd
 
-        echo -e "${INFO}Cleaning status lists${NC}"
-        rm -rf "${WP_DIR}/resources/status-lists"
-        mkdir "${WP_DIR}/resources/status-lists"
+        echo -e "${INFO}Cleaning status lists for wallet_provider${NC}"
+        rm -rf "${WALLET_CORE_DIR}/target/status-lists/wallet_provider"
+        mkdir -p "${WALLET_CORE_DIR}/target/status-lists/wallet_provider"
 
         echo -e "${INFO}Start ${ORANGE}wallet_provider${NC}"
-        RUST_LOG=debug cargo run --package wallet_provider --bin wallet_provider --features=android_emulator > "${TARGET_DIR}/wallet_provider.log" 2>&1 &
+        RUST_LOG=debug cargo run --package wallet_provider --bin wallet_provider --features=android_emulator,test_internal_ui > "${TARGET_DIR}/wallet_provider.log" 2>&1 &
 
         echo -e "wallet_provider logs can be found at ${CYAN}${TARGET_DIR}/wallet_provider.log${NC}"
     fi
 fi
 
 ########################################################################
-# Manage configuration_server
+# Manage static_server
 ########################################################################
 
-if [ "${CONFIG_SERVER}" == "0" ]
+if [[ $STATIC_SERVER == '0' ]]
 then
     echo
-    echo -e "${SECTION}Manage configuration_server${NC}"
+    echo -e "${SECTION}Manage static_server${NC}"
 
-    cd "${CS_DIR}"
+    cd "${STATIC_SERVER_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
-        echo -e "${INFO}Kill any running ${ORANGE}configuration_server${NC}"
-        killall configuration_server || true
+        echo -e "${INFO}Kill any running ${ORANGE}static_server${NC}"
+        pkill -f 'static_server$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
-        echo -e "${INFO}Start ${ORANGE}configuration_server${NC}"
-        RUST_LOG=debug cargo run --package configuration_server --bin configuration_server > "${TARGET_DIR}/configuration_server.log" 2>&1 &
+        echo -e "${INFO}Start ${ORANGE}static_server${NC}"
+        RUST_LOG=debug cargo run --package static_server --features "allow_insecure_url" --bin static_server > "${TARGET_DIR}/static_server.log" 2>&1 &
 
-        echo -e "configuration_server logs can be found at ${CYAN}${TARGET_DIR}/configuration_server.log${NC}"
+        echo -e "static_server logs can be found at ${CYAN}${TARGET_DIR}/static_server.log${NC}"
     fi
 fi
 
 ########################################################################
 # Manage update_policy_server
+########################################################################
 
-if [ "${UPDATE_POLICY_SERVER}" == "0" ]
+if [[ $UPDATE_POLICY_SERVER == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage update_policy_server${NC}"
 
     cd "${UPS_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Kill any running ${ORANGE}update_policy_server${NC}"
-        killall update_policy_server || true
+        pkill -f 'update_policy_server$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         echo -e "${INFO}Start ${ORANGE}update_policy_server${NC}"
         RUST_LOG=debug cargo run --package update_policy_server --bin update_policy_server > "${TARGET_DIR}/update_policy_server.log" 2>&1 &
@@ -533,22 +675,47 @@ then
 fi
 
 ########################################################################
+# Manage revocation_portal
+########################################################################
+
+if [[ $REVOCATION_PORTAL == '0' ]]
+then
+    echo
+    echo -e "${SECTION}Manage revocation_portal${NC}"
+
+    cd "${REVOCATION_PORTAL_DIR}"
+
+    if [[ $STOP == '0' ]]
+    then
+        echo -e "${INFO}Kill any running ${ORANGE}revocation_portal${NC}"
+        pkill -f 'revocation_portal$' || true
+    fi
+    if [[ $START == '0' ]]
+    then
+        echo -e "${INFO}Start ${ORANGE}revocation_portal${NC}"
+        RUST_LOG=debug cargo run --package revocation_portal --bin revocation_portal > "${TARGET_DIR}/revocation_portal.log" 2>&1 &
+
+        echo -e "revocation_portal logs can be found at ${CYAN}${TARGET_DIR}/revocation_portal.log${NC}"
+    fi
+fi
+
+########################################################################
 # Manage brpproxy
 ########################################################################
 
-if [ "${BRP_PROXY}" == "0" ]
+if [[ $BRP_PROXY == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage brpproxy${NC}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Stopping ${ORANGE}brpproxy${NC}"
         docker compose --file "${DOCKER_COMPOSE_FILE}" down brpproxy || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
-        echo -e "Building and starting ${ORANGE}brpproxy${NC}"
+        echo -e "Starting ${ORANGE}brpproxy${NC}"
         docker compose --file "${DOCKER_COMPOSE_FILE}" up --detach brpproxy
     fi
 fi
@@ -557,19 +724,19 @@ fi
 # Manage gba_hc_converter
 ########################################################################
 
-if [ "${GBA_HC}" == "0" ]
+if [[ $GBA_HC == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage gba_hc_converter${NC}"
 
     cd "${GBA_HC_CONVERTER_DIR}"
 
-    if [ "${STOP}" == "0" ]
+    if [[ $STOP == '0' ]]
     then
         echo -e "${INFO}Stopping ${ORANGE}gba_hc_converter${NC}"
-        killall gba_hc_converter || true
+        pkill -f 'gba_hc_converter$' || true
     fi
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         echo -e "Starting ${ORANGE}gba_hc_converter${NC}"
 
@@ -584,19 +751,25 @@ fi
 # Manage wallet
 ########################################################################
 
-if [ "${WALLET}" == "0" ]
+if [[ $WALLET == '0' ]]
 then
     echo
     echo -e "${SECTION}Manage wallet${NC}"
 
-    if [ "${START}" == "0" ]
+    if [[ $START == '0' ]]
     then
         cd "${BASE_DIR}"/wallet_app
+        ANDROID_NDK_TARGETS="$(uname -m|sed s/arm64/arm64-v8a/)" \
         flutter run \
             --dart-define MOCK_REPOSITORIES=false \
+            --dart-define ENABLE_WRPRC_STRICT_MODE_TOGGLE="${ENABLE_WRPRC_STRICT_MODE_TOGGLE:-true}" \
+            --dart-define SHOW_ERROR_DETAILS="${SHOW_ERROR_DETAILS:-true}" \
+            --dart-define SHOW_DEBUG_OPTIONS=true \
             --dart-define ALLOW_INSECURE_URL=true \
             --dart-define UL_HOSTNAME="${UL_HOSTNAME:-}" \
             --dart-define SENTRY_DSN="${SENTRY_DSN:-}" \
-            --dart-define SENTRY_ENVIRONMENT="${SENTRY_ENVIRONMENT}"
+            --dart-define SENTRY_ENVIRONMENT="${SENTRY_ENVIRONMENT}" \
+            --dart-define SHOW_DEBUG_OPTIONS=true \
+            --dart-define DEMO_INDEX_URL="http://${SERVICES_HOST}:${DEMO_INDEX_PORT}/"
     fi
 fi

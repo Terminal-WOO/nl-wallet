@@ -2,29 +2,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use itertools::Itertools;
-
 use attestation_data::disclosure::DisclosedAttestations;
-use attestation_data::issuable_document::IssuableDocument;
 use dcql::unique_id_vec::UniqueIdVec;
-use http_utils::reqwest::IntoPinnedReqwestClient;
-use http_utils::reqwest::PinnedReqwestClient;
+use http_utils::client::TlsPinningConfig;
+use http_utils::reqwest::IntoReqwestClient;
+use http_utils::reqwest::ReqwestClient;
 use http_utils::reqwest::ReqwestClientUrl;
-use http_utils::tls::pinning::TlsPinningConfig;
-use http_utils::urls::BaseUrl;
-use openid4vc::PostAuthResponseErrorCode;
-use openid4vc::credential::CredentialOffer;
-use openid4vc::credential::CredentialOfferContainer;
-use openid4vc::credential::GrantPreAuthorizedCode;
-use openid4vc::credential::Grants;
-use openid4vc::issuer::AttributeService;
+use itertools::Itertools;
+use oauth::errors::BoxedErrorWithCode;
+use oauth::errors::ErrorWithCode;
+use openid4vc::credential_offer::CredentialOfferContainer;
+use openid4vc::errors::PostAuthResponseErrorCode;
+use openid4vc::issuable_document::IssuableDocument;
 use openid4vc::issuer::IssuanceData;
 use openid4vc::issuer::Issuer;
+use openid4vc::issuer::PreAuthorizedSessionError;
 use openid4vc::server_state::SessionStore;
-use openid4vc::server_state::SessionStoreError;
 use openid4vc::verifier::DisclosureResultHandler;
-use openid4vc::verifier::DisclosureResultHandlerError;
-use openid4vc::verifier::ToPostAuthResponseErrorCode;
 use utils::vec_at_least::VecNonEmpty;
 
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +42,7 @@ pub trait AttributesFetcher {
 }
 
 pub struct HttpAttributesFetcher {
-    urls: HashMap<String, PinnedReqwestClient>,
+    urls: HashMap<String, ReqwestClient>,
 }
 
 impl HttpAttributesFetcher {
@@ -88,28 +82,30 @@ impl AttributesFetcher for HttpAttributesFetcher {
 
 /// Receives disclosed attributes, exchanges those for attestations to be issued, and creates a new issuance session
 /// by implementing [`DisclosureResultHandler`].
-pub struct IssuanceResultHandler<AF, AS, K, S, C> {
+pub struct IssuanceResultHandler<AF, K, L, S, N> {
     pub attributes_fetcher: AF,
-    pub issuer: Arc<Issuer<AS, K, S, C>>,
-    pub credential_issuer: BaseUrl,
+    pub issuer: Arc<Issuer<K, L, S, N>>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum IssuanceResultHandlerError {
     #[error("failed to fetch attributes: {0}")]
     AttributesFetching(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
     #[error("no attestations to issue")]
     NoIssuableAttestations,
-    #[error("failed to create session: {0}")]
-    SessionStore(#[from] SessionStoreError),
-    #[error("URL encoding failed: {0}")]
-    UrlEncoding(#[from] serde_urlencoded::ser::Error),
-    #[error("URL decoding failed: {0}")]
-    UrlDecoding(#[from] serde_urlencoded::de::Error),
+
+    #[error("could not create Pre-Authorized credential offer: {0}")]
+    PreAuthorizedSession(#[source] PreAuthorizedSessionError),
+
+    #[error("credential offer URL serialization failed: {0}")]
+    CredentialOfferSerialization(#[source] serde_json::Error),
 }
 
-impl ToPostAuthResponseErrorCode for IssuanceResultHandlerError {
-    fn to_error_code(&self) -> PostAuthResponseErrorCode {
+impl ErrorWithCode for IssuanceResultHandlerError {
+    type ErrorCode = PostAuthResponseErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
         match self {
             IssuanceResultHandlerError::NoIssuableAttestations => PostAuthResponseErrorCode::NoIssuableAttestations,
             _ => PostAuthResponseErrorCode::ServerError,
@@ -118,96 +114,86 @@ impl ToPostAuthResponseErrorCode for IssuanceResultHandlerError {
 }
 
 #[async_trait]
-impl<AF, AS, K, S, C> DisclosureResultHandler for IssuanceResultHandler<AF, AS, K, S, C>
+impl<AF, K, L, S, N> DisclosureResultHandler for IssuanceResultHandler<AF, K, L, S, N>
 where
     AF: AttributesFetcher + Sync,
-    AS: AttributeService + Sync,
     K: Send + Sync,
+    L: Send + Sync,
     S: SessionStore<IssuanceData> + Sync,
-    C: Send + Sync,
+    N: Send + Sync,
 {
     async fn disclosure_result(
         &self,
         usecase_id: &str,
         disclosed: &UniqueIdVec<DisclosedAttestations>,
-    ) -> Result<HashMap<String, String>, DisclosureResultHandlerError> {
+    ) -> Result<HashMap<String, String>, BoxedErrorWithCode<PostAuthResponseErrorCode>> {
         let to_issue = self
             .attributes_fetcher
             .attributes(usecase_id, disclosed)
             .await
-            .map_err(|e| DisclosureResultHandlerError::new(IssuanceResultHandlerError::AttributesFetching(e.into())))?;
+            .map_err(|e| BoxedErrorWithCode::new(IssuanceResultHandlerError::AttributesFetching(e.into())))?;
 
         // Return a specific error code if there are no attestations to be issued so the wallet
         // can distinguish this case from other (error) cases.
         let to_issue: VecNonEmpty<_> = to_issue
             .try_into()
-            .map_err(|_| DisclosureResultHandlerError::new(IssuanceResultHandlerError::NoIssuableAttestations))?;
+            .map_err(|_| BoxedErrorWithCode::new(IssuanceResultHandlerError::NoIssuableAttestations))?;
 
-        let credential_configuration_ids = to_issue
-            .iter()
-            .map(|document| document.attestation_type().to_string())
-            .collect();
-
-        // Start a new issuance session.
-        let token = self
+        let credential_offer = self
             .issuer
-            .new_session(to_issue)
+            .new_preauthorized_session(to_issue)
             .await
-            .map_err(|err| DisclosureResultHandlerError::new(IssuanceResultHandlerError::SessionStore(err)))?;
+            .map_err(|e| BoxedErrorWithCode::new(IssuanceResultHandlerError::PreAuthorizedSession(e)))?;
 
-        let credential_offer = CredentialOfferContainer {
-            credential_offer: CredentialOffer {
-                credential_issuer: self.credential_issuer.clone(),
-                credential_configuration_ids,
-                grants: Some(Grants::PreAuthorizedCode {
-                    pre_authorized_code: GrantPreAuthorizedCode::new(token.into()),
-                }),
-            },
-        };
-
-        // If `serde_urlencoded` would have something like `serde_json::Value` or `ciborium::Value`,
-        // then this would be a lot less awkward.
-        let query_params = serde_urlencoded::from_str(
-            &serde_urlencoded::to_string(credential_offer)
-                .map_err(|err| DisclosureResultHandlerError::new(IssuanceResultHandlerError::UrlEncoding(err)))?,
-        )
-        .map_err(|err| DisclosureResultHandlerError::new(IssuanceResultHandlerError::UrlDecoding(err)))?;
-
+        let query_params = HashMap::from([CredentialOfferContainer::new_offer(credential_offer).into_query_pair()]);
         Ok(query_params)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::assert_matches;
+    use std::collections::HashSet;
     use std::convert::Infallible;
+    use std::num::NonZeroU8;
     use std::sync::Arc;
 
-    use chrono::Utc;
-    use indexmap::IndexMap;
-    use p256::ecdsa::SigningKey;
-
     use attestation_data::attributes::Attribute;
-    use attestation_data::attributes::AttributeValue;
     use attestation_data::disclosure::DisclosedAttestation;
     use attestation_data::disclosure::DisclosedAttestations;
     use attestation_data::disclosure::DisclosedAttributes;
-    use attestation_data::disclosure::ValidityInfo;
-    use attestation_data::issuable_document::IssuableDocument;
-    use attestation_types::qualification::AttestationQualification;
+    use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+    use attestation_data::registration_certificate::mock::MockRegistrationCertificate;
+    use attestation_data::validity::IssuanceValidity;
+    use attestation_types::credential_format::Format;
+    use attestation_types::credential_kind::CredentialKind;
+    use chrono::Days;
+    use chrono::Utc;
+    use crypto::server_keys::KeyPair;
+    use crypto::server_keys::generate::Ca;
     use dcql::unique_id_vec::UniqueIdVec;
-    use openid4vc::PostAuthResponseErrorCode;
-    use openid4vc::credential::CredentialOffer;
-    use openid4vc::issuer::AttestationTypeConfig;
+    use indexmap::IndexMap;
+    use oauth::errors::ErrorWithCode;
+    use openid4vc::credential_configurations::CredentialConfiguration;
+    use openid4vc::credential_configurations::CredentialConfigurationFormat;
+    use openid4vc::credential_configurations::CredentialConfigurationTypeMetadata;
+    use openid4vc::credential_configurations::CredentialConfigurations;
+    use openid4vc::credential_offer::CredentialOffer;
+    use openid4vc::errors::PostAuthResponseErrorCode;
+    use openid4vc::issuable_document::IssuableDocument;
+    use openid4vc::issuer::Grant;
     use openid4vc::issuer::IssuanceData;
     use openid4vc::issuer::Issuer;
-    use openid4vc::issuer::TrivialAttributeService;
-    use openid4vc::issuer::WuaConfig;
+    use openid4vc::nonce::memory_store::MemoryNonceStore;
     use openid4vc::server_state::MemorySessionStore;
     use openid4vc::server_state::SessionStore;
     use openid4vc::server_state::SessionStoreTimeouts;
     use openid4vc::server_state::SessionToken;
     use openid4vc::verifier::DisclosureResultHandler;
+    use p256::SecretKey;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
+    use sd_jwt_vc_metadata::TypeMetadataDocuments;
     use token_status_list::status_list_service::mock::MockStatusListService;
     use token_status_list::verification::verifier::RevocationStatus;
     use utils::vec_nonempty;
@@ -223,15 +209,10 @@ mod tests {
             attestations: vec_nonempty![DisclosedAttestation {
                 attestation_type,
                 attributes: DisclosedAttributes::MsoMdoc(IndexMap::new()),
-                issuer_uri: "https://example.com".parse().unwrap(),
-                attestation_qualification: AttestationQualification::default(),
                 ca: "ca".to_string(),
-                validity_info: ValidityInfo {
-                    signed: Utc::now(),
-                    valid_from: Some(Utc::now()),
-                    valid_until: Some(Utc::now()),
-                },
+                issuance_validity: IssuanceValidity::new(Utc::now(), Some(Utc::now()), Some(Utc::now())),
                 revocation_status: Some(RevocationStatus::Valid),
+                aki: vec![],
             }],
         }])
         .unwrap()
@@ -251,14 +232,10 @@ mod tests {
 
             Ok(vec![
                 IssuableDocument::try_new_with_random_id(
-                    attestation.attestation_type.clone(),
-                    IndexMap::from([(
-                        "attr_name".to_string(),
-                        Attribute::Single(AttributeValue::Text("attrvalue".to_string())),
-                    )])
-                    .into(),
+                    CredentialKind::new(Format::SdJwt, attestation.attestation_type.clone()),
+                    IndexMap::from([("university".to_string(), Attribute::Text("University".to_string()))]).into(),
                 )
-                .unwrap(),
+                .expect("creating an IssuableDocument should not fail"),
             ])
         }
     }
@@ -277,18 +254,56 @@ mod tests {
         }
     }
 
-    type MockIssuer =
-        Issuer<TrivialAttributeService, SigningKey, MemorySessionStore<IssuanceData>, MockStatusListService>;
+    type MockIssuer = Issuer<SigningKey, MockStatusListService, MemorySessionStore<IssuanceData>, MemoryNonceStore>;
 
     fn mock_issuer(sessions: Arc<MemorySessionStore<IssuanceData>>) -> MockIssuer {
+        let ca = Ca::generate_issuer_mock_ca().unwrap();
+        let metadata_keypair = ca.generate_wrpac_issuer_mock().unwrap();
+        let issuance_keypair = ca.generate_issuer_mock().unwrap();
+        let registration_certificate = MockRegistrationCertificate::new_issuer(
+            metadata_keypair.certificate(),
+            [CredentialKind::new(Format::SdJwt, "com.example.degree".to_string())],
+        );
+
+        let mut status_list = MockStatusListService::new();
+        status_list
+            .expect_start_refresh_job()
+            .return_once(|| tokio::task::spawn(async {}).abort_handle());
+
+        let credential_config = CredentialConfiguration {
+            scope: "credential_config_id".parse().unwrap(),
+            format: CredentialConfigurationFormat::new_sd_jwt_type_metadata(
+                CredentialConfigurationTypeMetadata::try_new(
+                    "com.example.degree",
+                    TypeMetadataDocuments::degree_example().1,
+                )
+                .unwrap(),
+            ),
+            key_pair: KeyPair::new_from_signing_key(
+                issuance_keypair.private_key().to_owned(),
+                issuance_keypair.certificate().to_owned(),
+            )
+            .unwrap(),
+            status_list,
+            valid_days: Days::new(1),
+        };
+
+        // Normally this is its own CA; here we just reuse the ca we have.
+        let wptl_trust_anchors = ca.to_trust_anchors();
+
         Issuer::new(
+            "https://example.com".parse().unwrap(),
+            metadata_keypair,
+            RegistrationCertificateEnvelope::from_slice(registration_certificate.certificate.as_slice()).unwrap(),
+            SecretKey::generate(),
+            NonZeroU8::MIN,
+            HashSet::new(),
+            CredentialConfigurations::try_new([("credential_config_id".to_string().into(), credential_config)].into())
+                .unwrap(),
+            true,
+            wptl_trust_anchors,
             sessions,
-            TrivialAttributeService,
-            HashMap::<std::string::String, AttestationTypeConfig<SigningKey>>::new().into(),
-            &"https://example.com".parse().unwrap(),
-            vec![],
-            None::<WuaConfig>,
-            MockStatusListService::default(),
+            MemoryNonceStore::new(),
         )
     }
 
@@ -299,11 +314,10 @@ mod tests {
         let result_handler = IssuanceResultHandler {
             attributes_fetcher: TestAttributesFetcher,
             issuer: Arc::new(mock_issuer(Arc::clone(&sessions))),
-            credential_issuer: "https://example.com".parse().unwrap(),
         };
 
         // The MockAttributesFetcher will return this attestation type in the issuable documents.
-        let mock_disclosed_type = "attestation_type";
+        let mock_disclosed_type = "com.example.degree";
         let mock_disclosed_attrs = mock_disclosed_attrs(mock_disclosed_type.to_string());
 
         let query_params = &result_handler
@@ -312,11 +326,11 @@ mod tests {
             .unwrap();
         let credential_offer: CredentialOffer = serde_json::from_str(&query_params["credential_offer"]).unwrap();
 
-        let code = credential_offer.grants.as_ref().unwrap().authorization_code().unwrap();
+        let pre_authorized_code = credential_offer.grants.unwrap().pre_authorized_code.unwrap();
 
         // The session handler should have inserted a new issuance session in the session store.
-        let IssuanceData::Created(session) = sessions
-            .get(&SessionToken::from(code.as_ref().to_string()))
+        let IssuanceData::AuthCodeIssued(session) = sessions
+            .get(&SessionToken::from(pre_authorized_code.pre_authorized_code))
             .await
             .unwrap()
             .unwrap()
@@ -324,10 +338,11 @@ mod tests {
         else {
             panic!("session absent or in unexpected state")
         };
+        assert_matches!(session.grant, Grant::PreAuthorizedCode);
 
         // The session should contain an issuable attestation with our earlier disclosed attestation type.
-        let issuable = session.issuable_documents.as_ref().unwrap().as_ref().first().unwrap();
-        assert_eq!(issuable.attestation_type(), mock_disclosed_type);
+        let (_config_id, document) = session.credential_ids_and_documents.as_ref().first().unwrap();
+        assert_eq!(document.credential_kind.attestation_type, mock_disclosed_type);
     }
 
     #[tokio::test]
@@ -337,7 +352,6 @@ mod tests {
             issuer: Arc::new(mock_issuer(Arc::new(MemorySessionStore::new(
                 SessionStoreTimeouts::default(),
             )))),
-            credential_issuer: "https://example.com".parse().unwrap(),
         };
 
         let err = result_handler
@@ -346,7 +360,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(
-            err.as_ref().to_error_code(),
+            err.error_code(),
             PostAuthResponseErrorCode::NoIssuableAttestations,
         ));
     }

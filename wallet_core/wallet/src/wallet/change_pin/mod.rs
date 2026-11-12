@@ -3,42 +3,42 @@ mod storage;
 
 use std::sync::Arc;
 
-use tracing::info;
-
-use http_utils::tls::pinning::TlsPinningConfig;
+use http_utils::client::TlsPinningConfig;
 use openid4vc::disclosure_session::DisclosureClient;
+use openid4vc::wallet_issuance::IssuanceDiscovery;
 use platform_support::attested_key::AttestedKeyHolder;
+use tracing::info;
 use update_policy_model::update_policy::VersionState;
 use wallet_configuration::wallet_config::WalletConfiguration;
 
+use super::WalletRegistration;
 use crate::Wallet;
 use crate::account_provider::AccountProviderClient;
-use crate::digid::DigidClient;
+use crate::errors::InstructionError;
 use crate::errors::UpdatePolicyError;
 use crate::instruction::InstructionClientFactory;
 use crate::instruction::InstructionClientParameters;
 use crate::pin::change::BeginChangePinOperation;
 use crate::pin::change::ChangePinError;
 use crate::pin::change::FinishChangePinOperation;
+use crate::pin::key::Pin;
 use crate::repository::Repository;
 use crate::repository::UpdateableRepository;
 use crate::storage::Storage;
 
-use super::WalletRegistration;
-
 const CHANGE_PIN_RETRIES: u8 = 3;
 
-impl<CR, UR, S, AKH, APC, DC, IS, DCC> Wallet<CR, UR, S, AKH, APC, DC, IS, DCC>
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
 where
     CR: Repository<Arc<WalletConfiguration>>,
     UR: Repository<VersionState>,
     S: Storage,
     AKH: AttestedKeyHolder,
     APC: AccountProviderClient,
-    DC: DigidClient,
+    CID: IssuanceDiscovery,
     DCC: DisclosureClient,
 {
-    pub async fn begin_change_pin(&mut self, old_pin: String, new_pin: String) -> Result<(), ChangePinError>
+    pub async fn begin_change_pin(&mut self, old_pin: Pin, new_pin: Pin) -> Result<(), ChangePinError>
     where
         UR: UpdateableRepository<VersionState, TlsPinningConfig, Error = UpdatePolicyError>,
     {
@@ -49,10 +49,8 @@ where
         info!("Fetching update policy");
         self.update_policy_repository.fetch(&config.http_config).await?;
 
-        info!("Checking if blocked");
-        if self.is_blocked() {
-            return Err(ChangePinError::VersionBlocked);
-        }
+        self.check_config_preconditions()
+            .map_err(ChangePinError::CheckPreconditions)?;
 
         info!("Checking if registered");
         let (attested_key, registration_data) = match &mut self.registration {
@@ -68,14 +66,12 @@ where
         }
 
         let config = &self.config_repository.get().account_server;
-        let instruction_result_public_key = config.instruction_result_public_key.as_inner().into();
-        let certificate_public_key = config.certificate_public_key.as_inner();
 
         // Extract the public key belonging to the hardware attested key from the current certificate.
         let hw_pubkey = registration_data
             .wallet_certificate
-            .parse_and_verify_with_sub(&certificate_public_key.into())
-            .expect("stored wallet certificate should be valid")
+            .parse_and_verify_with_sub_by_kid(&config.certificate_public_keys)
+            .map_err(ChangePinError::CertificateValidation)?
             .1
             .hw_pubkey
             .into_inner();
@@ -85,9 +81,11 @@ where
             Arc::clone(attested_key),
             Arc::clone(&self.account_provider_client),
             InstructionClientParameters::new(
-                registration_data.clone(),
+                registration_data.wallet_id.clone(),
+                registration_data.pin_salt.clone(),
+                registration_data.wallet_certificate.clone(),
                 config.http_config.clone(),
-                instruction_result_public_key,
+                config.instruction_result_public_keys.clone(),
             ),
         );
 
@@ -95,10 +93,18 @@ where
             &instruction_client,
             &self.storage,
             registration_data,
-            certificate_public_key,
+            &config.certificate_public_keys,
             &hw_pubkey,
         );
-        let (new_pin_salt, new_wallet_certificate) = session.begin_change_pin(old_pin, new_pin).await?;
+
+        let result = session.begin_change_pin(&old_pin, &new_pin).await;
+        let (new_pin_salt, new_wallet_certificate) = match result {
+            Err(error @ ChangePinError::Instruction(InstructionError::AccountRevoked(data))) => {
+                self.handle_wallet_revocation(data).await;
+                return Err(error);
+            }
+            _ => result?,
+        };
 
         registration_data.pin_salt = new_pin_salt;
         registration_data.wallet_certificate = new_wallet_certificate;
@@ -108,13 +114,11 @@ where
         Ok(())
     }
 
-    pub async fn continue_change_pin(&self, pin: &str) -> Result<(), ChangePinError> {
+    pub async fn continue_change_pin(&mut self, pin: &Pin) -> Result<(), ChangePinError> {
         info!("Continue PIN change");
 
-        info!("Checking if blocked");
-        if self.is_blocked() {
-            return Err(ChangePinError::VersionBlocked);
-        }
+        self.check_config_preconditions()
+            .map_err(ChangePinError::CheckPreconditions)?;
 
         info!("Checking if registered");
         let (attested_key, registration_data) = self
@@ -125,22 +129,30 @@ where
         // Wallet does not need to be unlocked, see [`Wallet::unlock`].
 
         let config = &self.config_repository.get().account_server;
-        let instruction_result_public_key = config.instruction_result_public_key.as_inner().into();
-
         let instruction_client = InstructionClientFactory::new(
             Arc::clone(&self.storage),
             Arc::clone(attested_key),
             Arc::clone(&self.account_provider_client),
             InstructionClientParameters::new(
-                registration_data.clone(),
+                registration_data.wallet_id.clone(),
+                registration_data.pin_salt.clone(),
+                registration_data.wallet_certificate.clone(),
                 config.http_config.clone(),
-                instruction_result_public_key,
+                config.instruction_result_public_keys.clone(),
             ),
         );
 
         let session = FinishChangePinOperation::new(&instruction_client, &self.storage, CHANGE_PIN_RETRIES);
 
-        session.finish_change_pin(pin).await?;
+        let result = session.finish_change_pin(pin).await;
+
+        match result {
+            Err(error @ ChangePinError::Instruction(InstructionError::AccountRevoked(data))) => {
+                self.handle_wallet_revocation(data).await;
+                Err(error)?;
+            }
+            _ => result?,
+        };
 
         info!("PIN change successfully finalized");
 
@@ -150,15 +162,16 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::sync::Arc;
-
-    use assert_matches::assert_matches;
 
     use platform_support::attested_key::AttestedKey;
     use wallet_account::messages::instructions::ChangePinCommit;
     use wallet_account::messages::instructions::ChangePinStart;
     use wallet_account::messages::instructions::Instruction;
 
+    use super::WalletRegistration;
+    use crate::pin::change::ChangePinError;
     use crate::pin::change::ChangePinStorage;
     use crate::pin::change::State;
     use crate::wallet::test::TestWalletInMemoryStorage;
@@ -192,9 +205,7 @@ mod tests {
             .times(1)
             .return_once(|_, _: Instruction<ChangePinStart>| Ok(wp_result));
 
-        let actual = wallet
-            .begin_change_pin("123456".to_string(), "111122".to_string())
-            .await;
+        let actual = wallet.begin_change_pin("123456".into(), "111122".into()).await;
         assert_matches!(actual, Ok(()));
 
         let change_pin_state = wallet
@@ -212,7 +223,7 @@ mod tests {
             .times(1)
             .return_once(|_, _: Instruction<ChangePinCommit>| Ok(wp_result));
 
-        let actual = wallet.continue_change_pin("111122").await;
+        let actual = wallet.continue_change_pin(&"111122".into()).await;
         assert_matches!(actual, Ok(()));
 
         let change_pin_state = wallet
@@ -221,5 +232,22 @@ mod tests {
             .await
             .expect("could not read change_pin_state");
         assert_eq!(change_pin_state, None);
+    }
+
+    #[tokio::test]
+    async fn test_wallet_begin_change_pin_error_invalid_stored_wallet_certificate() {
+        let mut wallet = TestWalletInMemoryStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+
+        let WalletRegistration::Registered { data, .. } = &mut wallet.registration else {
+            unreachable!();
+        };
+        data.wallet_certificate = "this.isa.jwt".parse().unwrap();
+
+        let error = wallet
+            .begin_change_pin("123456".into(), "111122".into())
+            .await
+            .expect_err("beginning PIN change should not succeed with an invalid stored wallet certificate");
+
+        assert_matches!(error, ChangePinError::CertificateValidation(_));
     }
 }

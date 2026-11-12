@@ -17,7 +17,7 @@
 # - openssl: needed to generate keys and certificates
 # - jq: needed to parse JSON
 # - standard unix tools like: grep, sed, tr, ...
-# - docker: with compose v2 extension, to run the digid-connector
+# - docker: with compose v2 and buildx 0.19 or newer, to run the digid-connector
 # - softhsm2-util: software implementation of a hardware security module (HSM). See https://github.com/opendnssec/SoftHSMv2.
 # - p11tool: utility that is part of the gnutls package. The Homebrew package is 'gnutls'. On Debian/Ubuntu, it is 'gnutls-bin'.
 # - nodejs: JavaScript runtime environment for building frontend library
@@ -47,6 +47,15 @@ source "${SCRIPTS_DIR}/utils.sh"
 # Check prerequisites
 ########################################################################
 
+if [[ ${BASH_VERSINFO[0]} -lt 5 ]]; then
+    error "Install a modern bash version"
+    if is_macos; then
+        echo "You can install modern bash via Homebrew"
+        echo "> brew install bash"
+    fi
+    exit 1
+fi
+
 # Use gsed on macOS, sed on others
 is_macos && SED="gsed" || SED="sed"
 have cargo jq tr xxd openssl p11tool softhsm2-util envsubst make "${SED}"
@@ -54,14 +63,14 @@ have cargo jq tr xxd openssl p11tool softhsm2-util envsubst make "${SED}"
 # Check if openssl is "real" OpenSSL
 check_openssl
 
-# Only check for docker if we build rdo-max
-if [[ -z "${SKIP_DIGID_CONNECTOR:-}" ]]; then
+# Only check for docker if we configure rdo-max or keycloak
+if [[ -z "${SKIP_DIGID_CONNECTOR:-}" || -z "${SKIP_KEYCLOAK:-}" ]]; then
     have docker
 fi
 
-# Only check for node if we build wallet_web
+# Only check for node and pnpm if we build wallet_web
 if [[ -z "${SKIP_WALLET_WEB:-}" ]]; then
-    have node
+    have node pnpm
 fi
 
 ########################################################################
@@ -70,7 +79,7 @@ fi
 
 source "${SCRIPTS_DIR}"/configuration.sh
 
-if [ ! -f "${SCRIPTS_DIR}/.env" ]
+if [[ ! -f "${SCRIPTS_DIR}/.env" ]]
 then
     echo -e "${INFO}Saving initial environment variables${NC}"
     echo -e \
@@ -83,7 +92,8 @@ then
 # export HSM_LIBRARY_PATH=${HSM_LIBRARY_PATH}
 # export HSM_SO_PIN=${HSM_SO_PIN}
 # export HSM_USER_PIN=${HSM_USER_PIN}
-# export HSM_TOKEN_DIR=${HSM_TOKEN_DIR}" \
+# export HSM_TOKEN_DIR=${HSM_TOKEN_DIR}
+# export HSM_TOKEN=${HSM_TOKEN}" \
     > "${SCRIPTS_DIR}/.env"
     echo -e "${INFO}Your customizations are saved in ${CYAN}${SCRIPTS_DIR}/.env${NC}."
     echo -e "${INFO}Edit this file to reflect your environment, and un-comment the relevant variables.${NC}"
@@ -95,7 +105,7 @@ fi
 ########################################################################
 
 mkdir -p "${TARGET_DIR}"
-mkdir -p "${TARGET_DIR}/configuration_server"
+mkdir -p "${TARGET_DIR}/static_server"
 mkdir -p "${TARGET_DIR}/pid_issuer"
 mkdir -p "${TARGET_DIR}/verification_server"
 mkdir -p "${TARGET_DIR}/issuance_server"
@@ -106,7 +116,7 @@ mkdir -p "${TARGET_DIR}/update_policy_server"
 mkdir -p "${TARGET_DIR}/wallet_provider"
 
 ########################################################################
-# Configure CA
+# Configure CA for TLS
 ########################################################################
 
 # Create a bad CA for integration testing usage
@@ -126,34 +136,52 @@ fi
 if [[ -z "${SKIP_DIGID_CONNECTOR:-}" ]]; then
   echo -e "${SECTION}Configure and start digid-connector${NC}"
 
-  # Check for existing nl-rdo-max, re-use if existing, clone if not
+  # Check for existing nl-rdo-max, re-use if existing, clone if not.
   if [[ -d "${DIGID_CONNECTOR_PATH}" ]]; then
-    echo -e "${INFO}Using existing nl-rdo-max repository (not cloning)${NC}"
+    echo -e "${INFO}Using existing nl-rdo-max repository, discarding changes and making sure we're at the requested version tag/branch${NC}"
+
+    # Git fetch first, so we have the latest available.
+    git -C "${DIGID_CONNECTOR_PATH}" fetch
+
+    # Git switch to target branch forcibly, discarding any tracked changes.
+    git -C "${DIGID_CONNECTOR_PATH}" checkout -f "${DIGID_CONNECTOR_VERSION}"
+
   else
+    # Do a fresh git clone to DIGID_CONNECTOR_PATH.
     echo -e "${INFO}Cloning nl-rdo-max repository: ${DIGID_CONNECTOR_PATH}${NC}"
-    # Unfortunately we can't directly clone a commit hash, so clone the tag and reset to the commit
-    git clone --depth 1 -b "${DIGID_CONNECTOR_BASE_TAG}" "${DIGID_CONNECTOR_REPOSITORY}" "${DIGID_CONNECTOR_PATH}"
+    git clone -b "${DIGID_CONNECTOR_VERSION}" "${DIGID_CONNECTOR_REPOSITORY}" "${DIGID_CONNECTOR_PATH}"
   fi
 
-  # Enter nl-rdo-max git repository
+  # Enter nl-rdo-max git repository.
   cd "${DIGID_CONNECTOR_PATH}"
 
-  # Checkout validated-working commit
-  echo -e "${INFO}Switching to commit: ${DIGID_CONNECTOR_BASE_COMMIT}${NC}"
-  git checkout -q "${DIGID_CONNECTOR_BASE_COMMIT}"
+  # Brings v4.0.3 up to dockerfile-stage-fixes branch.
+  # Commits: v4.0.3 (c2b5915), main (70d1e46), current (d72ee52), fixes (8165875).
+  echo -e "${INFO}Applying nl-rdo-max patches to ${DIGID_CONNECTOR_PATH} (${DIGID_CONNECTOR_VERSION})"
+  apply_patches_once "${DIGID_CONNECTOR_PATH}" \
+    "${DEVENV}/digid-connector/from-v403-to-main.patch" \
+    "${DEVENV}/digid-connector/from-main-to-current.patch" \
+    "${DEVENV}/digid-connector/from-current-to-fixes.patch" \
+    2> /dev/null
 
-  # Apply the patches, if not applied before
-  for p in "${BASE_DIR}/scripts/devenv/digid-connector/patches"/*; do
-    if git apply --check "$p" 2> /dev/null; then
-      echo -e "${INFO}Applying patch: $p${NC}"
-      git apply "$p"
-    else
-      echo -e "${INFO}Skipping previously applied patch: $p${NC}"
-    fi
-  done
+  # Don't use the rijksoverheid ui-theme.
+  echo -e "${INFO}Uninstalling rijksoverheid ui-theme"
+  npm uninstall @minvws/nl-rdo-rijksoverheid-ui-theme
 
-  make setup-secrets setup-saml setup-config
+  # Make sure we use our single ca if USE_SINGLE_CA is set. This works because setup-secrets.sh, which is indirectly
+  # called by make setup-remote later, will not replace a previously existing set of ca certificate files.
+  if [[ "${USE_SINGLE_CA}" == 1 && -n "${USE_SINGLE_CA_PATH}" && -f "${USE_SINGLE_CA_PATH}/ca.crt.pem" ]]; then
+    echo -e "${INFO}Using single CA for digid-connector${NC}"
+    mkdir -p "${DIGID_CONNECTOR_PATH}/secrets"
+    cp -f "${USE_SINGLE_CA_PATH}/ca.crt.pem" "${DIGID_CONNECTOR_PATH}/secrets/cacert.crt"
+    cp -f "${USE_SINGLE_CA_PATH}/ca.key.pem" "${DIGID_CONNECTOR_PATH}/secrets/cacert.key"
+  fi
 
+  # Create an RDO max container.
+  make setup-remote
+  npm run build
+
+  # Create our config files (overwrites defaults created in make targets).
   render_template "${DEVENV}/digid-connector/max.conf" "${DIGID_CONNECTOR_PATH}/max.conf"
   render_template "${DEVENV}/digid-connector/clients.json" "${DIGID_CONNECTOR_PATH}/clients.json"
   render_template "${DEVENV}/digid-connector/login_methods.json" "${DIGID_CONNECTOR_PATH}/login_methods.json"
@@ -161,17 +189,54 @@ if [[ -z "${SKIP_DIGID_CONNECTOR:-}" ]]; then
   generate_ssl_key_pair_with_san "${DIGID_CONNECTOR_PATH}/secrets/ssl" server "${DIGID_CONNECTOR_PATH}/secrets/cacert.crt" "${DIGID_CONNECTOR_PATH}/secrets/cacert.key"
   openssl x509 -in "${DIGID_CONNECTOR_PATH}/secrets/cacert.crt" \
       -outform der -out "${DIGID_CONNECTOR_PATH}/secrets/cacert.der"
+
   DIGID_CA_CRT=$(< "${DIGID_CONNECTOR_PATH}/secrets/cacert.der" ${BASE64})
   export DIGID_CA_CRT
 
-  # Build max docker container
-  docker compose build max
   # Generate JWK from private RSA key of test_client.
-  CLIENT_PRIVKEY_JWK=$(docker compose run --rm max make --silent create-jwk)
+  CLIENT_PRIVKEY_JWK=$(docker compose run --rm "${DIGID_CONNECTOR_APPNAME}" make --silent create-jwk)
+
   # Remove the 'kid' json field, because the digid-connector does not send a JWE 'kid' header claim, which is required
   # if `kid` field is specified.
   BSN_PRIVKEY=$(echo "${CLIENT_PRIVKEY_JWK}" | jq -c 'del(.kid)')
   export BSN_PRIVKEY
+else
+    # DIGID_CA_CRT must end up in the wallet configuration, so we generate it here in the target directory
+    echo -e "${SECTION}Generating digid-connector root ca for the wallet configuration${NC}"
+    mkdir -p "${TARGET_DIR}/digid"
+
+    generate_or_reuse_root_ca "${TARGET_DIR}/digid" "rdo-max"
+
+    DIGID_CA_CRT=$(< "${TARGET_DIR}/digid/ca.crt.der" ${BASE64})
+    export DIGID_CA_CRT
+
+    # Set a fake RSA private key so that parsing the settings succeeds.
+    # shellcheck disable=SC2089 # JSON string, quotes are intentional.
+    export BSN_PRIVKEY='{"kty":"RSA","n":"","e":"","d":"","p":"","q":"","dp":"","dq":"","qi":""}'
+fi
+
+########################################################################
+# Configure keycloak
+########################################################################
+
+echo -e "${SECTION}Configure keycloak${NC}"
+
+# CA Generated unconditionally (even when SKIP_KEYCLOAK is set), since wallet_provider's admin_portal
+# config always needs a Keycloak CA to pin its OIDC client's TLS connection to.
+generate_or_reuse_root_ca "${DEVENV}/keycloak/certs" "keycloak"
+
+if [[ -z "${SKIP_KEYCLOAK:-}" ]]; then
+    generate_ssl_key_pair_with_san "${DEVENV}/keycloak/certs" "keycloak" "${DEVENV}/keycloak/certs/ca.crt.pem" "${DEVENV}/keycloak/certs/ca.key.pem"
+
+  # Constructs a shellscript that contains the commands to reproduce a file/directory structure.
+  # The shellscript is fed to docker compose, service: keycloak, command: sh, argument: -s.
+  {
+    printf '%s\n' 'set -eu'
+    emit_base64_decode_command "${DEVENV}/keycloak/certs/keycloak.crt" '/opt/keycloak/data/certs/keycloak.crt'
+    emit_base64_decode_command "${DEVENV}/keycloak/certs/keycloak.key" '/opt/keycloak/data/certs/keycloak.key'
+    emit_base64_decode_command "${DEVENV}/keycloak/import/realm.json"  '/opt/keycloak/data/import/realm.json'
+  } | docker compose --file "${DOCKER_COMPOSE_FILE}" run --rm --no-deps -T --user 1000:0 --entrypoint sh keycloak -s
+
 fi
 
 ########################################################################
@@ -185,7 +250,7 @@ if [[ -z "${SKIP_WALLET_WEB:-}" ]]; then
     cd "${WALLET_WEB_DIR}"
 
     export VITE_HELP_BASE_URL=${VITE_HELP_BASE_URL:-http://$SERVICES_HOST}
-    npm ci && npm run build
+    pnpm install --frozen-lockfile && pnpm run build
 
     cp dist/nl-wallet-web.iife.js ../wallet_core/demo/demo_utils/assets/
 
@@ -208,16 +273,108 @@ if [[ ! -f "$HSM_LIBRARY_PATH" ]]; then
 fi
 
 mkdir -p "${HOME}/.config/softhsm2"
-if [ "${HSM_TOKEN_DIR}" = "${DEFAULT_HSM_TOKEN_DIR}" ]; then
+if [[ "${HSM_TOKEN_DIR}" = "${DEFAULT_HSM_TOKEN_DIR}" ]]; then
   mkdir -p "${DEFAULT_HSM_TOKEN_DIR}"
 fi
 
 render_template "${DEVENV}/softhsm2/softhsm2.conf.template" "${HOME}/.config/softhsm2/softhsm2.conf"
 
-softhsm2-util --delete-token --token test_token --force > /dev/null || true
-softhsm2-util --init-token --slot 0 --so-pin "${HSM_SO_PIN}" --label "test_token" --pin "${HSM_USER_PIN}"
+HSM_SLOT=$(softhsm2-util --show-slots | awk '/^Slot / { slot=$1 } /^ *Label: +'"${HSM_TOKEN}"' *$/ { print slot; exit }')
+if [[ -z $HSM_SLOT ]]; then
+    softhsm2-util --init-token --free --label "${HSM_TOKEN}" --so-pin "${HSM_SO_PIN}" --pin "${HSM_USER_PIN}"
+else
+    softhsm2-util --init-token --token "${HSM_TOKEN}" --label "${HSM_TOKEN}" --so-pin "${HSM_SO_PIN}" --pin "${HSM_USER_PIN}"
+fi
+HSM_TOKEN_URL="$(p11tool --list-token-urls --provider="${HSM_LIBRARY_PATH}" | grep -e "model=SoftHSM%20v2;.*;token=${HSM_TOKEN}")"
 
 render_template "${DEVENV}/hsm.toml.template" "${BASE_DIR}/wallet_core/lib/hsm/hsm.toml"
+
+
+########################################################################
+# Configure CAs for EDI
+########################################################################
+
+# Generate root CA for WRPAC
+if [[ ! -f "${TARGET_DIR}/ca.wrpac.key.pem" ]]; then
+    generate_root_ca wrpac
+else
+    echo -e "${INFO}Target file '${TARGET_DIR}/ca.wrpac.key.pem' already exists, not (re-)generating WRPAC root CA"
+fi
+WRPAC_CA_CRT=$(< "${TARGET_DIR}/ca.wrpac.crt.der" ${BASE64})
+export WRPAC_CA_CRT
+
+# Publish an empty CRL for all locally generated WRPAC certificates. The wallet accepts HTTP distribution points:
+# authenticity and integrity are established by verifying the CRL signature against the WRPAC CA.
+WRPAC_CRL_DISTRIBUTION_POINT="http://${SERVICES_HOST}:${STATIC_SERVER_CRL_PORT}/wrpac.crl.der"
+export WRPAC_CRL_DISTRIBUTION_POINT
+cargo run --manifest-path "${BASE_DIR}"/wallet_core/Cargo.toml --bin wallet_ca crl \
+    --ca-key-file "${TARGET_DIR}/ca.wrpac.key.pem" \
+    --ca-crt-file "${TARGET_DIR}/ca.wrpac.crt.pem" \
+    --file-prefix "${TARGET_DIR}/static_server/wrpac" \
+    --days 365 \
+    --force
+openssl crl -in "${TARGET_DIR}/static_server/wrpac.crl.pem" -outform DER \
+    -out "${TARGET_DIR}/static_server/wrpac.crl.der"
+cp "${TARGET_DIR}/static_server/wrpac.crl.der" "${STATIC_SERVER_DIR}"
+cp "${TARGET_DIR}/static_server/wrpac.crl.der" "${BASE_DIR}/wallet_core/tests_integration"
+
+# Generate root CA for WRPRC
+if [[ ! -f "${TARGET_DIR}/ca.wrprc.key.pem" ]]; then
+    generate_root_ca wrprc
+else
+    echo -e "${INFO}Target file '${TARGET_DIR}/ca.wrprc.key.pem' already exists, not (re-)generating WRPRC root CA"
+fi
+WRPRC_CA_CRT=$(< "${TARGET_DIR}/ca.wrprc.crt.der" ${BASE64})
+export WRPRC_CA_CRT
+# Like CRLs, WRPRC status lists are signed and served over HTTP in the local development environment.
+WRPRC_STATUS_LIST_URI="http://${SERVICES_HOST}:${STATIC_SERVER_CRL_PORT}/wrprc/1"
+export WRPRC_STATUS_LIST_URI
+
+# Generate the end-entity certificate used to sign the demo relying parties' WRPRCs.
+cargo run --manifest-path "${BASE_DIR}"/wallet_core/Cargo.toml \
+    --bin wallet_ca cert --type wrprc \
+    --ca-key-file "${TARGET_DIR}/ca.wrprc.key.pem" \
+    --ca-crt-file "${TARGET_DIR}/ca.wrprc.crt.pem" \
+    --common-name "Development WRPRC signer" \
+    --organization-name "Development Registrar B.V." \
+    --organization-id "NTRNL-00000001" \
+    --file-prefix "${TARGET_DIR}/wrprc_signer" \
+    --force
+
+# Generate the WRPRC status-list signing certificate.
+cargo run --manifest-path "${BASE_DIR}"/wallet_core/Cargo.toml \
+    --bin wallet_ca cert --type tsl \
+    --ca-key-file "${TARGET_DIR}/ca.wrprc.key.pem" \
+    --ca-crt-file "${TARGET_DIR}/ca.wrprc.crt.pem" \
+    --common-name "Development WRPRC status list signer" \
+    --organization-name "Development Registrar B.V." \
+    --organization-id "NTRNL-00000001" \
+    --file-prefix "${TARGET_DIR}/wrprc_tsl" \
+    --force
+
+# Generate root CA for issuer
+if [[ ! -f "${TARGET_DIR}/ca.issuer.key.pem" ]]; then
+    generate_root_ca issuer
+else
+    echo -e "${INFO}Target file '${TARGET_DIR}/ca.issuer.key.pem' already exists, not (re-)generating issuer root CA"
+fi
+ISSUER_CA_CRT=$(< "${TARGET_DIR}/ca.issuer.crt.der" ${BASE64})
+export ISSUER_CA_CRT
+
+# Generate root CA for Wallet Provider Trusted List (used for WIA and Key Attestations)
+if [[ ! -f "${TARGET_DIR}/ca.wptl.key.pem" ]]; then
+    generate_root_ca wptl
+else
+    echo -e "${INFO}Target file '${TARGET_DIR}/ca.wptl.key.pem' already exists, not (re-)generating issuer root CA"
+fi
+WPTL_CA_CRT=$(< "${TARGET_DIR}/ca.wptl.crt.der" ${BASE64})
+export WPTL_CA_CRT
+
+# Location of the WPTL CA certificate in the authority information access extension of the WIA and Key Attestation
+# certificates. This is a placeholder: the static server doesn't serve the CA certificate (yet).
+WPTL_CA_ISSUER="http://${SERVICES_HOST}:${STATIC_SERVER_CRL_PORT}/wptl.crt.der"
+export WPTL_CA_ISSUER
+
 
 ########################################################################
 # Configure verification_server, issuance_server, pid_issuer and demo
@@ -229,7 +386,7 @@ echo -e "${SECTION}Configure verification_server, issuance_server, pid_issuer, d
 
 cd "${BASE_DIR}"
 
-# Generate or re-use CA for configuration server
+# Generate or re-use CA for demo-issuer
 generate_or_reuse_root_ca "${TARGET_DIR}/demo_issuer" "nl-wallet-demo-issuer"
 
 generate_ssl_key_pair_with_san "${TARGET_DIR}/demo_issuer" demo_issuer "${TARGET_DIR}/demo_issuer/ca.crt.pem" "${TARGET_DIR}/demo_issuer/ca.key.pem"
@@ -244,31 +401,32 @@ ln -sf "${TARGET_DIR}/demo_issuer/demo_issuer.key.der" "${BASE_DIR}/wallet_core/
 DEMO_ISSUER_ATTESTATION_SERVER_KEY=$(< "${TARGET_DIR}/demo_issuer/demo_issuer.key.der" ${BASE64})
 export DEMO_ISSUER_ATTESTATION_SERVER_KEY
 
-# Generate root CA for issuer
-if [ ! -f "${TARGET_DIR}/ca.issuer.key.pem" ]; then
-    generate_issuer_root_ca
-else
-    echo -e "${INFO}Target file '${TARGET_DIR}/ca.issuer.key.pem' already exists, not (re-)generating issuer root CA"
-fi
-ISSUER_CA_CRT=$(< "${TARGET_DIR}/ca.issuer.crt.der" ${BASE64})
-export ISSUER_CA_CRT
 
-# Generate key for WUA signing
-generate_wp_signing_key wua_signing
-export WP_WUA_SIGNING_KEY_PATH="${TARGET_DIR}/wallet_provider/wua_signing.pem"
-WP_WUA_PUBLIC_KEY=$(< "${TARGET_DIR}/wallet_provider/wua_signing.pub.der" ${BASE64})
-export WP_WUA_PUBLIC_KEY
+# Generate key for WIA signing and TSL
+generate_wia_signing_key_pair
+WP_WIA_CERTIFICATE=$(< "${TARGET_DIR}/wallet_provider/wia_signing.crt.der" ${BASE64})
+export WP_WIA_CERTIFICATE
 
-# Generate key for WUA tsl
-generate_wallet_provider_tsl_key_pair
-WUA_TSL_KEY=$(< "${TARGET_DIR}/wallet_provider/tsl.key.der" ${BASE64})
-export WUA_TSL_KEY
-WUA_TSL_CRT=$(< "${TARGET_DIR}/wallet_provider/tsl.crt.der" ${BASE64})
-export WUA_TSL_CRT
+generate_wia_tsl_key_pair
+WIA_TSL_CRT=$(< "${TARGET_DIR}/wallet_provider/wia_tsl.crt.der" ${BASE64})
+export WIA_TSL_CRT
 
-# Generate pid issuer key and cert
-generate_pid_issuer_key_pair
-generate_pid_issuer_tsl_key_pair
+generate_key_attestation_signing_key_pair
+WP_KA_CERTIFICATE=$(< "${TARGET_DIR}/wallet_provider/key_attestation_signing.crt.der" ${BASE64})
+export WP_KA_CERTIFICATE
+
+generate_key_storage_tsl_key_pair
+KEY_STORAGE_TSL_CRT=$(< "${TARGET_DIR}/wallet_provider/key_storage_tsl.crt.der" ${BASE64})
+export KEY_STORAGE_TSL_CRT
+
+# Generate pid issuer recovery code key
+RECOVERY_CODE_SECRET_KEY=$(openssl rand 32 | xxd -p -c64)
+export RECOVERY_CODE_SECRET_KEY
+
+# Generate pid issuer key and cert for issuance, TSL and WRPAC
+generate_pid_issuer_hsm_key_pair
+generate_pid_issuer_key_pair tsl issuer
+generate_pid_issuer_key_pair wrpac
 
 export PID_ISSUER_KEY=pid_issuer_key
 PID_ISSUER_CRT=$(< "${TARGET_DIR}/pid_issuer/issuer.crt.der" ${BASE64})
@@ -279,67 +437,87 @@ export PID_ISSUER_TSL_KEY
 PID_ISSUER_TSL_CRT=$(< "${TARGET_DIR}/pid_issuer/tsl.crt.der" ${BASE64})
 export PID_ISSUER_TSL_CRT
 
-# Generate root CA for reader
-if [ ! -f "${TARGET_DIR}/ca.reader.key.pem" ]; then
-    generate_reader_root_ca
-else
-    echo -e "${INFO}Target file '${TARGET_DIR}/ca.reader.key.pem' already exists, not (re-)generating reader root CA"
-fi
+PID_ISSUER_WRPAC_KEY=$(< "${TARGET_DIR}/pid_issuer/wrpac.key.der" ${BASE64})
+export PID_ISSUER_WRPAC_KEY
+PID_ISSUER_WRPAC_CRT=$(< "${TARGET_DIR}/pid_issuer/wrpac.crt.der" ${BASE64})
+export PID_ISSUER_WRPAC_CRT
 
-# Generate CA for RPs
-READER_CA_CRT=$(< "${TARGET_DIR}/ca.reader.crt.der" ${BASE64})
-export READER_CA_CRT
+# Generate pid issuer credential request encryption private key
+generate_credential_request_encryption_private_key pid_issuer
 
-# Generate relying party key and cert
-generate_relying_party_hsm_key_pair mijn_amsterdam demo_relying_party
-export DEMO_RELYING_PARTY_KEY_MIJN_AMSTERDAM=mijn_amsterdam_key
+PID_ISSUER_CREDENTIAL_REQUEST_ENCRYPTION_KEY=$(< "${TARGET_DIR}/pid_issuer/pid_issuer_credential_request_encryption.key.der" ${BASE64})
+export PID_ISSUER_CREDENTIAL_REQUEST_ENCRYPTION_KEY
+
+# Generate relying party key and cert.
+# The verification server runs on localhost in local development and integration tests.
+generate_demo_relying_party_key_pair mijn_amsterdam
+DEMO_RELYING_PARTY_KEY_MIJN_AMSTERDAM=$(< "${TARGET_DIR}/demo_relying_party/mijn_amsterdam.key.der" ${BASE64})
+export DEMO_RELYING_PARTY_KEY_MIJN_AMSTERDAM
 DEMO_RELYING_PARTY_CRT_MIJN_AMSTERDAM=$(< "${TARGET_DIR}/demo_relying_party/mijn_amsterdam.crt.der" ${BASE64})
 export DEMO_RELYING_PARTY_CRT_MIJN_AMSTERDAM
+generate_demo_relying_party_disclosure_registration_certificate mijn_amsterdam 0
+DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_MIJN_AMSTERDAM=$(< "${TARGET_DIR}/demo_relying_party/mijn_amsterdam.wrprc")
+export DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_MIJN_AMSTERDAM
 
-# Generate relying party key and cert
+# Generate relying party key and cert.
 generate_demo_relying_party_key_pair online_marketplace
 DEMO_RELYING_PARTY_KEY_ONLINE_MARKETPLACE=$(< "${TARGET_DIR}/demo_relying_party/online_marketplace.key.der" ${BASE64})
 export DEMO_RELYING_PARTY_KEY_ONLINE_MARKETPLACE
 DEMO_RELYING_PARTY_CRT_ONLINE_MARKETPLACE=$(< "${TARGET_DIR}/demo_relying_party/online_marketplace.crt.der" ${BASE64})
 export DEMO_RELYING_PARTY_CRT_ONLINE_MARKETPLACE
+generate_demo_relying_party_disclosure_registration_certificate online_marketplace 1
+DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_ONLINE_MARKETPLACE=$(< "${TARGET_DIR}/demo_relying_party/online_marketplace.wrprc")
+export DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_ONLINE_MARKETPLACE
 
-# Generate relying party key and cert
+# Generate relying party key and cert.
 generate_demo_relying_party_key_pair xyz_bank
 DEMO_RELYING_PARTY_KEY_XYZ_BANK=$(< "${TARGET_DIR}/demo_relying_party/xyz_bank.key.der" ${BASE64})
 export DEMO_RELYING_PARTY_KEY_XYZ_BANK
 DEMO_RELYING_PARTY_CRT_XYZ_BANK=$(< "${TARGET_DIR}/demo_relying_party/xyz_bank.crt.der" ${BASE64})
 export DEMO_RELYING_PARTY_CRT_XYZ_BANK
+generate_demo_relying_party_disclosure_registration_certificate xyz_bank 2
+DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_XYZ_BANK=$(< "${TARGET_DIR}/demo_relying_party/xyz_bank.wrprc")
+export DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_XYZ_BANK
 
-# Generate relying party key and cert
+# Generate relying party key and cert.
 generate_demo_relying_party_key_pair monkey_bike
 DEMO_RELYING_PARTY_KEY_MONKEY_BIKE=$(< "${TARGET_DIR}/demo_relying_party/monkey_bike.key.der" ${BASE64})
 export DEMO_RELYING_PARTY_KEY_MONKEY_BIKE
 DEMO_RELYING_PARTY_CRT_MONKEY_BIKE=$(< "${TARGET_DIR}/demo_relying_party/monkey_bike.crt.der" ${BASE64})
 export DEMO_RELYING_PARTY_CRT_MONKEY_BIKE
+generate_demo_relying_party_disclosure_registration_certificate monkey_bike 3
+DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_MONKEY_BIKE=$(< "${TARGET_DIR}/demo_relying_party/monkey_bike.wrprc")
+export DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_MONKEY_BIKE
 
-# Generate relying party key and cert
+# Generate relying party key and cert.
 generate_demo_relying_party_key_pair job_finder
 DEMO_RELYING_PARTY_KEY_JOB_FINDER=$(< "${TARGET_DIR}/demo_relying_party/job_finder.key.der" ${BASE64})
 export DEMO_RELYING_PARTY_KEY_JOB_FINDER
 DEMO_RELYING_PARTY_CRT_JOB_FINDER=$(< "${TARGET_DIR}/demo_relying_party/job_finder.crt.der" ${BASE64})
 export DEMO_RELYING_PARTY_CRT_JOB_FINDER
+generate_demo_relying_party_disclosure_registration_certificate job_finder 4
+DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_JOB_FINDER=$(< "${TARGET_DIR}/demo_relying_party/job_finder.wrprc")
+export DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_JOB_FINDER
 
-# Generate relying party key and cert
-generate_demo_relying_party_key_pair housing
-DEMO_RELYING_PARTY_KEY_HOUSING=$(< "${TARGET_DIR}/demo_relying_party/housing.key.der" ${BASE64})
-export DEMO_RELYING_PARTY_KEY_HOUSING
-DEMO_RELYING_PARTY_CRT_HOUSING=$(< "${TARGET_DIR}/demo_relying_party/housing.crt.der" ${BASE64})
-export DEMO_RELYING_PARTY_CRT_HOUSING
+# Generate relying party key and cert.
+generate_demo_relying_party_key_pair insurance
+DEMO_RELYING_PARTY_KEY_INSURANCE=$(< "${TARGET_DIR}/demo_relying_party/insurance.key.der" ${BASE64})
+export DEMO_RELYING_PARTY_KEY_INSURANCE
+DEMO_RELYING_PARTY_CRT_INSURANCE=$(< "${TARGET_DIR}/demo_relying_party/insurance.crt.der" ${BASE64})
+export DEMO_RELYING_PARTY_CRT_INSURANCE
+generate_demo_relying_party_disclosure_registration_certificate insurance 12
+DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_INSURANCE=$(< "${TARGET_DIR}/demo_relying_party/insurance.wrprc")
+export DEMO_RELYING_PARTY_REGISTRATION_CERTIFICATE_INSURANCE
+
+# Compute the AKI of the issuer CA from the public key in its self-signed certificate.
+ISSUER_CA_AKI=$(openssl x509 -in "${TARGET_DIR}/ca.issuer.crt.pem" -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | head -c 20 | base64_url_encode)
+export ISSUER_CA_AKI
 
 render_template "${DEVENV}/demo_relying_party.toml.template" "${DEMO_RELYING_PARTY_DIR}/demo_relying_party.toml"
 
 
-# Generate issuer key and cert
+# Generate issuer key and cert.
 generate_demo_issuer_key_pairs university
-DEMO_ISSUER_KEY_UNIVERSITY_READER=$(< "${TARGET_DIR}/demo_issuer/university.reader.key.der" ${BASE64})
-export DEMO_ISSUER_KEY_UNIVERSITY_READER
-DEMO_ISSUER_CRT_UNIVERSITY_READER=$(< "${TARGET_DIR}/demo_issuer/university.reader.crt.der" ${BASE64})
-export DEMO_ISSUER_CRT_UNIVERSITY_READER
 DEMO_ISSUER_KEY_UNIVERSITY_ISSUER=$(< "${TARGET_DIR}/demo_issuer/university.issuer.key.der" ${BASE64})
 export DEMO_ISSUER_KEY_UNIVERSITY_ISSUER
 DEMO_ISSUER_CRT_UNIVERSITY_ISSUER=$(< "${TARGET_DIR}/demo_issuer/university.issuer.crt.der" ${BASE64})
@@ -348,12 +526,18 @@ DEMO_ISSUER_KEY_UNIVERSITY_TSL=$(< "${TARGET_DIR}/demo_issuer/university.tsl.key
 export DEMO_ISSUER_KEY_UNIVERSITY_TSL
 DEMO_ISSUER_CRT_UNIVERSITY_TSL=$(< "${TARGET_DIR}/demo_issuer/university.tsl.crt.der" ${BASE64})
 export DEMO_ISSUER_CRT_UNIVERSITY_TSL
+DEMO_ISSUER_KEY_UNIVERSITY_WRPAC=$(< "${TARGET_DIR}/demo_issuer/university.wrpac.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_UNIVERSITY_WRPAC
+DEMO_ISSUER_CRT_UNIVERSITY_WRPAC=$(< "${TARGET_DIR}/demo_issuer/university.wrpac.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_UNIVERSITY_WRPAC
+generate_demo_issuer_disclosure_registration_certificate university 5
+DEMO_ISSUER_REGISTRATION_CERTIFICATE_UNIVERSITY=$(< "${TARGET_DIR}/demo_issuer/university.wrprc")
+export DEMO_ISSUER_REGISTRATION_CERTIFICATE_UNIVERSITY
+DEMO_ISSUER_CLIENT_ID_UNIVERSITY="x509_hash:$(openssl dgst -sha256 -binary "${TARGET_DIR}/demo_issuer/university.wrpac.crt.der" | base64_url_encode)"
+export DEMO_ISSUER_CLIENT_ID_UNIVERSITY
 
-generate_demo_issuer_key_pairs insurance
-DEMO_ISSUER_KEY_INSURANCE_READER=$(< "${TARGET_DIR}/demo_issuer/insurance.reader.key.der" ${BASE64})
-export DEMO_ISSUER_KEY_INSURANCE_READER
-DEMO_ISSUER_CRT_INSURANCE_READER=$(< "${TARGET_DIR}/demo_issuer/insurance.reader.crt.der" ${BASE64})
-export DEMO_ISSUER_CRT_INSURANCE_READER
+# The insurance usecase is issued through the authorization-code flow (acf_demo_issuer)
+generate_demo_issuer_issuance_key_pairs insurance
 DEMO_ISSUER_KEY_INSURANCE_ISSUER=$(< "${TARGET_DIR}/demo_issuer/insurance.issuer.key.der" ${BASE64})
 export DEMO_ISSUER_KEY_INSURANCE_ISSUER
 DEMO_ISSUER_CRT_INSURANCE_ISSUER=$(< "${TARGET_DIR}/demo_issuer/insurance.issuer.crt.der" ${BASE64})
@@ -364,10 +548,6 @@ DEMO_ISSUER_CRT_INSURANCE_TSL=$(< "${TARGET_DIR}/demo_issuer/insurance.tsl.crt.d
 export DEMO_ISSUER_CRT_INSURANCE_TSL
 
 generate_demo_issuer_key_pairs housing
-DEMO_ISSUER_KEY_HOUSING_READER=$(< "${TARGET_DIR}/demo_issuer/housing.reader.key.der" ${BASE64})
-export DEMO_ISSUER_KEY_HOUSING_READER
-DEMO_ISSUER_CRT_HOUSING_READER=$(< "${TARGET_DIR}/demo_issuer/housing.reader.crt.der" ${BASE64})
-export DEMO_ISSUER_CRT_HOUSING_READER
 DEMO_ISSUER_KEY_HOUSING_ISSUER=$(< "${TARGET_DIR}/demo_issuer/housing.issuer.key.der" ${BASE64})
 export DEMO_ISSUER_KEY_HOUSING_ISSUER
 DEMO_ISSUER_CRT_HOUSING_ISSUER=$(< "${TARGET_DIR}/demo_issuer/housing.issuer.crt.der" ${BASE64})
@@ -376,28 +556,147 @@ DEMO_ISSUER_KEY_HOUSING_TSL=$(< "${TARGET_DIR}/demo_issuer/housing.tsl.key.der" 
 export DEMO_ISSUER_KEY_HOUSING_TSL
 DEMO_ISSUER_CRT_HOUSING_TSL=$(< "${TARGET_DIR}/demo_issuer/housing.tsl.crt.der" ${BASE64})
 export DEMO_ISSUER_CRT_HOUSING_TSL
+DEMO_ISSUER_KEY_HOUSING_WRPAC=$(< "${TARGET_DIR}/demo_issuer/housing.wrpac.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_HOUSING_WRPAC
+DEMO_ISSUER_CRT_HOUSING_WRPAC=$(< "${TARGET_DIR}/demo_issuer/housing.wrpac.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_HOUSING_WRPAC
+generate_demo_issuer_disclosure_registration_certificate housing 6
+DEMO_ISSUER_REGISTRATION_CERTIFICATE_HOUSING=$(< "${TARGET_DIR}/demo_issuer/housing.wrprc")
+export DEMO_ISSUER_REGISTRATION_CERTIFICATE_HOUSING
+DEMO_ISSUER_CLIENT_ID_HOUSING="x509_hash:$(openssl dgst -sha256 -binary "${TARGET_DIR}/demo_issuer/housing.wrpac.crt.der" | base64_url_encode)"
+export DEMO_ISSUER_CLIENT_ID_HOUSING
+
+generate_demo_issuer_issuance_key_pairs loyalty
+DEMO_ISSUER_KEY_LOYALTY_ISSUER=$(< "${TARGET_DIR}/demo_issuer/loyalty.issuer.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_LOYALTY_ISSUER
+DEMO_ISSUER_CRT_LOYALTY_ISSUER=$(< "${TARGET_DIR}/demo_issuer/loyalty.issuer.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_LOYALTY_ISSUER
+DEMO_ISSUER_KEY_LOYALTY_TSL=$(< "${TARGET_DIR}/demo_issuer/loyalty.tsl.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_LOYALTY_TSL
+DEMO_ISSUER_CRT_LOYALTY_TSL=$(< "${TARGET_DIR}/demo_issuer/loyalty.tsl.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_LOYALTY_TSL
+
+generate_demo_issuer_issuance_key_pairs museum_maandkaart
+DEMO_ISSUER_KEY_MUSEUM_MAANDKAART_ISSUER=$(< "${TARGET_DIR}/demo_issuer/museum_maandkaart.issuer.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_MUSEUM_MAANDKAART_ISSUER
+DEMO_ISSUER_CRT_MUSEUM_MAANDKAART_ISSUER=$(< "${TARGET_DIR}/demo_issuer/museum_maandkaart.issuer.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_MUSEUM_MAANDKAART_ISSUER
+DEMO_ISSUER_KEY_MUSEUM_MAANDKAART_TSL=$(< "${TARGET_DIR}/demo_issuer/museum_maandkaart.tsl.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_MUSEUM_MAANDKAART_TSL
+DEMO_ISSUER_CRT_MUSEUM_MAANDKAART_TSL=$(< "${TARGET_DIR}/demo_issuer/museum_maandkaart.tsl.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_MUSEUM_MAANDKAART_TSL
+
+generate_demo_issuer_issuance_key_pairs mdl
+DEMO_ISSUER_KEY_MDL_ISSUER=$(< "${TARGET_DIR}/demo_issuer/mdl.issuer.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_MDL_ISSUER
+DEMO_ISSUER_CRT_MDL_ISSUER=$(< "${TARGET_DIR}/demo_issuer/mdl.issuer.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_MDL_ISSUER
+DEMO_ISSUER_KEY_MDL_TSL=$(< "${TARGET_DIR}/demo_issuer/mdl.tsl.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_MDL_TSL
+DEMO_ISSUER_CRT_MDL_TSL=$(< "${TARGET_DIR}/demo_issuer/mdl.tsl.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_MDL_TSL
+
+generate_demo_issuer_issuance_key_pairs mvc
+DEMO_ISSUER_KEY_MVC_ISSUER=$(< "${TARGET_DIR}/demo_issuer/mvc.issuer.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_MVC_ISSUER
+DEMO_ISSUER_CRT_MVC_ISSUER=$(< "${TARGET_DIR}/demo_issuer/mvc.issuer.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_MVC_ISSUER
+DEMO_ISSUER_KEY_MVC_TSL=$(< "${TARGET_DIR}/demo_issuer/mvc.tsl.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_MVC_TSL
+DEMO_ISSUER_CRT_MVC_TSL=$(< "${TARGET_DIR}/demo_issuer/mvc.tsl.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_MVC_TSL
+
+generate_demo_issuer_key_pairs dezi
+DEMO_ISSUER_KEY_DEZI_ISSUER=$(< "${TARGET_DIR}/demo_issuer/dezi.issuer.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_DEZI_ISSUER
+DEMO_ISSUER_CRT_DEZI_ISSUER=$(< "${TARGET_DIR}/demo_issuer/dezi.issuer.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_DEZI_ISSUER
+DEMO_ISSUER_KEY_DEZI_TSL=$(< "${TARGET_DIR}/demo_issuer/dezi.tsl.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_DEZI_TSL
+DEMO_ISSUER_CRT_DEZI_TSL=$(< "${TARGET_DIR}/demo_issuer/dezi.tsl.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_DEZI_TSL
+DEMO_ISSUER_KEY_DEZI_WRPAC=$(< "${TARGET_DIR}/demo_issuer/dezi.wrpac.key.der" ${BASE64})
+export DEMO_ISSUER_KEY_DEZI_WRPAC
+DEMO_ISSUER_CRT_DEZI_WRPAC=$(< "${TARGET_DIR}/demo_issuer/dezi.wrpac.crt.der" ${BASE64})
+export DEMO_ISSUER_CRT_DEZI_WRPAC
+generate_demo_issuer_disclosure_registration_certificate dezi 11
+DEMO_ISSUER_REGISTRATION_CERTIFICATE_DEZI=$(< "${TARGET_DIR}/demo_issuer/dezi.wrprc")
+export DEMO_ISSUER_REGISTRATION_CERTIFICATE_DEZI
+DEMO_ISSUER_CLIENT_ID_DEZI="x509_hash:$(openssl dgst -sha256 -binary "${TARGET_DIR}/demo_issuer/dezi.wrpac.crt.der" | base64_url_encode)"
+export DEMO_ISSUER_CLIENT_ID_DEZI
+
+# Each issuance service publishes a WRPRC bound to its metadata-signing WRPAC.
+generate_issuance_registration_certificate pid 7 \
+    "${TARGET_DIR}/pid_issuer/wrpac.crt.pem" "${TARGET_DIR}/pid_issuer/issuance" PID_Provider
+PID_ISSUER_REGISTRATION_CERTIFICATE=$(< "${TARGET_DIR}/pid_issuer/issuance.wrprc")
+export PID_ISSUER_REGISTRATION_CERTIFICATE
+
+# Generate credential request encryption private keys for each of the demo issuers
+generate_credential_request_encryption_private_key demo_issuer issuance_server
+generate_credential_request_encryption_private_key demo_issuer acf_demo_issuer
+generate_credential_request_encryption_private_key demo_issuer pacf_issuance_server
+
+ISSUANCE_SERVER_CREDENTIAL_REQUEST_ENCRYPTION_KEY=$(< "${TARGET_DIR}/demo_issuer/issuance_server_credential_request_encryption.key.der" ${BASE64})
+export ISSUANCE_SERVER_CREDENTIAL_REQUEST_ENCRYPTION_KEY
+
+ACF_DEMO_ISSUER_CREDENTIAL_REQUEST_ENCRYPTION_KEY=$(< "${TARGET_DIR}/demo_issuer/acf_demo_issuer_credential_request_encryption.key.der" ${BASE64})
+export ACF_DEMO_ISSUER_CREDENTIAL_REQUEST_ENCRYPTION_KEY
+
+PACF_ISSUANCE_SERVER_CREDENTIAL_REQUEST_ENCRYPTION_KEY=$(< "${TARGET_DIR}/demo_issuer/pacf_issuance_server_credential_request_encryption.key.der" ${BASE64})
+export PACF_ISSUANCE_SERVER_CREDENTIAL_REQUEST_ENCRYPTION_KEY
+
+# The shared demo issuance services have their own identities, separate from the demo organizations.
+generate_demo_issuer_issuance_key_pair issuance_server wrpac
+ISSUANCE_SERVER_WRPAC_KEY=$(< "${TARGET_DIR}/demo_issuer/issuance_server.wrpac.key.der" ${BASE64})
+export ISSUANCE_SERVER_WRPAC_KEY
+ISSUANCE_SERVER_WRPAC_CRT=$(< "${TARGET_DIR}/demo_issuer/issuance_server.wrpac.crt.der" ${BASE64})
+export ISSUANCE_SERVER_WRPAC_CRT
+generate_issuance_registration_certificate issuance_server 8 \
+    "${TARGET_DIR}/demo_issuer/issuance_server.wrpac.crt.pem" "${TARGET_DIR}/demo_issuer/issuance_server.issuance"
+ISSUANCE_SERVER_REGISTRATION_CERTIFICATE=$(< "${TARGET_DIR}/demo_issuer/issuance_server.issuance.wrprc")
+export ISSUANCE_SERVER_REGISTRATION_CERTIFICATE
+
+generate_demo_issuer_issuance_key_pair acf_demo_issuer wrpac
+ACF_DEMO_ISSUER_WRPAC_KEY=$(< "${TARGET_DIR}/demo_issuer/acf_demo_issuer.wrpac.key.der" ${BASE64})
+export ACF_DEMO_ISSUER_WRPAC_KEY
+ACF_DEMO_ISSUER_WRPAC_CRT=$(< "${TARGET_DIR}/demo_issuer/acf_demo_issuer.wrpac.crt.der" ${BASE64})
+export ACF_DEMO_ISSUER_WRPAC_CRT
+generate_issuance_registration_certificate acf_demo_issuer 9 \
+    "${TARGET_DIR}/demo_issuer/acf_demo_issuer.wrpac.crt.pem" "${TARGET_DIR}/demo_issuer/acf_demo_issuer.issuance"
+ACF_DEMO_ISSUER_REGISTRATION_CERTIFICATE=$(< "${TARGET_DIR}/demo_issuer/acf_demo_issuer.issuance.wrprc")
+export ACF_DEMO_ISSUER_REGISTRATION_CERTIFICATE
+
+generate_demo_issuer_issuance_key_pair pacf_issuance_server wrpac
+PACF_ISSUANCE_SERVER_WRPAC_KEY=$(< "${TARGET_DIR}/demo_issuer/pacf_issuance_server.wrpac.key.der" ${BASE64})
+export PACF_ISSUANCE_SERVER_WRPAC_KEY
+PACF_ISSUANCE_SERVER_WRPAC_CRT=$(< "${TARGET_DIR}/demo_issuer/pacf_issuance_server.wrpac.crt.der" ${BASE64})
+export PACF_ISSUANCE_SERVER_WRPAC_CRT
+generate_issuance_registration_certificate pacf_issuance_server 10 \
+    "${TARGET_DIR}/demo_issuer/pacf_issuance_server.wrpac.crt.pem" "${TARGET_DIR}/demo_issuer/pacf_issuance_server.issuance"
+PACF_ISSUANCE_SERVER_REGISTRATION_CERTIFICATE=$(< "${TARGET_DIR}/demo_issuer/pacf_issuance_server.issuance.wrprc")
+export PACF_ISSUANCE_SERVER_REGISTRATION_CERTIFICATE
 
 render_template "${DEVENV}/demo_issuer.json.template" "${DEMO_ISSUER_DIR}/demo_issuer.json"
 
 
 # Generate relying party ephemeral ID secret
-generate_ws_random_key ephemeral_id_secret
-DEMO_RP_VERIFICATION_SERVER_EPHEMERAL_ID_SECRET=$(< "${TARGET_DIR}/demo_relying_party/ephemeral_id_secret.key" xxd -p | tr -d '\n')
+DEMO_RP_VERIFICATION_SERVER_EPHEMERAL_ID_SECRET=$(openssl rand -hex 64 | tr -d '\n')
 export DEMO_RP_VERIFICATION_SERVER_EPHEMERAL_ID_SECRET
 
 render_template "${DEVENV}/demo_index.toml.template" "${DEMO_INDEX_DIR}/demo_index.toml"
 
 # Copy the Technical Attestation Schemas
-cp "${DEVENV}/eudi:pid:1.json" "${DEVENV}/eudi:pid:nl:1.json" "${DEVENV}/eudi:pid-address:1.json" "${DEVENV}/eudi:pid-address:nl:1.json" "${PID_ISSUER_DIR}"
-cp "${DEVENV}/eudi:pid:1.json" "${DEVENV}/eudi:pid:nl:1.json" "${DEVENV}/eudi:pid-address:1.json" "${DEVENV}/eudi:pid-address:nl:1.json" "${DEVENV}/com.example.degree.json" "${DEVENV}/com.example.insurance.json" "${DEVENV}/com.example.housing.json" "${BASE_DIR}/wallet_core/tests_integration"
-cp "${DEVENV}/com.example.degree.json" "${DEVENV}/com.example.insurance.json" "${DEVENV}/com.example.housing.json" "${ISSUANCE_SERVER_DIR}"
-export ISSUER_METADATA_PID_PATH="eudi:pid:1.json"
-export ISSUER_METADATA_PID_NL_PATH="eudi:pid:nl:1.json"
-export ISSUER_METADATA_ADDRESS_PATH="eudi:pid-address:1.json"
-export ISSUER_METADATA_ADDRESS_NL_PATH="eudi:pid-address:nl:1.json"
+cp "${DEVENV}/eudi_pid_1.json" "${DEVENV}/eudi_pid_nl_1.json" "${DEVENV}/eu.europa.ec.eudi.pid.1.json" "${PID_ISSUER_DIR}"
+cp "${DEVENV}/eudi_pid_1.json" "${DEVENV}/eudi_pid_nl_1.json" "${DEVENV}/eu.europa.ec.eudi.pid.1.json" "${DEVENV}/com.example.degree.json" "${DEVENV}/com.example.insurance.mdoc.json" "${DEVENV}/com.example.housing.json" "${DEVENV}/dezi_verklaring.json" "${BASE_DIR}/wallet_core/tests_integration"
+cp "${DEVENV}/com.example.degree.json" "${DEVENV}/com.example.housing.json" "${DEVENV}/dezi_verklaring.json" "${ISSUANCE_SERVER_DIR}"
+cp "${DEVENV}/com.example.museum_maandkaart.mdoc.json" "${DEVENV}/org.iso.18013.5.1.mDL.mdoc.json" "${DEVENV}/org.iso.7367.2.1.mVC.mdoc.json" "${PACF_ISSUANCE_SERVER_DIR}"
+cp "${DEVENV}/com.example.jum.bonuskaart.sd_jwt.json" "${DEVENV}/com.example.museum_maandkaart.mdoc.json" "${DEVENV}/org.iso.18013.5.1.mDL.mdoc.json" "${DEVENV}/org.iso.7367.2.1.mVC.mdoc.json" "${BASE_DIR}/wallet_core/tests_integration"
+cp "${DEVENV}/com.example.insurance.mdoc.json" "${DEVENV}/com.example.jum.bonuskaart.sd_jwt.json" "${ACF_DEMO_ISSUER_DIR}"
+export ISSUER_METADATA_PID_PATH="eudi_pid_1.json"
+export ISSUER_METADATA_PID_NL_PATH="eudi_pid_nl_1.json"
 export ISSUER_METADATA_DEGREE_PATH="com.example.degree.json"
-export ISSUER_METADATA_INSURANCE_PATH="com.example.insurance.json"
 export ISSUER_METADATA_HOUSING_PATH="com.example.housing.json"
+export ISSUER_METADATA_DEZI_PATH="dezi_verklaring.json"
 
 # And the demo RP's verification_server config
 render_template "${DEVENV}/demo_rp_verification_server.toml.template" "${VERIFICATION_SERVER_DIR}/verification_server.toml"
@@ -411,16 +710,33 @@ render_template "${DEVENV}/pid_issuer.toml.template" "${BASE_DIR}/wallet_core/te
 render_template "${DEVENV}/demo_issuer_issuance_server.toml.template" "${ISSUANCE_SERVER_DIR}/issuance_server.toml"
 render_template "${DEVENV}/demo_issuer_issuance_server.toml.template" "${BASE_DIR}/wallet_core/tests_integration/issuance_server.toml"
 
-# And the status_lists config for crate level integration test
-render_template "${DEVENV}/status_lists.toml.template" "${STATUS_LISTS_DIR}/status_lists.toml"
+# And the pacf_issuance_server config
+render_template "${DEVENV}/demo_issuer_pacf_issuance_server.toml.template" "${PACF_ISSUANCE_SERVER_DIR}/pacf_issuance_server.toml"
+render_template "${DEVENV}/demo_issuer_pacf_issuance_server.toml.template" "${BASE_DIR}/wallet_core/tests_integration/pacf_issuance_server.toml"
+
+# And the acf_demo_issuer config
+render_template "${DEVENV}/acf_demo_issuer.toml.template" "${ACF_DEMO_ISSUER_DIR}/acf_demo_issuer.toml"
+render_template "${DEVENV}/acf_demo_issuer.toml.template" "${BASE_DIR}/wallet_core/tests_integration/acf_demo_issuer.toml"
 
 # Ensure the status_lists dirs exists
-mkdir -p "${ISSUANCE_SERVER_DIR}/resources/status-lists"
-mkdir -p "${PID_ISSUER_DIR}/resources/status-lists"
-mkdir -p "${WP_DIR}/resources/status-lists"
-mkdir -p "${BASE_DIR}/wallet_core/tests_integration/resources/status-lists"
+mkdir -p "${WALLET_CORE_DIR}/target/status-lists/wallet_provider"
+mkdir -p "${WALLET_CORE_DIR}/target/status-lists/pid_issuer"
+mkdir -p "${WALLET_CORE_DIR}/target/status-lists/issuance_server"
+mkdir -p "${WALLET_CORE_DIR}/target/status-lists/pacf_issuance_server"
+mkdir -p "${WALLET_CORE_DIR}/target/status-lists/acf_demo_issuer"
+mkdir -p "${WALLET_CORE_DIR}/target/status-lists/wrprc"
+
+# All thirteen demo WRPRCs are valid. The TTL is a cache hint and does not expire the token.
+cargo run --manifest-path "${BASE_DIR}"/wallet_core/Cargo.toml --bin wallet_ca status-list \
+    --tsl-key-file "${TARGET_DIR}/wrprc_tsl.key.pem" \
+    --tsl-crt-file "${TARGET_DIR}/wrprc_tsl.crt.pem" \
+    --uri "${WRPRC_STATUS_LIST_URI}" \
+    --status valid valid valid valid valid valid valid valid valid valid valid valid valid \
+    --ttl-seconds 3600 \
+    > "${WALLET_CORE_DIR}/target/status-lists/wrprc/1.jwt"
 
 render_template "${DEVENV}/performance_test.env" "${BASE_DIR}/wallet_core/tests_integration/.env"
+
 
 ########################################################################
 # Configure update-policy-server
@@ -473,20 +789,39 @@ export WALLET_PROVIDER_SERVER_CERT
 WALLET_PROVIDER_SERVER_KEY=$(< "${TARGET_DIR}/wallet_provider/wallet_provider.key.der" ${BASE64})
 export WALLET_PROVIDER_SERVER_KEY
 
-generate_wp_signing_key certificate_signing
-export WP_CERTIFICATE_SIGNING_KEY_PATH="${TARGET_DIR}/wallet_provider/certificate_signing.pem"
-WP_CERTIFICATE_PUBLIC_KEY=$(< "${TARGET_DIR}/wallet_provider/certificate_signing.pub.der" ${BASE64})
+WP_CERTIFICATE_KID=0
+export WP_CERTIFICATE_KID
+
+WP_CERTIFICATE_USED_FROM="$(date +%s)"
+export WP_CERTIFICATE_USED_FROM
+
+generate_wp_signing_key wallet_certificate_signing_${WP_CERTIFICATE_KID}
+
+# Generate a second certificate signing key to support rollover testing
+generate_wp_signing_key wallet_certificate_signing_1
+WP_CERTIFICATE_PUBLIC_KEY=$(< "${TARGET_DIR}/wallet_provider/wallet_certificate_signing_${WP_CERTIFICATE_KID}.pub.der" ${BASE64})
 export WP_CERTIFICATE_PUBLIC_KEY
 
-generate_wp_signing_key instruction_result_signing
-export WP_INSTRUCTION_RESULT_SIGNING_KEY_PATH="${TARGET_DIR}/wallet_provider/instruction_result_signing.pem"
-WP_INSTRUCTION_RESULT_PUBLIC_KEY=$(< "${TARGET_DIR}/wallet_provider/instruction_result_signing.pub.der" ${BASE64})
+WP_INSTRUCTION_RESULT_KID=0
+export WP_INSTRUCTION_RESULT_KID
+
+generate_wp_signing_key instruction_result_signing_${WP_INSTRUCTION_RESULT_KID}
+
+# Generate a second instruction result signing key to support rollover testing
+generate_wp_signing_key instruction_result_signing_1
+WP_INSTRUCTION_RESULT_PUBLIC_KEY=$(< "${TARGET_DIR}/wallet_provider/instruction_result_signing_${WP_INSTRUCTION_RESULT_KID}.pub.der" ${BASE64})
 export WP_INSTRUCTION_RESULT_PUBLIC_KEY
 
-generate_wp_random_key attestation_wrapping
+WP_ATTESTATION_WRAPPING_KID=0
+export WP_ATTESTATION_WRAPPING_KID
+
+generate_wp_aes_key attestation_wrapping
 export WP_ATTESTATION_WRAPPING_KEY_PATH="${TARGET_DIR}/wallet_provider/attestation_wrapping.key"
 
-generate_wp_random_key pin_pubkey_encryption
+WP_PIN_PUBKEY_ENCRYPTION_KID=0
+export WP_PIN_PUBKEY_ENCRYPTION_KID
+
+generate_wp_aes_key pin_pubkey_encryption
 export WP_PIN_PUBKEY_ENCRYPTION_KEY_PATH="${TARGET_DIR}/wallet_provider/pin_pubkey_encryption.key"
 
 APPLE_ROOT_CA=$(openssl x509 -in "${SCRIPTS_DIR}/../wallet_core/lib/apple_app_attest/assets/Apple_App_Attestation_Root_CA.pem" -outform DER | ${BASE64})
@@ -496,70 +831,88 @@ MOCK_APPLE_ROOT_CA=$(openssl x509 -in "${SCRIPTS_DIR}/../wallet_core/lib/apple_a
 export MOCK_APPLE_ROOT_CA
 
 # Source: https://developer.android.com/privacy-and-security/security-key-attestation#root_certificate
-ANDROID_ROOT_PUBKEY=$(openssl rsa -pubin -in "${SCRIPTS_DIR}/../wallet_core/lib/android_attest/assets/google_hardware_attestation_root_pubkey.pem" -outform DER | ${BASE64})
-export ANDROID_ROOT_PUBKEY
+ANDROID_ROOT_RSA_PUBKEY=$(openssl rsa -pubin -in "${SCRIPTS_DIR}/../wallet_core/lib/android_attest/assets/google_hardware_attestation_root_rsa_pubkey.pem" -outform DER | ${BASE64})
+export ANDROID_ROOT_RSA_PUBKEY
+ANDROID_ROOT_EC_PUBKEY=$(openssl ec -pubin -in "${SCRIPTS_DIR}/../wallet_core/lib/android_attest/assets/google_hardware_attestation_root_ec_pubkey.pem" -outform DER | ${BASE64})
+export ANDROID_ROOT_EC_PUBKEY
 
-# Source: repository https://android.googlesource.com/platform/hardware/interfaces, file security/keymint/aidl/default/ta/attest.rs, variable EC_ATTEST_ROOT_CERT
-ANDROID_EMULATOR_EC_ROOT_PUBKEY=$(openssl ec -pubin -in "${SCRIPTS_DIR}/../wallet_core/lib/android_attest/assets/android_emulator_ec_root_pubkey.pem" -outform DER | ${BASE64})
-export ANDROID_EMULATOR_EC_ROOT_PUBKEY
+WALLET_VERSION=$(grep '^version:' "${BASE_DIR}/wallet_app/pubspec.yaml" | awk '{print $2}')
+export WALLET_VERSION
 
-# Source: repository https://android.googlesource.com/platform/hardware/interfaces, file security/keymint/aidl/default/ta/attest.rs, variable RSA_ATTEST_ROOT_CERT
-ANDROID_EMULATOR_RSA_ROOT_PUBKEY=$(openssl rsa -pubin -in "${SCRIPTS_DIR}/../wallet_core/lib/android_attest/assets/android_emulator_rsa_root_pubkey.pem" -outform DER | ${BASE64})
-export ANDROID_EMULATOR_RSA_ROOT_PUBKEY
+KEYCLOAK_CA_CRT=$(< "${DEVENV}/keycloak/certs/ca.crt.der" ${BASE64})
+export KEYCLOAK_CA_CRT
 
 render_template "${DEVENV}/wallet_provider.toml.template" "${WP_DIR}/wallet_provider.toml"
 render_template "${DEVENV}/wallet_provider.toml.template" "${BASE_DIR}/wallet_core/tests_integration/wallet_provider.toml"
 
-# Database settings for wallet_provider crate level integration tests
-render_template "${DEVENV}/wallet_provider_database_settings.toml.template" "${WP_DIR}/persistence/wallet_provider_database_settings.toml"
-render_template "${DEVENV}/wallet_provider_database_settings.toml.template" "${WP_DIR}/service/wallet_provider_database_settings.toml"
+# Exported once, so that every wallet configuration rendered below is given exactly the same expiry.
+WALLET_CONFIG_EXP="$(wallet_config_exp)"
+export WALLET_CONFIG_EXP
 
 render_template "${DEVENV}/wallet-config.json.template" "${TARGET_DIR}/wallet-config.json"
 
 ########################################################################
-# Configure HSM
+# Import secret keys into HSM
 ########################################################################
 
-softhsm2-util --import "${WP_CERTIFICATE_SIGNING_KEY_PATH}" --pin "${HSM_USER_PIN}" --id "$(echo -n "certificate_signing" | xxd -p)" --label "certificate_signing_key" --token "test_token"
-softhsm2-util --import "${WP_WUA_SIGNING_KEY_PATH}" --pin "${HSM_USER_PIN}" --id "$(echo -n "wua_signing" | xxd -p)" --label "wua_signing_key" --token "test_token"
-softhsm2-util --import "${WP_INSTRUCTION_RESULT_SIGNING_KEY_PATH}" --pin "${HSM_USER_PIN}" --id "$(echo -n "instruction_result_signing" | xxd -p)" --label "instruction_result_signing_key" --token "test_token"
-softhsm2-util --import "${WP_ATTESTATION_WRAPPING_KEY_PATH}" --aes --pin "${HSM_USER_PIN}" --id "$(echo -n "attestation_wrapping" | xxd -p)" --label "attestation_wrapping_key" --token "test_token"
-softhsm2-util --import "${WP_PIN_PUBKEY_ENCRYPTION_KEY_PATH}" --aes --pin "${HSM_USER_PIN}" --id "$(echo -n "pin_pubkey_encryption" | xxd -p)" --label "pin_pubkey_encryption_key" --token "test_token"
+softhsm2-util --import "${WP_ATTESTATION_WRAPPING_KEY_PATH}" --aes --pin "${HSM_USER_PIN}" --id "$(echo -n "attestation_wrapping" | xxd -p)" --label "attestation_wrapping_${WP_ATTESTATION_WRAPPING_KID}" --token "${HSM_TOKEN}"
+softhsm2-util --import "${WP_PIN_PUBKEY_ENCRYPTION_KEY_PATH}" --aes --pin "${HSM_USER_PIN}" --id "$(echo -n "pin_pubkey_encryption" | xxd -p)" --label "pin_pubkey_encryption_${WP_PIN_PUBKEY_ENCRYPTION_KID}" --token "${HSM_TOKEN}"
 
 p11tool --login --write \
-  --secret-key="$(openssl rand 32 | od -A n -v -t x1 | tr -d ' \n')" \
+  --secret-key="$(openssl rand -hex 32 | tr -d '\n')" \
   --set-pin "${HSM_USER_PIN}" \
-  --label="pin_public_disclosure_protection_key" \
+  --label="pin_hmac_${WP_CERTIFICATE_KID}" \
   --provider="${HSM_LIBRARY_PATH}" \
-  "$(p11tool --list-token-urls --provider="${HSM_LIBRARY_PATH}" | grep "SoftHSM")"
+  "${HSM_TOKEN_URL}"
+
+# Generate a second pin HMAC key to support rollover testing
+p11tool --login --write \
+  --secret-key="$(openssl rand -hex 32 | tr -d '\n')" \
+  --set-pin "${HSM_USER_PIN}" \
+  --label="pin_hmac_1" \
+  --provider="${HSM_LIBRARY_PATH}" \
+  "${HSM_TOKEN_URL}"
+
+p11tool --login --write \
+  --secret-key="$(openssl rand -hex 32 | tr -d '\n')" \
+  --set-pin "${HSM_USER_PIN}" \
+  --label="revocation_code_key" \
+  --provider="${HSM_LIBRARY_PATH}" \
+  "${HSM_TOKEN_URL}"
 
 ########################################################################
-# Configure configuration-server
+# Configure static-server
 ########################################################################
 
 echo
-echo -e "${SECTION}Configure configuration-server${NC}"
+echo -e "${SECTION}Configure static-server${NC}"
 
 cd "${BASE_DIR}"
 
-# Generate or re-use CA for configuration-server
-generate_or_reuse_root_ca "${TARGET_DIR}/configuration_server" "nl-wallet-configuration-server"
+# Generate or re-use CA for static-server
+generate_or_reuse_root_ca "${TARGET_DIR}/static_server" "nl-wallet-static-server"
 
-generate_ssl_key_pair_with_san "${TARGET_DIR}/configuration_server" config_server "${TARGET_DIR}/configuration_server/ca.crt.pem" "${TARGET_DIR}/configuration_server/ca.key.pem"
+generate_ssl_key_pair_with_san "${TARGET_DIR}/static_server" static_server "${TARGET_DIR}/static_server/ca.crt.pem" "${TARGET_DIR}/static_server/ca.key.pem"
 
-ln -sf "${TARGET_DIR}/configuration_server/ca.crt.der" "${BASE_DIR}/wallet_core/tests_integration/cs.ca.crt.der"
-CONFIG_SERVER_CA_CRT=$(< "${TARGET_DIR}/configuration_server/ca.crt.der" ${BASE64})
-export CONFIG_SERVER_CA_CRT
-CONFIG_SERVER_CERT=$(< "${TARGET_DIR}/configuration_server/config_server.crt.der" ${BASE64})
-export CONFIG_SERVER_CERT
-CONFIG_SERVER_KEY=$(< "${TARGET_DIR}/configuration_server/config_server.key.der" ${BASE64})
-export CONFIG_SERVER_KEY
+ln -sf "${TARGET_DIR}/static_server/ca.crt.der" "${BASE_DIR}/wallet_core/tests_integration/static.ca.crt.der"
 
-generate_wp_signing_key config_signing
+# Make the CA certificate for the static server available inside Android too.
+# This enables things like Exo Player to talk HTTPS without untrusted cert errors.
+mkdir -p "${BASE_DIR}/wallet_app/android/app/src/devenv/res/raw"
+cp "${TARGET_DIR}/static_server/ca.crt.pem" "${BASE_DIR}/wallet_app/android/app/src/devenv/res/raw/devenv_static_ca.pem"
+
+STATIC_SERVER_CA_CRT=$(< "${TARGET_DIR}/static_server/ca.crt.der" ${BASE64})
+export STATIC_SERVER_CA_CRT
+STATIC_SERVER_CERT=$(< "${TARGET_DIR}/static_server/static_server.crt.der" ${BASE64})
+export STATIC_SERVER_CERT
+STATIC_SERVER_KEY=$(< "${TARGET_DIR}/static_server/static_server.key.der" ${BASE64})
+export STATIC_SERVER_KEY
+
+generate_config_signing_key_pair
 CONFIG_SIGNING_PUBLIC_KEY=$(< "${TARGET_DIR}/wallet_provider/config_signing.pub.der" ${BASE64})
 export CONFIG_SIGNING_PUBLIC_KEY
 
-BASE64_JWS_HEADER=$(echo -n '{"typ":"jwt","alg":"ES256"}' | base64_url_encode)
+BASE64_JWS_HEADER=$(echo -n '{"typ":"jwt","alg":"ES256","kid":"0"}' | base64_url_encode)
 BASE64_JWS_PAYLOAD=$(jq --compact-output --join-output "." "${TARGET_DIR}/wallet-config.json" | base64_url_encode)
 BASE64_JWS_SIGNING_INPUT="${BASE64_JWS_HEADER}.${BASE64_JWS_PAYLOAD}"
 DER_SIGNATURE=$(echo -n "$BASE64_JWS_SIGNING_INPUT" \
@@ -576,8 +929,23 @@ cp "${TARGET_DIR}/wallet_provider/config_signing.pem" "${BASE_DIR}/wallet_core/t
 WALLET_CONFIG_JWT=$(< "${TARGET_DIR}/wallet-config-jws-compact.txt")
 export WALLET_CONFIG_JWT
 
-render_template "${DEVENV}/config_server.toml.template" "${CS_DIR}/config_server.toml"
-cp "${CS_DIR}/config_server.toml" "${BASE_DIR}/wallet_core/tests_integration/config_server.toml"
+render_template "${DEVENV}/static_server.toml.template" "${STATIC_SERVER_DIR}/static_server.toml"
+cp "${STATIC_SERVER_DIR}/static_server.toml" "${BASE_DIR}/wallet_core/tests_integration/static_server.toml"
+
+
+########################################################################
+# Configure revocation_portal
+########################################################################
+
+REVOCATION_PORTAL_COOKIE_ENCRYPTION_KEY=$(openssl rand -hex 64)
+export REVOCATION_PORTAL_COOKIE_ENCRYPTION_KEY
+
+# Salt used for hashing the CSRF key for use in the HTML form
+REVOCATION_PORTAL_CSRF_COOKIE_SALT=$(openssl rand -hex 32 | tr -d '\n')
+export REVOCATION_PORTAL_CSRF_COOKIE_SALT
+
+render_template "${DEVENV}/revocation_portal.toml.template" "${REVOCATION_PORTAL_DIR}/revocation_portal.toml"
+
 
 ########################################################################
 # Configure gba-hc-converter

@@ -4,20 +4,19 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 
 use aes_gcm::Aes256Gcm;
+use aes_gcm::Key;
 use aes_gcm::aead::KeyInit;
+use crypto::keys::EcdsaKey;
+use crypto::keys::EncryptionKey;
+use crypto::keys::SecureEcdsaKey;
+use crypto::keys::SecureEncryptionKey;
 use derive_more::Debug;
 use p256::ecdsa::Signature;
 use p256::ecdsa::SigningKey;
 use p256::ecdsa::VerifyingKey;
 use p256::ecdsa::signature::Signer;
+use p256::elliptic_curve::Generate;
 use parking_lot::Mutex;
-use rand_core::OsRng;
-
-use crypto::keys::EcdsaKey;
-use crypto::keys::EncryptionKey;
-use crypto::keys::SecureEcdsaKey;
-use crypto::keys::SecureEncryptionKey;
-use crypto::keys::WithIdentifier;
 
 use super::PlatformEcdsaKey;
 use super::PlatformEncryptionKey;
@@ -30,7 +29,7 @@ static ENCRYPTION_CIPHERS: LazyLock<Mutex<HashMap<String, Arc<Aes256Gcm>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// To be used in tests in place of `HardwareEcdsaKey`. It implements the [`EcdsaKey`],
-/// [`SecureEcdsaKey`], [`WithIdentifier`] and [`StoredByIdentifier`] traits, mocking
+/// [`SecureEcdsaKey`], [`PlatformEcdsaKey`] and [`StoredByIdentifier`] traits, mocking
 /// the behaviour of keys that are stored in secure hardware on a device.
 #[derive(Debug)]
 pub struct MockHardwareEcdsaKey {
@@ -62,12 +61,6 @@ impl EcdsaKey for MockHardwareEcdsaKey {
 }
 impl SecureEcdsaKey for MockHardwareEcdsaKey {}
 
-impl WithIdentifier for MockHardwareEcdsaKey {
-    fn identifier(&self) -> &str {
-        &self.identifier
-    }
-}
-
 impl StoredByIdentifier for MockHardwareEcdsaKey {
     type Error = Infallible;
 
@@ -87,7 +80,7 @@ impl StoredByIdentifier for MockHardwareEcdsaKey {
         // Otherwise, increment the reference count or create a new random key
         // and insert it into the static hashmap.
         let key = maybe_key.map(Arc::clone).unwrap_or_else(|| {
-            let signing_key = SigningKey::random(&mut OsRng).into();
+            let signing_key = SigningKey::generate().into();
 
             signing_keys.insert(identifier.to_string(), Arc::clone(&signing_key));
 
@@ -111,7 +104,7 @@ impl StoredByIdentifier for MockHardwareEcdsaKey {
 impl PlatformEcdsaKey for MockHardwareEcdsaKey {}
 
 /// To be used in tests in place of `HardwareEncryptionKey`. It implements the [`EncryptionKey`],
-/// [`SecureEncryptionKey`], [`WithIdentifier`] and [`StoredByIdentifier`] traits, mocking
+/// [`SecureEncryptionKey`], [`PlatformEncryptionKey`] and [`StoredByIdentifier`] traits, mocking
 /// the behaviour of keys that are stored in secure hardware on a device.
 #[derive(Debug)]
 pub struct MockHardwareEncryptionKey {
@@ -124,7 +117,7 @@ impl MockHardwareEncryptionKey {
     pub fn new_random(identifier: String) -> Self {
         Self {
             identifier,
-            cipher: Arc::new(Aes256Gcm::new(&Aes256Gcm::generate_key(&mut OsRng))),
+            cipher: Arc::new(Aes256Gcm::new(&Key::<Aes256Gcm>::generate())),
         }
     }
 
@@ -149,12 +142,6 @@ impl EncryptionKey for MockHardwareEncryptionKey {
 
 impl SecureEncryptionKey for MockHardwareEncryptionKey {}
 
-impl WithIdentifier for MockHardwareEncryptionKey {
-    fn identifier(&self) -> &str {
-        &self.identifier
-    }
-}
-
 impl StoredByIdentifier for MockHardwareEncryptionKey {
     type Error = Infallible;
 
@@ -174,7 +161,7 @@ impl StoredByIdentifier for MockHardwareEncryptionKey {
         // Otherwise, increment the reference count or create a new random cipher
         // and insert it into the static hashmap.
         let cipher = maybe_cipher.map(Arc::clone).unwrap_or_else(|| {
-            let encryption_cipher = Aes256Gcm::new(&Aes256Gcm::generate_key(&mut OsRng)).into();
+            let encryption_cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::generate()).into();
 
             encryption_ciphers.insert(identifier.to_string(), Arc::clone(&encryption_cipher));
 

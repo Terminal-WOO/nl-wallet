@@ -28,6 +28,14 @@ class IssuanceDataHelper {
         }
     }
 
+    fun getAttributeValues(issuerType: String, attribute: String): List<String> {
+        return candidateUseCaseKeys(issuerType).flatMap { key ->
+            val docs = useCases.optJSONObject(key)?.optJSONArray("data")
+                ?: return@flatMap emptyList()
+            collectAttributeValues(docs, attribute)
+        }
+    }
+
     private fun candidateUseCaseKeys(issuerType: String): List<String> =
         useCases.keys().asSequence()
             .filter { it == issuerType || it.startsWith("${issuerType}_") }
@@ -41,14 +49,33 @@ class IssuanceDataHelper {
             val attrs = doc.optJSONObject("attributes")
                 ?: throw Exception("Attribute object not found for doc $doc")
 
-            val value = attrs.opt(attribute)
+            val value = findAttribute(attrs, attribute)
                 ?: throw Exception("Attribute not found: $attribute")
             jsonValueToString(value)
         }
     }
 
+    /**
+     * Mdoc attributes are grouped per namespace, e.g. attributes."org.iso.18013.5.1".family_name, so look for the
+     * attribute in the nested groups as well when it is not present at the top level.
+     */
+    private fun findAttribute(attributes: JSONObject, attribute: String): Any? {
+        attributes.opt(attribute)?.let { return it }
+
+        for (key in attributes.keys()) {
+            val nested = attributes.optJSONObject(key)?.optJSONObject("value") ?: continue
+            findAttribute(nested, attribute)?.let { return it }
+        }
+        return null
+    }
+
     private fun jsonValueToString(value: Any): String {
         if (value === JSONObject.NULL) return l10n.getString("cardValueNull")
+        if (value is JSONObject) {
+            val inner = value.opt("value")
+                ?: throw Exception("Attribute object has no value: $value")
+            return jsonValueToString(inner)
+        }
         return value.toString()
     }
 }

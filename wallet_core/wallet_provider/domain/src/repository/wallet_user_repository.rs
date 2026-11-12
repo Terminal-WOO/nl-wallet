@@ -1,45 +1,82 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
+use apple_app_attest::AssertionCounter;
 use chrono::DateTime;
 use chrono::Utc;
+use hsm::model::encrypted::Encrypted;
+use hsm::model::wrapped_key::WrappedKey;
 use p256::ecdsa::VerifyingKey;
 use semver::Version;
 use uuid::Uuid;
-
-use apple_app_attest::AssertionCounter;
-use hsm::model::encrypted::Encrypted;
-use hsm::model::wrapped_key::WrappedKey;
-
-use crate::model::wallet_user::InstructionChallenge;
-use crate::model::wallet_user::TransferSession;
-use crate::model::wallet_user::WalletUserCreate;
-use crate::model::wallet_user::WalletUserKeys;
-use crate::model::wallet_user::WalletUserPinRecoveryKeys;
-use crate::model::wallet_user::WalletUserQueryResult;
-use crate::model::wallet_user::WalletUserState;
+use wallet_account::messages::errors::RevocationReason;
 
 use super::errors::PersistenceError;
 use super::transaction::Committable;
+use crate::model::wallet_user::InstructionChallenge;
+use crate::model::wallet_user::RecoveryCode;
+use crate::model::wallet_user::RevokedWalletUsers;
+use crate::model::wallet_user::TransferSession;
+use crate::model::wallet_user::WalletId;
+use crate::model::wallet_user::WalletUserCreate;
+use crate::model::wallet_user::WalletUserIsRevoked;
+use crate::model::wallet_user::WalletUserKeys;
+use crate::model::wallet_user::WalletUserQueryResult;
+use crate::model::wallet_user::WalletUserState;
+use crate::model::wallet_user::WalletUserStateQueryResult;
+use crate::model::wallet_user::WithKid;
 
 type Result<T> = std::result::Result<T, PersistenceError>;
 
 pub trait WalletUserRepository {
     type TransactionType: Committable;
 
+    async fn list_wallet_user_ids(&self, transaction: &Self::TransactionType) -> Result<Vec<Uuid>>;
+
+    async fn list_wallets(&self, transaction: &Self::TransactionType) -> Result<Vec<WalletUserIsRevoked>>;
+
     async fn create_wallet_user(&self, transaction: &Self::TransactionType, user: WalletUserCreate) -> Result<Uuid>;
 
     async fn find_wallet_user_by_wallet_id(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
     ) -> Result<WalletUserQueryResult>;
 
-    async fn clear_instruction_challenge(&self, transaction: &Self::TransactionType, wallet_id: &str) -> Result<()>;
+    async fn find_wallet_user_state_by_wallet_id(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_id: &WalletId,
+    ) -> Result<WalletUserStateQueryResult>;
+
+    async fn find_wallet_user_id_by_wallet_ids(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_ids: &HashSet<WalletId>,
+    ) -> Result<HashMap<WalletId, Uuid>>;
+
+    async fn find_wallet_user_by_revocation_code(
+        &self,
+        transaction: &Self::TransactionType,
+        revocation_code_hmac: &[u8],
+    ) -> Result<WalletUserQueryResult>;
+
+    async fn find_wallet_user_ids_by_recovery_code(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: &RecoveryCode,
+    ) -> Result<Vec<Uuid>>;
+
+    async fn clear_instruction_challenge(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_id: &WalletId,
+    ) -> Result<()>;
 
     async fn update_instruction_challenge_and_sequence_number(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         challenge: InstructionChallenge,
         instruction_sequence_number: u64,
     ) -> Result<()>;
@@ -47,73 +84,101 @@ pub trait WalletUserRepository {
     async fn update_instruction_sequence_number(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         instruction_sequence_number: u64,
     ) -> Result<()>;
 
     async fn register_unsuccessful_pin_entry(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         is_blocked: bool,
         datetime: DateTime<Utc>,
     ) -> Result<()>;
 
-    async fn reset_unsuccessful_pin_entries(&self, transaction: &Self::TransactionType, wallet_id: &str) -> Result<()>;
+    async fn reset_unsuccessful_pin_entries(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_id: &WalletId,
+    ) -> Result<()>;
 
     async fn save_keys(&self, transaction: &Self::TransactionType, keys: WalletUserKeys) -> Result<()>;
 
-    async fn save_pin_recovery_keys(
-        &self,
-        transaction: &Self::TransactionType,
-        keys: WalletUserPinRecoveryKeys,
-    ) -> Result<()>;
-
-    async fn is_pin_recovery_key(
+    async fn is_blocked_key(
         &self,
         transaction: &Self::TransactionType,
         wallet_user_id: Uuid,
         key: VerifyingKey,
-    ) -> Result<bool>;
+    ) -> Result<Option<bool>>;
 
-    async fn find_keys_by_identifiers(
+    async fn delete_blocked_keys_in_batch(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+        key: VerifyingKey,
+    ) -> Result<()>;
+
+    async fn delete_all_blocked_keys(&self, transaction: &Self::TransactionType, wallet_user_id: Uuid) -> Result<()>;
+
+    async fn delete_keys(
         &self,
         transaction: &Self::TransactionType,
         wallet_user_id: Uuid,
         key_identifiers: &[String],
-    ) -> Result<HashMap<String, WrappedKey>>;
+    ) -> Result<()>;
+
+    async fn unblock_blocked_keys_in_batch(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+        key: VerifyingKey,
+    ) -> Result<()>;
+
+    async fn find_active_keys_by_identifiers(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+        key_identifiers: &[String],
+    ) -> Result<HashMap<String, WithKid<WrappedKey>>>;
 
     async fn change_pin(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
-        encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+        wallet_id: &WalletId,
+        encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
         user_state: WalletUserState,
     ) -> Result<()>;
 
-    async fn commit_pin_change(&self, transaction: &Self::TransactionType, wallet_id: &str) -> Result<()>;
+    async fn update_encrypted_pin_pubkey(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_id: &WalletId,
+        encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
+    ) -> Result<()>;
 
-    async fn rollback_pin_change(&self, transaction: &Self::TransactionType, wallet_id: &str) -> Result<()>;
+    async fn commit_pin_change(&self, transaction: &Self::TransactionType, wallet_id: &WalletId) -> Result<()>;
+
+    async fn rollback_pin_change(&self, transaction: &Self::TransactionType, wallet_id: &WalletId) -> Result<()>;
 
     async fn store_recovery_code(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
-        recovery_code: String,
+        wallet_id: &WalletId,
+        recovery_code: RecoveryCode,
     ) -> Result<()>;
 
-    async fn recover_pin(&self, transaction: &Self::TransactionType, wallet_id: Uuid) -> Result<()>;
+    async fn recover_pin(&self, transaction: &Self::TransactionType, wallet_user_id: Uuid) -> Result<()>;
 
     async fn has_multiple_active_accounts_by_recovery_code(
         &self,
         transaction: &Self::TransactionType,
-        recovery_code: &str,
+        recovery_code: &RecoveryCode,
     ) -> Result<bool>;
 
     async fn update_apple_assertion_counter(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         assertion_counter: AssertionCounter,
     ) -> Result<()>;
 
@@ -184,8 +249,32 @@ pub trait WalletUserRepository {
         destination_wallet_user_id: Uuid,
     ) -> Result<()>;
 
-    async fn store_wua_id(&self, transaction: &Self::TransactionType, wallet_user_id: Uuid, wua_id: Uuid)
+    async fn store_wia_id(&self, transaction: &Self::TransactionType, wallet_user_id: Uuid, wia_id: Uuid)
     -> Result<()>;
+
+    async fn revoke_wallet_users(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Vec<Uuid>,
+        revocation_reason: RevocationReason,
+        revocation_date_time: DateTime<Utc>,
+    ) -> Result<RevokedWalletUsers>;
+
+    async fn deny_recovery_code(&self, transaction: &Self::TransactionType, recovery_code: RecoveryCode) -> Result<()>;
+
+    async fn recovery_code_is_denied(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: RecoveryCode,
+    ) -> Result<bool>;
+
+    async fn list_denied_recovery_codes(&self, transaction: &Self::TransactionType) -> Result<Vec<RecoveryCode>>;
+
+    async fn allow_recovery_code(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: &RecoveryCode,
+    ) -> Result<bool>;
 }
 
 #[cfg(feature = "mock")]
@@ -193,15 +282,32 @@ pub mod mock {
     use uuid::Uuid;
     use uuid::uuid;
 
-    use crate::model::wallet_user;
-
     use super::super::transaction::mock::MockTransaction;
     use super::*;
+    use crate::model::QueryResult;
+    use crate::model::wallet_user;
+    use crate::model::wallet_user::RevokedWalletUsers;
+    use crate::model::wallet_user::WalletId;
+    use crate::model::wallet_user::WalletUserQueryResult;
 
     pub struct WalletUserRepositoryStub;
 
     impl WalletUserRepository for WalletUserRepositoryStub {
         type TransactionType = MockTransaction;
+
+        async fn list_wallet_user_ids(&self, _transaction: &Self::TransactionType) -> Result<Vec<Uuid>> {
+            Ok(vec![
+                uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+                uuid!("a123f36e-ffbd-402f-b6f3-418cf4c49e09"),
+            ])
+        }
+
+        async fn list_wallets(&self, _transaction: &Self::TransactionType) -> Result<Vec<WalletUserIsRevoked>> {
+            Ok(vec![
+                wallet_user::mock::wallet_user_1().into(),
+                wallet_user::mock::wallet_user_with_id("wallet-456".to_owned().into()).into(),
+            ])
+        }
 
         async fn create_wallet_user(
             &self,
@@ -214,17 +320,51 @@ pub mod mock {
         async fn find_wallet_user_by_wallet_id(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<WalletUserQueryResult> {
-            Ok(WalletUserQueryResult::Found(Box::new(
-                wallet_user::mock::wallet_user_1(),
-            )))
+            Ok(QueryResult::Found(Box::new(wallet_user::mock::wallet_user_1())))
+        }
+
+        async fn find_wallet_user_state_by_wallet_id(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_id: &WalletId,
+        ) -> Result<WalletUserStateQueryResult> {
+            Ok(QueryResult::Found(Box::new(wallet_user::mock::wallet_user_1().state)))
+        }
+
+        async fn find_wallet_user_id_by_wallet_ids(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_ids: &HashSet<WalletId>,
+        ) -> Result<HashMap<WalletId, Uuid>> {
+            Ok([(
+                WalletId::from("wallet-123".to_owned()),
+                uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+            )]
+            .into())
+        }
+
+        async fn find_wallet_user_by_revocation_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _revocation_code_hmac: &[u8],
+        ) -> Result<WalletUserQueryResult> {
+            Ok(QueryResult::Found(Box::new(wallet_user::mock::wallet_user_1())))
+        }
+
+        async fn find_wallet_user_ids_by_recovery_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: &RecoveryCode,
+        ) -> Result<Vec<Uuid>> {
+            Ok([uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08")].into())
         }
 
         async fn clear_instruction_challenge(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<()> {
             Ok(())
         }
@@ -232,7 +372,7 @@ pub mod mock {
         async fn update_instruction_challenge_and_sequence_number(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _challenge: InstructionChallenge,
             _instruction_sequence_number: u64,
         ) -> Result<()> {
@@ -242,7 +382,7 @@ pub mod mock {
         async fn update_instruction_sequence_number(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _instruction_sequence_number: u64,
         ) -> Result<()> {
             Ok(())
@@ -251,7 +391,7 @@ pub mod mock {
         async fn register_unsuccessful_pin_entry(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _is_blocked: bool,
             _datetime: DateTime<Utc>,
         ) -> Result<()> {
@@ -261,7 +401,7 @@ pub mod mock {
         async fn reset_unsuccessful_pin_entries(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<()> {
             Ok(())
         }
@@ -270,67 +410,103 @@ pub mod mock {
             Ok(())
         }
 
-        async fn save_pin_recovery_keys(
-            &self,
-            _transaction: &Self::TransactionType,
-            _keys: WalletUserPinRecoveryKeys,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        async fn is_pin_recovery_key(
+        async fn is_blocked_key(
             &self,
             _transaction: &Self::TransactionType,
             _wallet_user_id: Uuid,
             _key: VerifyingKey,
-        ) -> Result<bool> {
-            Ok(true)
+        ) -> Result<Option<bool>> {
+            Ok(Some(true))
         }
 
-        async fn find_keys_by_identifiers(
+        async fn delete_blocked_keys_in_batch(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+            _key: VerifyingKey,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_all_blocked_keys(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete_keys(
             &self,
             _transaction: &Self::TransactionType,
             _wallet_user_id: Uuid,
             _key_identifiers: &[String],
-        ) -> Result<HashMap<String, WrappedKey>> {
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn unblock_blocked_keys_in_batch(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+            _key: VerifyingKey,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn find_active_keys_by_identifiers(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+            _key_identifiers: &[String],
+        ) -> Result<HashMap<String, WithKid<WrappedKey>>> {
             Ok(HashMap::new())
         }
 
         async fn change_pin(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
-            _encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+            _wallet_id: &WalletId,
+            _encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
             _user_state: WalletUserState,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn commit_pin_change(&self, _transaction: &Self::TransactionType, _wallet_id: &str) -> Result<()> {
+        async fn update_encrypted_pin_pubkey(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_id: &WalletId,
+            _encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
+        ) -> Result<()> {
             Ok(())
         }
 
-        async fn rollback_pin_change(&self, _transaction: &Self::TransactionType, _wallet_id: &str) -> Result<()> {
+        async fn commit_pin_change(&self, _transaction: &Self::TransactionType, _wallet_id: &WalletId) -> Result<()> {
+            Ok(())
+        }
+
+        async fn rollback_pin_change(&self, _transaction: &Self::TransactionType, _wallet_id: &WalletId) -> Result<()> {
             Ok(())
         }
 
         async fn store_recovery_code(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
-            _recovery_code: String,
+            _wallet_id: &WalletId,
+            _recovery_code: RecoveryCode,
         ) -> Result<()> {
             Ok(())
         }
 
-        async fn recover_pin(&self, _transaction: &Self::TransactionType, _wallet_id: Uuid) -> Result<()> {
+        async fn recover_pin(&self, _transaction: &Self::TransactionType, _wallet_user_id: Uuid) -> Result<()> {
             Ok(())
         }
 
         async fn has_multiple_active_accounts_by_recovery_code(
             &self,
             _transaction: &Self::TransactionType,
-            _recovery_code: &str,
+            _recovery_code: &RecoveryCode,
         ) -> Result<bool> {
             Ok(false)
         }
@@ -338,7 +514,7 @@ pub mod mock {
         async fn update_apple_assertion_counter(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _assertion_counter: AssertionCounter,
         ) -> Result<()> {
             Ok(())
@@ -429,13 +605,57 @@ pub mod mock {
             Ok(())
         }
 
-        async fn store_wua_id(
+        async fn store_wia_id(
             &self,
             _transaction: &Self::TransactionType,
             _wallet_user_id: Uuid,
-            _wua_id: Uuid,
+            _wia_id: Uuid,
         ) -> Result<()> {
             Ok(())
+        }
+
+        async fn revoke_wallet_users(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Vec<Uuid>,
+            _revocation_reason: RevocationReason,
+            _revocation_date_time: DateTime<Utc>,
+        ) -> Result<RevokedWalletUsers> {
+            Ok(RevokedWalletUsers {
+                revoked_count: 2,
+                wia_ids: vec![
+                    uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+                    uuid!("a123f36e-ffbd-402f-b6f3-418cf4c49e09"),
+                ],
+            })
+        }
+
+        async fn deny_recovery_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: RecoveryCode,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn recovery_code_is_denied(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: RecoveryCode,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn list_denied_recovery_codes(&self, _transaction: &Self::TransactionType) -> Result<Vec<RecoveryCode>> {
+            Ok(vec![])
+        }
+
+        async fn allow_recovery_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: &RecoveryCode,
+        ) -> Result<bool> {
+            Ok(false)
         }
     }
 }

@@ -1,39 +1,24 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt;
+use std::str::FromStr;
 use std::string::FromUtf8Error;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use chrono::DateTime;
-use chrono::Utc;
-use derive_more::Constructor;
-use futures::future::try_join_all;
-use indexmap::IndexSet;
-use itertools::Itertools;
-use josekit::JoseError;
-use josekit::jwe::JweHeader;
-use josekit::jwe::alg::ecdh_es::EcdhEsJweAlgorithm;
-use josekit::jwk::Jwk;
-use josekit::jwk::alg::ec::EcKeyPair;
-use josekit::jwt::JwtPayload;
-use nutype::nutype;
-use p256::ecdsa::VerifyingKey;
-use rustls_pki_types::TrustAnchor;
-use serde::Deserialize;
-use serde::Deserializer;
-use serde::Serialize;
-use serde::de::value::StringDeserializer;
-use serde_with::DeserializeAs;
-use serde_with::DeserializeFromStr;
-use serde_with::SerializeDisplay;
-use serde_with::serde_as;
-use serde_with::skip_serializing_none;
-
 use attestation_data::disclosure::DisclosedAttestation;
 use attestation_data::disclosure::DisclosedAttestationError;
 use attestation_data::disclosure::DisclosedAttestations;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use base64::prelude::*;
+use chrono::DateTime;
+use chrono::Utc;
+use cose::CoseAlgorithmIdentifier;
+use coset::iana;
+use crypto::trust_anchor::TrustAnchors;
 use crypto::x509::BorrowingCertificate;
-use crypto::x509::CertificateError;
-use crypto::x509::CertificateUsage;
+use crypto::x509::crl::CertificateCrlVerifier;
+use crypto::x509::crl::CrlFetcher;
 use dcql::CredentialQueryIdentifier;
 use dcql::Query;
 use dcql::disclosure::CredentialValidationError;
@@ -41,96 +26,212 @@ use dcql::disclosure::ExtendingVctRetriever;
 use dcql::normalized::NormalizedCredentialRequests;
 use dcql::normalized::UnsupportedDcqlFeatures;
 use dcql::unique_id_vec::UniqueIdVec;
+use derive_more::Constructor;
 use error_category::ErrorCategory;
+use futures::future::try_join_all;
 use http_utils::urls::BaseUrl;
+use itertools::Itertools;
+use jwe::algorithm::EncryptionAlgorithm;
+use jwe::decryption::AllowedDecompression;
+use jwe::decryption::ExpectedEncryptionAlgorithm;
+use jwe::decryption::JweDecrypter;
+use jwe::decryption::JweEcdhSecretKey;
+use jwe::encryption::JweEncrypter;
+use jwe::encryption::JwePublicKey;
+use jwe::error::EcdhPublicJwkError;
+use jwe::error::JweJsonDecryptionError;
+use jwe::error::JweJsonEncryptionError;
+use jwk_simple::Key;
 use jwt::Algorithm;
 use jwt::JwtTyp;
+use jwt::JwtValidation;
 use jwt::UnverifiedJwt;
-use jwt::Validation;
-use jwt::error::JwtX5cError;
+use jwt::error::JwtX5cVerifyError;
 use jwt::headers::HeaderWithX5c;
+use jwt::nonce::Nonce;
 use mdoc::DeviceResponse;
 use mdoc::SessionTranscript;
 use mdoc::utils::serialization::CborBase64;
+use oauth::jose::JwsAlgorithm;
 use sd_jwt::key_binding_jwt::KbVerificationOptions;
 use sd_jwt::sd_jwt::UnverifiedSdJwtPresentation;
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
+use serde::de::DeserializeOwned;
+use serde::de::value::StringDeserializer;
+use serde_with::DeserializeAs;
+use serde_with::DeserializeFromStr;
+use serde_with::SerializeAs;
+use serde_with::SerializeDisplay;
+use serde_with::TryFromIntoRef;
+use serde_with::serde_as;
+use serde_with::skip_serializing_none;
 use token_status_list::verification::client::StatusListClient;
 use token_status_list::verification::verifier::RevocationStatus;
 use token_status_list::verification::verifier::RevocationVerifier;
+use tracing::error;
+use url::Url;
 use utils::generator::Generator;
 use utils::generator::TimeGenerator;
 use utils::vec_at_least::IntoNonEmptyIterator;
 use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
-use wscd::Poa;
-use wscd::PoaVerificationError;
+use utils::vec_nonempty;
 
-use crate::authorization::AuthorizationRequest;
+use crate::authorization::AuthorizationRequestBase;
 use crate::authorization::ResponseMode;
 use crate::authorization::ResponseType;
+use crate::jwe::JweEncryptionAlgorithm;
+use crate::jwks::Jwks;
+use crate::registration_certificate::RegistrationCertificateError;
 
 /// Leeway used in the lower end of the `iat` verification, used to account for clock skew.
-const SD_JWT_IAT_LEEWAY: Duration = Duration::from_secs(5);
+const SD_JWT_IAT_LEEWAY: Duration = Duration::from_secs(90);
 const SD_JWT_IAT_WINDOW: Duration = Duration::from_secs(15 * 60);
 
-#[derive(Debug, thiserror::Error)]
-pub enum AuthRequestError {
-    #[error("error parsing X.509 certificate: {0}")]
-    CertificateParsing(#[from] CertificateError),
-    #[error("Subject Alternative Name missing from X.509 certificate")]
-    MissingSAN,
-}
+const RESPONSE_ENCRYPTION_ALGORITHMS: &[EncryptionAlgorithm] =
+    &[EncryptionAlgorithm::A128Gcm, EncryptionAlgorithm::A256Gcm];
 
-/// A Request URI object, as defined in RFC 9101.
-/// Contains URL from which the wallet is to retrieve the Authorization Request.
-/// To be URL-encoded in the wallet's UL, which can then be put on a website directly, or in a QR code.
+pub const REGISTRATION_CERTIFICATE_FORMAT: &str = "registration_cert";
+
+/// OpenID4VP request uri.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VpRequestUriObject {
-    /// URL at which the full Authorization Request is to be retrieved.
-    pub request_uri: BaseUrl,
-
-    /// Whether or not the `request_uri` supports `POST`, instead of only `GET` as defined by RFC 9101.
-    pub request_uri_method: Option<RequestUriMethod>,
-
+pub struct VpRequestUri {
     /// MUST equal the client_id from the full Authorization Request.
-    pub client_id: String,
+    pub client_id: ClientId,
+
+    #[serde(flatten)]
+    pub object: VpRequestUriObject,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")] // Keeping these names as is might make more sense, but the spec says lowercase
-pub enum RequestUriMethod {
+pub enum VpRequestUriMethod {
     #[default]
     GET,
     POST,
 }
 
+/// The three ways an OpenID4VP request URI object can be conveyed, as described here:
+/// https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.4
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum VpRequestUriObject {
+    /// A request object by reference, i.e., contains a `request_uri` parameter
+    /// pointing to where to fetch the actual authorization request.
+    /// Note that this is the only supported variant of VpRequestUriObject.
+    AsReference {
+        request_uri: BaseUrl,
+        request_uri_method: Option<VpRequestUriMethod>,
+    },
+
+    /// A request object by value, i.e., a `request` parameter with an inline JWT.
+    /// Note that technically, instead of String, the request value could be an
+    /// UnverifiedJwt<VpAuthorizationRequest, HeaderWithX5c>, but since we don't
+    /// actually support AsValue, we (currently) don't bother.
+    AsValue { request: String },
+
+    /// A direct authorization request with required fields as query parameters.
+    /// Note that, as with AsValue, we do not support the AsQueryParameters variant.
+    AsQueryParameters { response_type: String, nonce: String },
+}
+
 /// An OpenID4VP Authorization Request, allowing an RP to request a set of credentials/attributes from a wallet.
 #[skip_serializing_none]
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VpAuthorizationRequest {
     pub aud: VpAuthorizationRequestAudience,
 
     #[serde(flatten)]
-    pub oauth_request: AuthorizationRequest,
+    pub oauth_request: AuthorizationRequestBase,
+
+    pub nonce: Option<Nonce>,
+    pub response_mode: Option<ResponseMode>,
 
     /// Contains requirements on the credentials and/or attributes to be disclosed.
     pub dcql_query: Query,
 
     /// Metadata about the verifier such as their encryption key(s).
-    #[serde(flatten)]
     pub client_metadata: Option<VpClientMetadata>,
-
-    /// Determines how the verifier is to be authenticated.
-    pub client_id_scheme: Option<ClientIdScheme>,
 
     /// REQUIRED if the ResponseMode `direct_post` or `direct_post.jwt` is used.
     /// In that case, the Authorization Response is to be posted to this URL by the wallet.
     pub response_uri: Option<BaseUrl>,
 
     pub wallet_nonce: Option<String>,
+
+    /// Information about the verifier as specified by ETSI TS 119 472-2.
+    pub verifier_info: Option<VecNonEmpty<VerifierInfo>>,
+
+    #[serde_as(as = "Option<Vec<JsonBase64>>")]
+    pub transaction_data: Option<VecNonEmpty<serde_json::Map<String, serde_json::Value>>>,
 }
 
-impl JwtTyp for VpAuthorizationRequest {}
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "format")]
+pub enum VerifierInfo {
+    #[serde(rename = "registration_cert")]
+    RegistrationCertificate {
+        #[serde_as(as = "TryFromIntoRef<String>")]
+        data: RegistrationCertificateEnvelope,
+    },
+
+    // Allow the verifier to announce formats that the wallet does not support.
+    #[serde(other)]
+    Other,
+}
+
+impl VerifierInfo {
+    pub fn registration_certificate(data: RegistrationCertificateEnvelope) -> Self {
+        Self::RegistrationCertificate { data }
+    }
+}
+
+impl JwtTyp for VpAuthorizationRequest {
+    const TYP: &'static str = "oauth-authz-req+jwt";
+}
+
+/// JsonBase64, a base64url-encoded JSON object. Used currently for transaction_data.
+/// See: https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.1
+pub struct JsonBase64;
+
+impl<T> SerializeAs<T> for JsonBase64
+where
+    T: Serialize,
+{
+    fn serialize_as<S>(source: &T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = serde_json::to_vec(source).map_err(serde::ser::Error::custom)?;
+        let base64 = BASE64_URL_SAFE_NO_PAD.encode(bytes).serialize(serializer)?;
+
+        Ok(base64)
+    }
+}
+
+impl<'de, T> DeserializeAs<'de, T> for JsonBase64
+where
+    T: DeserializeOwned,
+{
+    fn deserialize_as<D>(deserializer: D) -> Result<T, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let base64 = String::deserialize(deserializer)?;
+        let bytes = BASE64_URL_SAFE_NO_PAD
+            .decode(base64)
+            .map_err(|error| serde::de::Error::custom(format!("error decoding entry as base64: {error}")))?;
+        let value = serde_json::from_slice(bytes.as_slice())
+            .map_err(|error| serde::de::Error::custom(format!("error parsing entry as JSON: {error}")))?;
+
+        Ok(value)
+    }
+}
 
 #[derive(Debug, Clone, Default, SerializeDisplay, DeserializeFromStr, strum::EnumString, strum::Display)]
 pub enum VpAuthorizationRequestAudience {
@@ -139,125 +240,152 @@ pub enum VpAuthorizationRequestAudience {
     SelfIssued,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum VpClientMetadata {
-    #[serde(rename = "client_metadata")]
-    Direct(ClientMetadata),
-    #[serde(rename = "client_metadata_url")]
-    Indirect(BaseUrl),
-}
-
-impl VpClientMetadata {
-    pub fn direct(self) -> Option<ClientMetadata> {
-        match self {
-            VpClientMetadata::Direct(c) => Some(c),
-            VpClientMetadata::Indirect(_) => None,
-        }
-    }
-}
-
 /// Metadata of the verifier (which acts as the "client" in OAuth).
-/// OpenID4VP refers to https://openid.net/specs/openid-connect-registration-1_0.html and
-/// https://www.rfc-editor.org/rfc/rfc7591.html for this, but here we implement only what we need.
+/// https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-11
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientMetadata {
-    #[serde(flatten)]
-    pub jwks: VpJwks,
-    pub vp_formats: VpFormat,
+pub struct VpClientMetadata {
+    pub jwks: Jwks,
+    pub vp_formats_supported: VpFormatsSupported,
 
-    // These two are defined in https://openid.net/specs/oauth-v2-jarm-final.html
-    pub authorization_encryption_alg_values_supported: VpAlgValues,
-    pub authorization_encryption_enc_values_supported: VpEncValues,
+    /// Non-empty array of strings, where each string is a JWE [RFC7516] enc algorithm that can be used as the content
+    /// encryption algorithm for encrypting the Response. When a response_mode requiring encryption of the Response
+    /// (such as `dc_api.jwt`` or `direct_post.jwt``) is specified, this MUST be present for anything other than the
+    /// default single value of `A128GCM``. Otherwise, this SHOULD be absent.
+    pub encrypted_response_enc_values_supported: Option<VecNonEmpty<JweEncryptionAlgorithm>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// `client_id` prefix values as defined by OpenID4VP 1.0 section 5.9.3.
+/// <https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.9.3>
+#[derive(Debug, Clone, PartialEq, Eq, strum::EnumString, strum::Display)]
+#[strum(serialize_all = "snake_case")]
 pub enum ClientIdScheme {
-    #[serde(rename = "pre-registered")]
-    PreRegistered,
     RedirectUri,
-    EntityId,
-    Did,
+    OpenidFederation,
+    DecentralizedIdentifier,
     VerifierAttestation,
     X509SanDns,
-    X509SanUri,
+    X509Hash,
+    Origin,
+    #[strum(default)]
+    Other(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum VpJwks {
-    #[serde(rename = "jwks")]
-    Direct { keys: Vec<Jwk> },
-    #[serde(rename = "jwks_uri")]
-    Indirect(BaseUrl),
+#[derive(Debug, Clone, SerializeDisplay, DeserializeFromStr, PartialEq, Eq)]
+pub struct ClientId {
+    id: String,
+    scheme: Option<ClientIdScheme>,
 }
 
-impl VpJwks {
-    pub fn direct(&self) -> Option<&Vec<Jwk>> {
-        match self {
-            VpJwks::Direct { keys } => Some(keys),
-            VpJwks::Indirect(_) => None,
+impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.scheme {
+            Some(scheme) => write!(f, "{scheme}:{}", self.id),
+            // https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-fallback
+            None => write!(f, "{}", self.id),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum VpAlgValues {
-    #[serde(rename = "ECDH-ES")]
-    EcdhEs,
+impl From<&str> for ClientId {
+    fn from(s: &str) -> Self {
+        if let Some((scheme_str, id)) = s.split_once(':') {
+            Self {
+                scheme: Some(scheme_str.into()),
+                id: id.to_string(),
+            }
+        } else {
+            Self {
+                // https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-fallback
+                scheme: None,
+                id: s.to_string(),
+            }
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, strum::Display)]
-pub enum VpEncValues {
-    A128GCM,
-    A192GCM,
-    A256GCM,
+impl FromStr for ClientId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(ClientId::from(s))
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VpFormat {
-    MsoMdoc { alg: IndexSet<FormatAlg> },
-    SdJwt { alg: IndexSet<FormatAlg> },
+impl ClientId {
+    fn x509_hash_value(certificate: &BorrowingCertificate) -> String {
+        BASE64_URL_SAFE_NO_PAD.encode(crypto::utils::sha256(certificate.as_ref()))
+    }
+
+    pub fn x509_hash(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            scheme: Some(ClientIdScheme::X509Hash),
+        }
+    }
+
+    pub fn x509_hash_from_certificate(certificate: &BorrowingCertificate) -> Self {
+        Self::x509_hash(Self::x509_hash_value(certificate))
+    }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum FormatAlg {
-    #[default]
-    ES256,
+#[skip_serializing_none]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VpFormatsSupported {
+    pub mso_mdoc: Option<MsoMdocAlgValues>,
+    #[serde(rename = "dc+sd-jwt")]
+    pub sd_jwt: Option<SdJwtAlgValues>,
+}
+
+/// Alg values for mso_mdoc.
+/// <https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#appendix-B.2.2>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MsoMdocAlgValues {
+    /// OPTIONAL. A non-empty array containing cryptographic algorithm identifiers.
+    pub issuerauth_alg_values: Option<VecNonEmpty<CoseAlgorithmIdentifier>>,
+    /// OPTIONAL. A non-empty array containing cryptographic algorithm identifiers.
+    pub deviceauth_alg_values: Option<VecNonEmpty<CoseAlgorithmIdentifier>>,
+}
+
+impl MsoMdocAlgValues {
+    /// Whether both issuer and device authentication metadata support ECDSA using P-256 and SHA-256.
+    ///
+    /// OpenID4VP treats ES256 (-7) used with a P-256 key as matching metadata containing either ES256 or fully
+    /// specified ESP256 (-9). See
+    /// <https://openid.net/specs/openid-4-verifiable-presentations-1_0-final.html#appendix-B.2.2-2.1>.
+    pub fn contains_ecdsa_p256(&self) -> bool {
+        let contains_ecdsa_p256 =
+            |alg: &VecNonEmpty<CoseAlgorithmIdentifier>| alg.iter().any(CoseAlgorithmIdentifier::is_ecdsa_p256);
+        self.issuerauth_alg_values.as_ref().is_some_and(contains_ecdsa_p256)
+            && self.deviceauth_alg_values.as_ref().is_some_and(contains_ecdsa_p256)
+    }
+}
+
+/// Alg values for dc+sd-jwt.
+/// <https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#appendix-B.3.4>
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SdJwtAlgValues {
+    /// OPTIONAL. A non-empty array containing fully-specified identifiers of cryptographic algorithms supported for an
+    /// Issuer-signed JWT of an SD-JWT.
+    #[serde(rename = "sd-jwt_alg_values")]
+    pub sd_jwt_alg_values: Option<VecNonEmpty<JwsAlgorithm>>,
+    /// OPTIONAL. A non-empty array containing fully-specified identifiers of cryptographic algorithms supported for a
+    /// Key Binding JWT (KB-JWT).
+    #[serde(rename = "kb-jwt_alg_values")]
+    pub kb_jwt_alg_values: Option<VecNonEmpty<JwsAlgorithm>>,
+}
+
+impl SdJwtAlgValues {
+    pub fn contains_es_256(&self) -> bool {
+        let contains_es_256 = |alg: &VecNonEmpty<JwsAlgorithm>| alg.iter().contains(&JwsAlgorithm::ES256);
+        self.sd_jwt_alg_values.as_ref().is_some_and(contains_es_256)
+            && self.kb_jwt_alg_values.as_ref().is_some_and(contains_es_256)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletRequest {
     pub wallet_nonce: Option<String>,
-}
-
-#[nutype(
-    derive(Debug, Clone, TryFrom, AsRef, Serialize, Deserialize),
-    validate(predicate = |u| JwePublicKey::validate(u).is_ok()),
-)]
-pub struct JwePublicKey(Jwk);
-
-impl JwePublicKey {
-    fn validate(jwk: &Jwk) -> Result<(), AuthRequestValidationError> {
-        // Avoid jwk.key_type() which panics if `kty` is not set.
-        if jwk.parameter("kty").and_then(serde_json::Value::as_str) != Some("EC") {
-            return Err(AuthRequestValidationError::UnsupportedJwk {
-                field: "kty",
-                expected: "EC",
-                found: jwk.parameter("kty").cloned(),
-            });
-        }
-
-        if jwk.curve() != Some("P-256") {
-            return Err(AuthRequestValidationError::UnsupportedJwk {
-                field: "crv",
-                expected: "P-256",
-                found: jwk.curve().map(serde_json::Value::from),
-            });
-        }
-
-        Ok(())
-    }
 }
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
@@ -266,6 +394,9 @@ pub enum AuthRequestValidationError {
     #[error("unexpected field: {0}")]
     #[category(critical)]
     UnexpectedField(&'static str),
+    #[error("unsupported field: {0}")]
+    #[category(critical)]
+    UnsupportedField(&'static str),
     #[error("missing required field: {0}")]
     #[category(critical)]
     ExpectedFieldMissing(&'static str),
@@ -276,150 +407,353 @@ pub enum AuthRequestValidationError {
         expected: &'static str,
         found: String,
     },
-    #[error("field {0}_uri found, expected field directly")]
+    #[error("missing kid in JWK(s) at client_metadata.jwks indices {}", .0.iter().map(ToString::to_string).join(", "))]
     #[category(critical)]
-    UriVariantNotSupported(&'static str),
-    #[error("unexpected amount of JWKs found in client_metadata: expected 1, found {0}")]
+    MissingJwkKid(VecNonEmpty<usize>),
+    #[error(
+        "no supported JWK found in client_metadata.jwks: expected at least one EC/P-256 JWK: {errors}",
+        errors = .0.iter().join(", ")
+    )]
+    #[category(pd)]
+    NoSupportedJwk(VecNonEmpty<EcdhPublicJwkError>),
+    #[error(
+        "no supported value found in client_metadata.encrypted_response_enc_values_supported, received: {}",
+        .0.iter().map(ToString::to_string).join(", ")
+    )]
     #[category(critical)]
-    UnexpectedJwkAmount(usize),
-    #[error("unsupported JWK: expected {expected}, found {found:?} in {field}")]
-    #[category(pd)] // might leak sensitive data
-    UnsupportedJwk {
-        field: &'static str,
-        expected: &'static str,
-        found: Option<serde_json::Value>,
-    },
+    NoSupportedEncryptedResponseEnc(VecNonEmpty<JweEncryptionAlgorithm>),
+    #[error("unsupported client_id scheme: {scheme}. Only x509_hash is currently supported")]
+    #[category(critical)]
+    UnsupportedClientIdScheme { scheme: ClientIdScheme },
+    #[error("unsupported client_id without a scheme (pre-registered). Only x509_hash is currently supported")]
+    #[category(critical)]
+    UnsupportedClientIdWithoutScheme,
     #[error("unsupported DCQL query: {0}")]
     UnsupportedDcqlQuery(#[from] UnsupportedDcqlFeatures),
     #[error(
-        "client_id from Authorization Request was {client_id}, should have been equal to SAN DNSName from X.509 \
-         certificate ({dns_san})"
+        "client_id from Authorization Request was {client_id}, should have been x509_hash:{certificate_hash} to match \
+         the leaf X.509 certificate from the x5c JOSE header"
     )]
     #[category(critical)]
-    UnauthorizedClientId { client_id: String, dns_san: String },
-    #[error("Subject Alternative Name missing from X.509 certificate")]
-    #[category(critical)]
-    MissingSAN,
-    #[error("error parsing X.509 certificate: {0}")]
-    CertificateParsing(#[from] CertificateError),
+    UnauthorizedClientIdHash {
+        client_id: String,
+        certificate_hash: String,
+    },
     #[error("failed to verify Authorization Request JWT: {0}")]
-    JwtVerification(#[from] JwtX5cError),
+    JwtVerification(#[from] JwtX5cVerifyError),
+    #[error("invalid registration certificate: {0}")]
+    #[category(critical)]
+    RegistrationCertificate(#[source] Box<RegistrationCertificateError>),
     #[error("mismatch in wallet nonce: did not receive nonce when one was expected, or vice versa")]
     #[category(critical)]
     WalletNonceMismatch,
 }
 
-static AUD_VALIDATIONS: LazyLock<Validation> = LazyLock::new(|| {
-    let mut validation = Validation::new(Algorithm::ES256);
-    validation.set_required_spec_claims(&["aud"]);
+static VP_AUTH_REQUEST_VALIDATION: LazyLock<JwtValidation> = LazyLock::new(|| {
+    let mut validation = JwtValidation::default_with_algorithms([Algorithm::ES256]);
+    validation.require_aud(VpAuthorizationRequestAudience::SelfIssued);
     validation
 });
 
 impl VpAuthorizationRequest {
-    /// Construct a new Authorization Request by verifying an Authorization Request JWT against
-    /// the specified trust anchors.
-    pub fn try_new(
+    /// Construct and authenticate an Authorization Request, requiring a valid CRL for its WRPAC chain.
+    pub async fn authenticate_request(
         jws: &UnverifiedJwt<VpAuthorizationRequest, HeaderWithX5c>,
-        trust_anchors: &[TrustAnchor],
+        trust_anchors: &TrustAnchors,
+        crl_verifier: &CertificateCrlVerifier<impl CrlFetcher>,
     ) -> Result<(VpAuthorizationRequest, BorrowingCertificate), AuthRequestValidationError> {
-        let mut validation_options = AUD_VALIDATIONS.to_owned();
-        validation_options.set_audience(&[VpAuthorizationRequestAudience::SelfIssued.to_string()]);
+        let (header, auth_request) = jws
+            .parse_and_verify_against_trust_anchors_with_crl(
+                trust_anchors,
+                crl_verifier,
+                &TimeGenerator,
+                None,
+                VP_AUTH_REQUEST_VALIDATION.clone(),
+            )
+            .await?;
 
-        let (header, auth_request) = jws.parse_and_verify_against_trust_anchors(
-            trust_anchors,
-            &TimeGenerator,
-            CertificateUsage::ReaderAuth,
-            &validation_options,
-        )?;
+        if let Some(trust_anchor) = trust_anchors.find_in_chain(header.x5c.iter().skip(1)) {
+            let subject = trust_anchor.x509_certificate().subject();
+            error!("x5c of OpenID4VP request contains trust anchor {subject}; this violates HAIP 1.0, ignoring it");
+        }
 
         Ok((auth_request, header.x5c.into_first()))
     }
 
-    /// Validate that an Authorization Request satisfies the following:
-    /// - the request contents are compliant with the profile from ISO 18013-7 Appendix B,
-    /// - the `client_id` equals the DNS SAN name in the X.509 certificate, as required by the [`x509_san_dns` value for
-    ///   `client_id_scheme`](https://openid.github.io/OpenID4VP/openid-4-verifiable-presentations-wg-draft.html#section-5.7-12.2),
-    ///   which is used by the mentioned profile.
+    /// Normalize an Authorization Request into the representation used by the wallet.
     ///
-    /// This method consumes `self` and turns it into an [`IsoVpAuthorizationRequest`], which
-    /// contains only the fields we need and use.
-    pub fn validate(
+    /// Checks the supported request fields, binds the `x509_hash` client ID to `rp_cert`, checks
+    /// the wallet nonce, and selects the response encryption key and algorithm.
+    ///
+    /// Call after [`Self::authenticate_request`], using the request and certificate it returns.
+    /// Registration-certificate trust, status, and DCQL authorization must still be checked using
+    /// [`crate::registration_certificate::validate_registration_certificate_and_query`].
+    pub fn normalize_request(
         self,
         rp_cert: &BorrowingCertificate,
         wallet_nonce: Option<&str>,
-    ) -> Result<NormalizedVpAuthorizationRequest, AuthRequestValidationError> {
-        let dns_san = rp_cert.san_dns_name()?.ok_or(AuthRequestValidationError::MissingSAN)?;
-        if dns_san != self.oauth_request.client_id {
-            return Err(AuthRequestValidationError::UnauthorizedClientId {
-                client_id: self.oauth_request.client_id,
-                dns_san: String::from(dns_san),
-            });
+    ) -> Result<(NormalizedVpAuthorizationRequest, EncryptionAlgorithm), AuthRequestValidationError> {
+        let validated_auth_request = NormalizedVpAuthorizationRequest::try_from(self)?;
+
+        // Validate that the verifier advertised at least one encryption algorithm that the wallet supports,
+        // and keep the selected value for later use on the wallet encryption path.
+        // See: <https://openid.net/specs/openid4vc-high-assurance-interoperability-profile-1_0.html#section-5-2.5>.
+        //
+        // If the verifier did not send any supported algorithms, default to AES128GCM.
+        // See: <https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.1-2.4.2.2>
+        let selected_encryption_algorithm =
+            NormalizedVpAuthorizationRequest::select_encryption_algorithm(&validated_auth_request.client_metadata)?;
+        let client_id = &validated_auth_request.client_id;
+
+        match &client_id.scheme {
+            Some(ClientIdScheme::X509Hash) => {
+                let certificate_hash = ClientId::x509_hash_value(rp_cert);
+                if client_id.id != certificate_hash {
+                    return Err(AuthRequestValidationError::UnauthorizedClientIdHash {
+                        client_id: client_id.to_string(),
+                        certificate_hash,
+                    });
+                }
+            }
+            Some(scheme) => {
+                return Err(AuthRequestValidationError::UnsupportedClientIdScheme { scheme: scheme.clone() });
+            }
+            None => return Err(AuthRequestValidationError::UnsupportedClientIdWithoutScheme),
         }
 
-        if wallet_nonce != self.wallet_nonce.as_deref() {
+        if wallet_nonce != validated_auth_request.wallet_nonce.as_deref() {
             return Err(AuthRequestValidationError::WalletNonceMismatch);
         }
 
-        let validated_auth_request = NormalizedVpAuthorizationRequest::try_from(self)?;
-
-        Ok(validated_auth_request)
+        Ok((validated_auth_request, selected_encryption_algorithm))
     }
 }
 
-/// An OpenID4VP Authorization Request that has been validated to conform to the ISO 18013-7 profile:
-/// a subset of [`VpAuthorizationRequest`] that always contains fields we require, and no fields we don't.
+/// Internal Authorization Request representation shared by the wallet and verifier, with required
+/// fields represented directly and credential queries normalized.
 ///
-/// Note that this data type is internal to both the wallet and verifier, and not part of the OpenID4VP protocol,
-/// so it is never sent over the wire. It implements (De)serialize so that the verifier can persist it to
-/// the session store.
+/// The verifier constructs this from its own request data using [`Self::new_for_verifier`]. The wallet
+/// obtains it through [`VpAuthorizationRequest::normalize_request`] before completing its acceptance checks.
+/// This type does not establish request authentication or registration-certificate authorization.
+/// [`crate::disclosure_session::VpDisclosureClient`] completes the wallet's checks before returning a session.
+///
+/// This representation is not sent over the wire as an OpenID4VP message. It implements (De)serialize
+/// so that the verifier can persist it to the session store.
+#[serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NormalizedVpAuthorizationRequest {
-    pub client_id: String,
-    pub nonce: String,
-    pub encryption_pubkey: Jwk,
+    pub client_id: ClientId,
+    pub nonce: Nonce,
+    pub encryption_pubkey: JwePublicKey,
     pub response_uri: BaseUrl,
     pub credential_requests: NormalizedCredentialRequests,
-    pub client_metadata: ClientMetadata,
+    pub client_metadata: VpClientMetadata,
     pub state: Option<String>,
     pub wallet_nonce: Option<String>,
+    #[serde_as(as = "TryFromIntoRef<String>")]
+    pub registration_certificate: RegistrationCertificateEnvelope,
 }
 
 impl NormalizedVpAuthorizationRequest {
-    pub fn new(
+    /// Construct the normalized Authorization Request retained by a verifier.
+    #[expect(clippy::too_many_arguments, reason = "constructor")]
+    pub fn new_for_verifier(
         credential_requests: NormalizedCredentialRequests,
-        rp_certificate: &BorrowingCertificate,
-        nonce: String,
+        client_id: ClientId,
+        nonce: Nonce,
         encryption_pubkey: JwePublicKey,
         response_uri: BaseUrl,
         wallet_nonce: Option<String>,
-    ) -> Result<Self, AuthRequestError> {
-        let encryption_pubkey = encryption_pubkey.into_inner();
+        registration_certificate: RegistrationCertificateEnvelope,
+    ) -> Self {
+        let jwk = encryption_pubkey.clone().into();
 
-        Ok(Self {
-            client_id: String::from(
-                rp_certificate
-                    .san_dns_name()
-                    .map_err(AuthRequestError::CertificateParsing)?
-                    .ok_or(AuthRequestError::MissingSAN)?,
-            ),
+        Self {
+            client_id,
             nonce,
-            encryption_pubkey: encryption_pubkey.clone(),
+            encryption_pubkey,
             response_uri,
             credential_requests,
-            client_metadata: ClientMetadata {
-                jwks: VpJwks::Direct {
-                    keys: vec![encryption_pubkey.clone()],
+            client_metadata: VpClientMetadata {
+                jwks: Jwks::new(vec_nonempty![jwk]),
+                vp_formats_supported: VpFormatsSupported {
+                    mso_mdoc: Some(MsoMdocAlgValues {
+                        issuerauth_alg_values: vec_nonempty![iana::Algorithm::ESP256.into()].into(),
+                        deviceauth_alg_values: vec_nonempty![iana::Algorithm::ESP256.into()].into(),
+                    }),
+                    sd_jwt: Some(SdJwtAlgValues {
+                        sd_jwt_alg_values: vec_nonempty![JwsAlgorithm::ES256].into(),
+                        kb_jwt_alg_values: vec_nonempty![JwsAlgorithm::ES256].into(),
+                    }),
                 },
-                vp_formats: VpFormat::MsoMdoc {
-                    alg: IndexSet::from([FormatAlg::ES256]),
-                },
-                authorization_encryption_alg_values_supported: VpAlgValues::EcdhEs,
-                authorization_encryption_enc_values_supported: VpEncValues::A128GCM,
+                // HAIP requires verifiers to list both A128GCM and A256GCM.
+                encrypted_response_enc_values_supported: Some(
+                    RESPONSE_ENCRYPTION_ALGORITHMS
+                        .iter()
+                        .copied()
+                        .map(JweEncryptionAlgorithm::from)
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .expect("RESPONSE_ENCRYPTION_ALGORITHMS contains more than one algorithm"),
+                ),
             },
             state: None,
             wallet_nonce,
+            registration_certificate,
+        }
+    }
+
+    fn select_encryption_algorithm(
+        client_metadata: &VpClientMetadata,
+    ) -> Result<EncryptionAlgorithm, AuthRequestValidationError> {
+        let encryption_algorithm = client_metadata
+            .encrypted_response_enc_values_supported
+            .as_ref()
+            .map(|enc_values| {
+                JweEncryptionAlgorithm::find_preferred_known(enc_values)
+                    .ok_or_else(|| AuthRequestValidationError::NoSupportedEncryptedResponseEnc(enc_values.clone()))
+            })
+            .transpose()?
+            // Use this value by default for OpenID4VP.
+            // See: https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.1-2.4.2.2
+            .unwrap_or(EncryptionAlgorithm::A128Gcm);
+
+        Ok(encryption_algorithm)
+    }
+
+    fn try_from(vp_auth_request: VpAuthorizationRequest) -> Result<Self, AuthRequestValidationError> {
+        if vp_auth_request.transaction_data.is_some() {
+            return Err(AuthRequestValidationError::UnsupportedField("transaction_data"));
+        }
+
+        // Check presence of fields that must be present in an OpenID4VP Authorization Request
+        let nonce = vp_auth_request
+            .nonce
+            .ok_or(AuthRequestValidationError::ExpectedFieldMissing("nonce"))?;
+        let response_mode = vp_auth_request
+            .response_mode
+            .ok_or(AuthRequestValidationError::ExpectedFieldMissing("response_mode"))?;
+        let response_uri = vp_auth_request
+            .response_uri
+            .ok_or(AuthRequestValidationError::ExpectedFieldMissing("response_uri"))?;
+        let client_metadata = vp_auth_request
+            .client_metadata
+            .ok_or(AuthRequestValidationError::ExpectedFieldMissing("client_metadata"))?;
+
+        // Check that various enums have the expected values
+        if vp_auth_request.oauth_request.response_type != HashSet::from([ResponseType::VpToken]) {
+            return Err(AuthRequestValidationError::UnsupportedFieldValue {
+                field: "response_type",
+                expected: "vp_token",
+                found: serde_json::to_string(&vp_auth_request.oauth_request.response_type).unwrap_or_else(|error| {
+                    error!(
+                        field = "response_type",
+                        %error,
+                        "failed to serialize authorization request error detail"
+                    );
+                    format!("<failed to serialize response_type: {error}>")
+                }),
+            });
+        }
+        if response_mode != ResponseMode::DirectPostJwt {
+            return Err(AuthRequestValidationError::UnsupportedFieldValue {
+                field: "response_mode",
+                expected: "direct_post.jwt",
+                found: serde_json::to_string(&response_mode).unwrap_or_else(|error| {
+                    error!(
+                        field = "response_mode",
+                        %error,
+                        "failed to serialize authorization request error detail"
+                    );
+                    format!("<failed to serialize response_mode: {error}>")
+                }),
+            });
+        }
+        let jwks = &client_metadata.jwks.keys;
+
+        // OpenID4VP 1.0 mandates that every JWK in verifier metadata has a `kid`.
+        let missing_kid_indices = jwks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, jwk)| jwk.kid().is_none().then_some(index))
+            .collect_vec();
+
+        if let Ok(indices) = VecNonEmpty::try_from(missing_kid_indices) {
+            return Err(AuthRequestValidationError::MissingJwkKid(indices));
+        }
+
+        // Choose the first key the wallet supports (currently any ECDH algorithm using a P-256 curve).
+        let (jwe_public_keys, jwk_errors) = jwks
+            .iter()
+            .map(JwePublicKey::try_from_jwk)
+            .partition_result::<Vec<_>, Vec<_>, _, _>();
+
+        let Some(jwe_public_keys) = VecNonEmpty::try_from(jwe_public_keys).ok() else {
+            // This unwrap is safe, since `jwk_errors` is guaranteed to
+            // contain at least one value if `jwe_public_keys` is empty.
+            return Err(AuthRequestValidationError::NoSupportedJwk(
+                jwk_errors.try_into().unwrap(),
+            ));
+        };
+
+        let encryption_pubkey = jwe_public_keys.into_first();
+
+        let client_id = vp_auth_request.oauth_request.client_id.as_str().into();
+        let mut registration_certificates = vp_auth_request
+            .verifier_info
+            .map(VecNonEmpty::into_inner)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|info| match info {
+                VerifierInfo::RegistrationCertificate { data } => Some(data),
+                VerifierInfo::Other => None,
+            })
+            .collect_vec();
+        let registration_certificate = match registration_certificates.len() {
+            0 => {
+                return Err(AuthRequestValidationError::RegistrationCertificate(Box::new(
+                    RegistrationCertificateError::Missing,
+                )));
+            }
+            1 => registration_certificates.pop().unwrap(),
+            _ => {
+                return Err(AuthRequestValidationError::RegistrationCertificate(Box::new(
+                    RegistrationCertificateError::Multiple,
+                )));
+            }
+        };
+
+        Ok(NormalizedVpAuthorizationRequest {
+            client_id,
+            nonce,
+            encryption_pubkey,
+            credential_requests: vp_auth_request.dcql_query.try_into()?,
+            response_uri,
+            client_metadata,
+            state: vp_auth_request.oauth_request.state,
+            wallet_nonce: vp_auth_request.wallet_nonce,
+            registration_certificate,
         })
+    }
+
+    fn sha256_thumbprint_bytes(jwk: &Key) -> Vec<u8> {
+        let jwk_thumbprint = jwk.thumbprint();
+
+        BASE64_URL_SAFE_NO_PAD
+            .decode(&jwk_thumbprint)
+            .expect("thumbprint for JWK generated by jwk-simple should decode as URL-safe Base64")
+    }
+
+    pub fn session_transcript(&self) -> SessionTranscript {
+        SessionTranscript::new_oid4vp(
+            &self.client_id.to_string(),
+            self.nonce.as_ref(),
+            Some(&Self::sha256_thumbprint_bytes(&Key::from(
+                self.encryption_pubkey.clone(),
+            ))),
+            &self.response_uri,
+        )
     }
 }
 
@@ -427,129 +761,32 @@ impl From<NormalizedVpAuthorizationRequest> for VpAuthorizationRequest {
     fn from(value: NormalizedVpAuthorizationRequest) -> Self {
         Self {
             aud: VpAuthorizationRequestAudience::SelfIssued,
-            oauth_request: AuthorizationRequest {
-                response_type: ResponseType::VpToken.into(),
-                client_id: value.client_id,
-                nonce: Some(value.nonce),
-                response_mode: Some(ResponseMode::DirectPostJwt),
-                redirect_uri: None,
-                state: None,
-                authorization_details: None,
-                request_uri: None,
-                code_challenge: None,
-                scope: None,
-            },
+            oauth_request: AuthorizationRequestBase::new(
+                HashSet::from([ResponseType::VpToken]),
+                value.client_id.to_string(),
+                value.state,
+            ),
+            nonce: Some(value.nonce),
+            response_mode: Some(ResponseMode::DirectPostJwt),
             dcql_query: value.credential_requests.into(),
-            client_metadata: Some(VpClientMetadata::Direct(value.client_metadata)),
-            client_id_scheme: Some(ClientIdScheme::X509SanDns),
+            client_metadata: Some(value.client_metadata),
             response_uri: Some(value.response_uri),
             wallet_nonce: value.wallet_nonce,
+            verifier_info: Some(vec_nonempty![VerifierInfo::registration_certificate(
+                value.registration_certificate,
+            )]),
+            transaction_data: None,
         }
     }
 }
 
-impl TryFrom<VpAuthorizationRequest> for NormalizedVpAuthorizationRequest {
-    type Error = AuthRequestValidationError;
-
-    fn try_from(vp_auth_request: VpAuthorizationRequest) -> Result<Self, Self::Error> {
-        // Check absence of fields that must not be present in an OpenID4VP Authorization Request
-        if vp_auth_request.oauth_request.authorization_details.is_some() {
-            return Err(AuthRequestValidationError::UnexpectedField("authorization_details"));
-        }
-        if vp_auth_request.oauth_request.code_challenge.is_some() {
-            return Err(AuthRequestValidationError::UnexpectedField("code_challenge"));
-        }
-        if vp_auth_request.oauth_request.redirect_uri.is_some() {
-            return Err(AuthRequestValidationError::UnexpectedField("redirect_uri"));
-        }
-        if vp_auth_request.oauth_request.scope.is_some() {
-            return Err(AuthRequestValidationError::UnexpectedField("scope"));
-        }
-        if vp_auth_request.oauth_request.request_uri.is_some() {
-            return Err(AuthRequestValidationError::UnexpectedField("request_uri"));
-        }
-
-        // Check presence of fields that must be present in an OpenID4VP Authorization Request
-        if vp_auth_request.oauth_request.nonce.is_none() {
-            return Err(AuthRequestValidationError::ExpectedFieldMissing("nonce"));
-        }
-        if vp_auth_request.oauth_request.response_mode.is_none() {
-            return Err(AuthRequestValidationError::ExpectedFieldMissing("response_mode"));
-        }
-        if vp_auth_request.client_id_scheme.is_none() {
-            return Err(AuthRequestValidationError::ExpectedFieldMissing("client_id_scheme"));
-        }
-        if vp_auth_request.response_uri.is_none() {
-            return Err(AuthRequestValidationError::ExpectedFieldMissing("response_uri"));
-        }
-        let Some(client_metadata) = vp_auth_request.client_metadata else {
-            return Err(AuthRequestValidationError::ExpectedFieldMissing("client_metadata"));
-        };
-
-        // Check that various enums have the expected values
-        if vp_auth_request.oauth_request.response_type != ResponseType::VpToken.into() {
-            return Err(AuthRequestValidationError::UnsupportedFieldValue {
-                field: "response_type",
-                expected: "vp_token",
-                found: serde_json::to_string(&vp_auth_request.oauth_request.response_type).unwrap(),
-            });
-        }
-        if *vp_auth_request.oauth_request.response_mode.as_ref().unwrap() != ResponseMode::DirectPostJwt {
-            return Err(AuthRequestValidationError::UnsupportedFieldValue {
-                field: "response_mode",
-                expected: "direct_post.jwt",
-                found: serde_json::to_string(&vp_auth_request.oauth_request.response_mode).unwrap(),
-            });
-        }
-        if *vp_auth_request.client_id_scheme.as_ref().unwrap() != ClientIdScheme::X509SanDns {
-            return Err(AuthRequestValidationError::UnsupportedFieldValue {
-                field: "client_id_scheme",
-                expected: "x509_san_dns",
-                found: serde_json::to_string(&vp_auth_request.client_id_scheme).unwrap(),
-            });
-        }
-
-        // Of fields that have an "_uri" variant, check that they are not used
-        let Some(client_metadata) = client_metadata.direct() else {
-            return Err(AuthRequestValidationError::UriVariantNotSupported("client_metadata"));
-        };
-        let Some(jwks) = client_metadata.jwks.direct() else {
-            return Err(AuthRequestValidationError::UriVariantNotSupported(
-                "client_metadata.jwks",
-            ));
-        };
-
-        // check that we received exactly one EC/P256 curve
-        if jwks.len() != 1 {
-            return Err(AuthRequestValidationError::UnexpectedJwkAmount(jwks.len()));
-        }
-        let jwk = jwks.first().unwrap().clone();
-        JwePublicKey::validate(&jwk)?;
-
-        Ok(NormalizedVpAuthorizationRequest {
-            client_id: vp_auth_request.oauth_request.client_id,
-            nonce: vp_auth_request.oauth_request.nonce.unwrap(),
-            encryption_pubkey: jwk,
-            credential_requests: vp_auth_request.dcql_query.try_into()?,
-            response_uri: vp_auth_request.response_uri.unwrap(),
-            client_metadata,
-            state: vp_auth_request.oauth_request.state,
-            wallet_nonce: vp_auth_request.wallet_nonce,
-        })
-    }
-}
-
-#[derive(Debug, thiserror::Error, ErrorCategory)]
-#[category(unexpected)]
+#[derive(Debug, thiserror::Error)]
 pub enum AuthResponseError {
     #[error("error (de)serializing JWE payload: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("error parsing JWK: {0}")]
-    JwkConversion(#[source] JoseError),
-
-    #[error("error encrypting/decrypting JWE: {0}")]
-    Jwe(#[source] JoseError),
+    #[error("error decrypting JWE: {0}")]
+    JweDecryption(#[source] JweJsonDecryptionError),
 
     #[error("state had incorrect value: expected {expected:?}, found {found:?}")]
     StateIncorrect {
@@ -557,14 +794,10 @@ pub enum AuthResponseError {
         found: Option<String>,
     },
 
-    #[error("missing apu field from JWE")]
-    MissingApu,
-
     #[error("failed to decode apu field from JWE")]
     Utf8(#[from] FromUtf8Error),
 
     #[error("no Document received in any DeviceResponse for credential query identifier: {0}")]
-    #[category(pd)]
     NoMdocDocuments(CredentialQueryIdentifier),
 
     #[error("error verifying disclosed mdoc(s): {0}")]
@@ -573,24 +806,13 @@ pub enum AuthResponseError {
     #[error("error verifying disclosed SD-JWT: {0}")]
     SdJwtVerification(#[from] sd_jwt::error::DecoderError),
 
-    #[error("error converting SD-JWT JWK: {0}")]
-    SdJwtJwkConversion(#[source] jwt::error::JwkConversionError),
-
     #[error("response does not satisfy credential request(s): {0}")]
     UnsatisfiedCredentialRequest(#[source] CredentialValidationError),
 
-    #[error("missing PoA")]
-    MissingPoa,
-
-    #[error("error verifying PoA: {0}")]
-    PoaVerification(#[from] PoaVerificationError),
-
     #[error("error converting disclosed attestations: {0}")]
-    #[category(pd)]
     DisclosedAttestation(#[from] DisclosedAttestationError),
 
     #[error("not all revocation statuses are valid")]
-    #[category(expected)]
     RevocationStatusNotAllValid,
 }
 
@@ -645,8 +867,6 @@ pub struct VpAuthorizationResponse {
     /// May be used by the RP to link incoming Authorization Responses to its corresponding Authorization Request,
     /// for example in case the `response_uri` contains no session token or other identifier.
     pub state: Option<String>,
-
-    pub poa: Option<Poa>,
 }
 
 impl VpAuthorizationResponse {
@@ -654,124 +874,105 @@ impl VpAuthorizationResponse {
     pub fn new_encrypted(
         vp_token: HashMap<CredentialQueryIdentifier, VerifiablePresentation>,
         auth_request: &NormalizedVpAuthorizationRequest,
+        encryption_algorithm: EncryptionAlgorithm,
         encryption_nonce: &str,
-        poa: Option<Poa>,
-    ) -> Result<String, AuthResponseError> {
-        Self::new(vp_token, auth_request.state.clone(), poa).encrypt(auth_request, encryption_nonce)
+    ) -> Result<String, JweJsonEncryptionError> {
+        let jwe = Self::new(vp_token, auth_request.state.clone()).encrypt(
+            auth_request,
+            encryption_algorithm,
+            encryption_nonce,
+        )?;
+
+        Ok(jwe)
     }
 
     fn encrypt(
         &self,
         auth_request: &NormalizedVpAuthorizationRequest,
+        encryption_algorithm: EncryptionAlgorithm,
         encryption_nonce: &str,
-    ) -> Result<String, AuthResponseError> {
-        let mut header = JweHeader::new();
-        header.set_token_type("JWT");
+    ) -> Result<String, JweJsonEncryptionError> {
+        let encrypter = JweEncrypter::from(auth_request.encryption_pubkey.clone());
 
-        // Set the `apu` and `apv` fields to the holder encryption nonce and nonce, per the ISO 18013-7 profile.
-        // Even when not disclosing mdoc credentials, using a holder-generated nonce for this value is perfectly
-        // acceptable, as the verifier should not make any assumptions about these values in that case.
-        header.set_agreement_partyuinfo(encryption_nonce);
-        header.set_agreement_partyvinfo(auth_request.nonce.clone());
-
-        // Use the AES key size that the server wants.
-        header.set_content_encryption(
-            auth_request
-                .client_metadata
-                .authorization_encryption_enc_values_supported
-                .to_string(),
-        );
-
-        // VpAuthorizationRequest always serializes to a JSON object useable as a JWT payload.
-        let serde_json::Value::Object(payload) = serde_json::to_value(self)? else {
-            panic!("VpAuthorizationResponse did not serialize to object")
-        };
-        let payload = JwtPayload::from_map(payload).unwrap();
-
-        // The key the RP wants us to encrypt our response to.
-        let encrypter = EcdhEsJweAlgorithm::EcdhEs
-            .encrypter_from_jwk(&auth_request.encryption_pubkey)
-            .map_err(AuthResponseError::JwkConversion)?;
-
-        let jwe = josekit::jwt::encode_with_encrypter(&payload, &header, &encrypter).map_err(AuthResponseError::Jwe)?;
-        Ok(jwe)
+        // Set the `apv` to the nonce contained in the auth request and specified by the verifier,
+        // while setting the `apu` to a random nonce generated by the holder.
+        encrypter.encrypt_json(
+            self,
+            encryption_algorithm,
+            Some(encryption_nonce.as_bytes()),
+            Some(auth_request.nonce.as_ref().as_bytes()),
+            None,
+        )
     }
 
     #[expect(clippy::too_many_arguments)]
     pub async fn decrypt_and_verify<C>(
         jwe: &str,
-        private_key: &EcKeyPair,
+        secret_key: &JweEcdhSecretKey,
         auth_request: &NormalizedVpAuthorizationRequest,
-        accepted_wallet_client_ids: &[String],
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor<'_>],
+        trust_anchors: &TrustAnchors,
         extending_vct_values: &impl ExtendingVctRetriever,
         revocation_verifier: &RevocationVerifier<C>,
+        accept_undetermined_revocation_status: bool,
     ) -> Result<UniqueIdVec<DisclosedAttestations>, AuthResponseError>
     where
         C: StatusListClient,
     {
-        let (response, encryption_nonce) = Self::decrypt(jwe, private_key)?;
+        let response = Self::decrypt(jwe, secret_key).map_err(AuthResponseError::JweDecryption)?;
 
         response
             .verify(
                 auth_request,
-                accepted_wallet_client_ids,
-                encryption_nonce.as_deref(),
                 time,
                 trust_anchors,
                 extending_vct_values,
                 revocation_verifier,
+                accept_undetermined_revocation_status,
             )
             .await
     }
 
-    fn decrypt(
-        jwe: &str,
-        private_key: &EcKeyPair,
-    ) -> Result<(VpAuthorizationResponse, Option<String>), AuthResponseError> {
-        let decrypter = EcdhEsJweAlgorithm::EcdhEs
-            .decrypter_from_jwk(&private_key.to_jwk_key_pair())
-            .map_err(AuthResponseError::JwkConversion)?;
-        let (payload, header) = josekit::jwt::decode_with_decrypter(jwe, &decrypter).map_err(AuthResponseError::Jwe)?;
+    fn decrypt(jwe: &str, secret_key: &JweEcdhSecretKey) -> Result<VpAuthorizationResponse, JweJsonDecryptionError> {
+        let decrypter = JweDecrypter::from_ecdh_secret_key(secret_key);
 
-        // Note that it is up to the holder to choose the contents of the `apv` and `apu` fields. We only need the `apu`
-        // value in case a credential in mdoc format was disclosed, as according to the ISO 18013-7 profile this value
-        // should be used when re-constructing the `SessionTranscript`.
-        let encryption_nonce = header.agreement_partyuinfo().map(String::from_utf8).transpose()?;
-
-        let payload = serde_json::from_value(serde_json::Value::Object(payload.into()))?;
-        Ok((payload, encryption_nonce))
+        // Accept only the encryption algorithms announced in the client metadata.
+        decrypter.decrypt_json(
+            jwe,
+            ExpectedEncryptionAlgorithm::Algorithms(RESPONSE_ENCRYPTION_ALGORITHMS),
+            // Disallow Deflate compression in order to prevent zip bombs in the received payload.
+            AllowedDecompression::None,
+        )
     }
 
     #[expect(clippy::too_many_arguments)]
     async fn verify<C>(
         self,
         auth_request: &NormalizedVpAuthorizationRequest,
-        accepted_wallet_client_ids: &[String],
-        encryption_nonce: Option<&str>,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor<'_>],
+        trust_anchors: &TrustAnchors,
         extending_vct_values: &impl ExtendingVctRetriever,
         revocation_verifier: &RevocationVerifier<C>,
+        accept_undetermined_revocation_status: bool,
     ) -> Result<UniqueIdVec<DisclosedAttestations>, AuthResponseError>
     where
         C: StatusListClient,
     {
         // Step 1: Verify the cryptographic integrity of the verifiable presentations
         //         and extract the disclosed attestations from them.
-        let mut holder_public_keys: Vec<VerifyingKey> = Vec::new();
-        let mut disclosed_attestations = HashMap::new();
 
-        for (id, presentation) in self.vp_token {
-            let (attestations, public_keys) = match presentation {
-                VerifiablePresentation::MsoMdoc(device_responses) => {
-                    let (keys, attestations): (Vec<_>, Vec<_>) =
-                        try_join_all(device_responses.iter().map(|device_response| async {
+        // Only one mdoc `SessionTranscript` is needed for the entire response.
+        // However, it may not be required, so initialize it lazily.
+        let session_transcript = LazyLock::new(|| auth_request.session_transcript());
+
+        let disclosed_attestations: HashMap<_, _> =
+            try_join_all(self.vp_token.into_iter().map(|(id, presentation)| async {
+                let attestations = match presentation {
+                    VerifiablePresentation::MsoMdoc(device_responses) => {
+                        let attestations: Vec<_> = try_join_all(device_responses.iter().map(|device_response| async {
                             Self::mdoc_to_disclosed_attestation(
                                 device_response,
-                                auth_request,
-                                encryption_nonce,
+                                &session_transcript,
                                 time,
                                 trust_anchors,
                                 revocation_verifier,
@@ -781,39 +982,36 @@ impl VpAuthorizationResponse {
                         .await?
                         .into_iter()
                         .flatten()
-                        .unzip();
+                        .collect();
 
-                    (
                         attestations
                             .try_into()
-                            .map_err(|_| AuthResponseError::NoMdocDocuments(id.clone()))?,
-                        keys,
-                    )
-                }
-                VerifiablePresentation::SdJwt(sdw_jwt_payloads) => {
-                    let (keys, attestations): (Vec<_>, Vec<_>) =
-                        try_join_all(sdw_jwt_payloads.into_iter().map(|unverified_presentation| async {
-                            Self::sd_jwt_to_disclosed_attestation(
-                                unverified_presentation,
-                                auth_request,
-                                time,
-                                trust_anchors,
-                                revocation_verifier,
-                            )
-                            .await
-                        }))
-                        .await?
-                        .into_iter()
-                        .unzip();
+                            .map_err(|_| AuthResponseError::NoMdocDocuments(id.clone()))?
+                    }
+                    VerifiablePresentation::SdJwt(sdw_jwt_payloads) => {
+                        let attestations = try_join_all(sdw_jwt_payloads.into_nonempty_iter().map(
+                            |unverified_presentation| async {
+                                Self::sd_jwt_to_disclosed_attestation(
+                                    unverified_presentation,
+                                    auth_request,
+                                    time,
+                                    trust_anchors,
+                                    revocation_verifier,
+                                )
+                                .await
+                            },
+                        ))
+                        .await?;
 
-                    (attestations.try_into().unwrap(), keys)
-                }
-            };
+                        attestations.try_into().unwrap()
+                    }
+                };
 
-            // Retain the used holder public keys for checking the PoA in step 2.
-            holder_public_keys.extend(public_keys);
-            disclosed_attestations.insert(id.clone(), attestations);
-        }
+                Ok::<_, AuthResponseError>((id, attestations))
+            }))
+            .await?
+            .into_iter()
+            .collect();
 
         // Step 2: Check the revocation statuses of the disclosed credentials.
         Self::evaluate_revocation_policy(
@@ -822,36 +1020,10 @@ impl VpAuthorizationResponse {
                 .flat_map(|attestations: &VecNonEmpty<_>| {
                     attestations.iter().map(|attestation| &attestation.revocation_status)
                 }),
+            accept_undetermined_revocation_status,
         )?;
 
-        if disclosed_attestations
-            .values()
-            .into_iter()
-            .any(|attestations: &VecNonEmpty<_>| {
-                attestations.iter().any(|attestation| {
-                    attestation
-                        .revocation_status
-                        .is_some_and(|status| status != RevocationStatus::Valid)
-                })
-            })
-        {
-            return Err(AuthResponseError::RevocationStatusNotAllValid);
-        }
-
-        // Step 3: Verify the PoA, if present. Unfortunately `VerifyingKey` does not
-        //         implement `Hash`, so we have to sort and deduplicate manually.
-        holder_public_keys.sort();
-        holder_public_keys.dedup();
-        if holder_public_keys.len() >= 2 {
-            self.poa.ok_or(AuthResponseError::MissingPoa)?.verify(
-                &holder_public_keys,
-                auth_request.client_id.as_str(),
-                accepted_wallet_client_ids,
-                &auth_request.nonce,
-            )?
-        }
-
-        // Step 4: Verify the `state` field, against that of the Authorization Request.
+        // Step 3: Verify the `state` field, against that of the Authorization Request.
         if self.state != auth_request.state {
             return Err(AuthResponseError::StateIncorrect {
                 expected: auth_request.state.clone(),
@@ -859,19 +1031,20 @@ impl VpAuthorizationResponse {
             });
         }
 
-        // Step 5: Check that we received all the attributes that we requested.
+        // Step 4: Check that we received all the attributes that we requested.
         auth_request
             .credential_requests
             .is_satisfied_by_disclosed_credentials(&disclosed_attestations, extending_vct_values)
             .map_err(AuthResponseError::UnsatisfiedCredentialRequest)?;
 
-        // Step 6: Sort the disclosed attestations into the same order as that of the Credential Requests in the DCQL
+        // Step 5: Sort the disclosed attestations into the same order as that of the Credential Requests in the DCQL
         //         request and remove any attributes that were not present in the respective Credential Request. This
         //         removal is not a privacy feature, as at this point the attributes have already left the holder.
         //         However, we discard them here in order to provide a predictable API to the RP by publishing exactly
         //         those attributes it requested at the `disclosed_attributes` endpoint.
         //
         //         Note that the order of the attributes within a `DisclosedAttestation` is undefined.
+        let mut disclosed_attestations = disclosed_attestations;
         let disclosed_attestations = auth_request
             .credential_requests
             .as_ref()
@@ -881,7 +1054,7 @@ impl VpAuthorizationResponse {
                 //         there is a matching disclosed attestation.
                 let (id, mut attestations) = disclosed_attestations.remove_entry(credential_request.id()).unwrap();
 
-                for attestation in attestations.iter_mut() {
+                for attestation in &mut attestations {
                     attestation.attributes.prune(credential_request.claim_paths());
                 }
 
@@ -898,47 +1071,26 @@ impl VpAuthorizationResponse {
 
     async fn mdoc_to_disclosed_attestation<C>(
         device_response: &DeviceResponse,
-        auth_request: &NormalizedVpAuthorizationRequest,
-        encryption_nonce: Option<&str>,
+        session_transcript: &SessionTranscript,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor<'_>],
+        trust_anchors: &TrustAnchors,
         revocation_verifier: &RevocationVerifier<C>,
-    ) -> Result<Vec<(VerifyingKey, DisclosedAttestation)>, AuthResponseError>
+    ) -> Result<Vec<DisclosedAttestation>, AuthResponseError>
     where
         C: StatusListClient,
     {
-        let session_transcript = encryption_nonce.map(|encryption_nonce|
-            // The mdoc `SessionTranscript` may not be required, so initialize it lazily.
-            SessionTranscript::new_oid4vp(
-                &auth_request.response_uri,
-                &auth_request.client_id,
-                auth_request.nonce.clone(),
-                encryption_nonce,
-            ));
-
         // Verify the cryptographic integrity of each mdoc `DeviceResponse`
         // and obtain a `DisclosedDocuments` for each.
         let disclosed_documents = device_response
-            .verify(
-                None,
-                &session_transcript.ok_or(AuthResponseError::MissingApu)?,
-                time,
-                trust_anchors,
-                revocation_verifier,
-            )
+            .verify(None, session_transcript, time, trust_anchors, revocation_verifier)
             .await?;
 
         // Then attempt to convert the disclosed documents to `DisclosedAttestation`s.
         let disclosed_attestations = disclosed_documents
             .into_iter()
-            .map(|disclosed_document| {
-                Ok::<_, AuthResponseError>((
-                    disclosed_document.device_key,
-                    DisclosedAttestation::try_from(disclosed_document)
-                        .map_err(AuthResponseError::DisclosedAttestation)?,
-                ))
-            })
-            .try_collect()?;
+            .map(DisclosedAttestation::try_from)
+            .try_collect()
+            .map_err(AuthResponseError::DisclosedAttestation)?;
 
         Ok(disclosed_attestations)
     }
@@ -947,14 +1099,14 @@ impl VpAuthorizationResponse {
         unverified_presentation: UnverifiedSdJwtPresentation,
         auth_request: &NormalizedVpAuthorizationRequest,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor<'_>],
+        trust_anchors: &TrustAnchors,
         revocation_verifier: &RevocationVerifier<C>,
-    ) -> Result<(VerifyingKey, DisclosedAttestation), AuthResponseError>
+    ) -> Result<DisclosedAttestation, AuthResponseError>
     where
         C: StatusListClient,
     {
         let kb_verification_options = KbVerificationOptions {
-            expected_aud: &auth_request.client_id,
+            expected_aud: &auth_request.client_id.to_string(),
             expected_nonce: &auth_request.nonce,
             iat_leeway: SD_JWT_IAT_LEEWAY,
             iat_acceptance_window: SD_JWT_IAT_WINDOW,
@@ -964,23 +1116,21 @@ impl VpAuthorizationResponse {
             .into_verified_against_trust_anchors(trust_anchors, &kb_verification_options, time, revocation_verifier)
             .await?;
 
-        let holder_public_key = presentation
-            .sd_jwt()
-            .holder_pubkey()
-            .map_err(AuthResponseError::SdJwtJwkConversion)?;
-
         let disclosed_attestation = DisclosedAttestation::try_from(presentation)?;
 
-        Ok((holder_public_key, disclosed_attestation))
+        Ok(disclosed_attestation)
     }
 
     fn evaluate_revocation_policy<'a>(
         statuses: impl Iterator<Item = &'a Option<RevocationStatus>>,
+        accept_undetermined_revocation_status: bool,
     ) -> Result<(), AuthResponseError> {
-        if !statuses
-            .into_iter()
-            .all(|status| status.is_some_and(|status| status == RevocationStatus::Valid))
-        {
+        if !statuses.into_iter().all(|status| {
+            status.is_some_and(|status| {
+                status == RevocationStatus::Valid
+                    || (status == RevocationStatus::Undetermined && accept_undetermined_revocation_status)
+            })
+        }) {
             return Err(AuthResponseError::RevocationStatusNotAllValid);
         }
 
@@ -990,124 +1140,245 @@ impl VpAuthorizationResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VpResponse {
-    pub redirect_uri: Option<BaseUrl>,
+    pub redirect_uri: Option<Url>,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashMap;
     use std::collections::HashSet;
-
-    use assert_matches::assert_matches;
-    use futures::FutureExt;
-    use itertools::Itertools;
-    use josekit::jwk::alg::ec::EcCurve;
-    use josekit::jwk::alg::ec::EcKeyPair;
-    use rstest::rstest;
-    use rustls_pki_types::TrustAnchor;
-    use serde_json::json;
+    use std::sync::Arc;
 
     use attestation_data::attributes::AttributesTraversalBehaviour;
     use attestation_data::disclosure::DisclosedAttributes;
+    use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+    use attestation_data::registration_certificate::mock::MockRegistrationCertificate;
+    use attestation_data::registration_certificate::mock::MockRegistrationCertificateAuthority;
     use attestation_data::test_credential::nl_pid_address_minimal_address;
     use attestation_data::test_credential::nl_pid_credentials_full_name;
-
     use attestation_types::claim_path::ClaimPath;
+    use attestation_types::credential_format::Format;
     use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
+    use attestation_types::pid_constants::PID_MDOC_DOCTYPE;
+    use base64::prelude::*;
+    use coset::iana;
+    use crypto::keys::PublicKey;
+    use crypto::keys::PublicKeyRef;
+    use crypto::mock_remote::DisclosureMockRemoteWscd;
     use crypto::mock_remote::MockRemoteEcdsaKey;
     use crypto::server_keys::KeyPair;
     use crypto::server_keys::generate::Ca;
-    use crypto::server_keys::generate::mock::ISSUANCE_CERT_CN;
-    use crypto::server_keys::generate::mock::PID_ISSUER_CERT_CN;
-    use crypto::x509::CertificateUsage;
-    use dcql::CredentialFormat;
+    use crypto::x509::crl::CertificateCrlVerificationError;
+    use crypto::x509::crl::mock::MockCertificateCrlVerifier;
     use dcql::CredentialQueryIdentifier;
+    use dcql::Query;
     use dcql::normalized::NormalizedCredentialRequest;
     use dcql::normalized::NormalizedCredentialRequests;
+    use futures::FutureExt;
+    use itertools::Itertools;
+    use jwe::algorithm::EcdhAlgorithm;
+    use jwe::algorithm::EncryptionAlgorithm;
+    use jwe::decryption::JweEcdhSecretKey;
     use jwt::SignedJwt;
-    use jwt::pop::JwtPopClaims;
+    use jwt::error::JwtX5cVerifyError;
+    use jwt::nonce::Nonce;
     use mdoc::DeviceResponse;
-    use mdoc::SessionTranscript;
     use mdoc::examples::Example;
     use mdoc::holder::Mdoc;
     use mdoc::holder::disclosure::PartialMdoc;
+    use oauth::authorization::ResponseType;
+    use oauth::jose::JwsAlgorithm;
+    use rstest::rstest;
     use sd_jwt::builder::SignedSdJwt;
     use sd_jwt::examples::WITH_KB_SD_JWT;
     use sd_jwt::key_binding_jwt::KeyBindingJwtBuilder;
     use sd_jwt::sd_jwt::UnsignedSdJwtPresentation;
+    use serde::Deserialize;
+    use serde_json::json;
+    use serde_with::serde_as;
     use token_status_list::verification::client::mock::StatusListClientStub;
     use token_status_list::verification::verifier::RevocationStatus;
     use token_status_list::verification::verifier::RevocationVerifier;
     use utils::generator::mock::MockTimeGenerator;
     use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
-    use wscd::Poa;
-    use wscd::mock_remote::MockRemoteWscd;
-    use wscd::wscd::JwtPoaInput;
 
-    use crate::AuthorizationErrorCode;
-    use crate::VpAuthorizationErrorCode;
-    use crate::mock::ExtendingVctRetrieverStub;
-    use crate::mock::MOCK_WALLET_CLIENT_ID;
-    use crate::openid4vp::AuthResponseError;
-    use crate::openid4vp::NormalizedVpAuthorizationRequest;
-
+    use super::AuthRequestValidationError;
+    use super::AuthResponseError;
+    use super::ClientId;
+    use super::ClientIdScheme;
+    use super::JsonBase64;
+    use super::NormalizedVpAuthorizationRequest;
+    use super::REGISTRATION_CERTIFICATE_FORMAT;
+    use super::RegistrationCertificateError;
     use super::VerifiablePresentation;
+    use super::VerifierInfo;
     use super::VpAuthorizationRequest;
     use super::VpAuthorizationResponse;
+    use super::VpRequestUri;
+    use super::VpRequestUriObject;
+    use crate::authorization::ResponseMode;
+    use crate::disclosure_session::VpClientError;
+    use crate::jwe::JweEncryptionAlgorithm;
+    use crate::mock::ExtendingVctRetrieverStub;
+    use crate::openid4vp::MsoMdocAlgValues;
+    use crate::openid4vp::SdJwtAlgValues;
+    use crate::openid4vp::VpFormatsSupported;
+
+    #[serde_as]
+    #[derive(Debug, Deserialize)]
+    #[expect(dead_code)]
+    struct TransactionDataEntries(
+        #[serde_as(as = "Vec<JsonBase64>")] VecNonEmpty<serde_json::Map<String, serde_json::Value>>,
+    );
+
+    const EXAMPLE_X509_HASH_CLIENT_ID: &str = "x509_hash:ZXhhbXBsZS1jbGllbnQtaWQtaGFzaA";
+
+    #[derive(Clone, Copy)]
+    enum RegistrationCertificateFormat {
+        Jwt,
+        Cwt,
+    }
+
+    fn authorization_request_from_normalized(value: NormalizedVpAuthorizationRequest) -> VpAuthorizationRequest {
+        value.into()
+    }
+
+    fn with_mock_registration_certificate(mut auth_request: VpAuthorizationRequest) -> VpAuthorizationRequest {
+        let (_, _, _, normalized) = setup_mdoc();
+        auth_request.verifier_info = Some(vec_nonempty![VerifierInfo::registration_certificate(
+            normalized.registration_certificate,
+        )]);
+        auth_request
+    }
 
     #[test]
-    fn test_vp_authorization_error_code_serialization() {
-        assert_eq!(
-            serde_json::from_str::<VpAuthorizationErrorCode>(r#""invalid_request""#).unwrap(),
-            VpAuthorizationErrorCode::AuthorizationError(AuthorizationErrorCode::InvalidRequest)
-        );
+    fn test_normalized_vp_authorization_request_sha256_thumbprint_bytes() {
+        // Source (edited): https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#appendix-B.2.6.1-7
+        let jwk = serde_json::from_value(json!({
+            "kty": "EC",
+            "crv": "P-256",
+            "alg": "ECDH-ES",
+            "kid": "test",
+            "x": "DxiH5Q4Yx3UrukE2lWCErq8N8bqC9CHLLrAwLz5BmE0",
+            "y": "XtLM4-3h5o3HUH0MHVJV0kyq0iBlrBwlh8qEDMZ4-Pc"
+        }))
+        .unwrap();
+
+        // Source: https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#appendix-B.2.6.1-9
+        let expected_thumbprint =
+            hex::decode("4283ec927ae0f208daaa2d026a814f2b22dca52cf85ffa8f3f8626c6bd669047").unwrap();
 
         assert_eq!(
-            serde_json::from_str::<VpAuthorizationErrorCode>(r#""vp_formats_not_supported""#).unwrap(),
-            VpAuthorizationErrorCode::VpFormatsNotSupported,
+            NormalizedVpAuthorizationRequest::sha256_thumbprint_bytes(&jwk),
+            expected_thumbprint
         );
     }
 
-    fn setup_mdoc() -> (
-        TrustAnchor<'static>,
-        KeyPair,
-        EcKeyPair,
-        NormalizedVpAuthorizationRequest,
-    ) {
+    #[test]
+    fn test_client_id_parse_and_display_without_scheme() {
+        let client_id: ClientId = "example.com".into();
+
+        assert_eq!(client_id.to_string(), "example.com");
+        assert_matches!(client_id.scheme, None);
+        assert_eq!(client_id.id, "example.com");
+    }
+
+    #[test]
+    fn test_client_id_parse_and_display_unknown_scheme() {
+        let client_id: ClientId = "future_scheme:example.com".into();
+
+        assert_eq!(client_id.to_string(), "future_scheme:example.com");
+        assert_matches!(&client_id.scheme, Some(ClientIdScheme::Other(s)) if s == "future_scheme");
+        assert_eq!(client_id.id, "example.com");
+    }
+
+    #[test]
+    fn test_client_id_parse_and_display_decentralized_identifier() {
+        let client_id: ClientId = "decentralized_identifier:did:example:123".into();
+
+        assert_eq!(client_id.to_string(), "decentralized_identifier:did:example:123");
+        assert_matches!(client_id.scheme, Some(ClientIdScheme::DecentralizedIdentifier));
+        assert_eq!(client_id.id, "did:example:123");
+    }
+
+    #[test]
+    fn test_client_id_parse_and_display_x509_hash() {
+        let client_id: ClientId = "x509_hash:abcdef".into();
+
+        assert_eq!(client_id.to_string(), "x509_hash:abcdef");
+        assert_matches!(client_id.scheme, Some(ClientIdScheme::X509Hash));
+        assert_eq!(client_id.id, "abcdef");
+    }
+
+    #[test]
+    fn test_client_id_x509_hash_from_certificate() {
+        let ca = Ca::generate_mock();
+        let key_pair = ca.generate_wrpac_verifier_mock().unwrap();
+        let expected_hash = ClientId::x509_hash_value(key_pair.certificate());
+
+        let client_id = ClientId::x509_hash_from_certificate(key_pair.certificate());
+
+        assert_eq!(client_id.to_string(), format!("x509_hash:{expected_hash}"));
+        assert_matches!(client_id.scheme, Some(ClientIdScheme::X509Hash));
+        assert_eq!(client_id.id, expected_hash);
+    }
+
+    fn setup_mdoc() -> (Ca, KeyPair, JweEcdhSecretKey, NormalizedVpAuthorizationRequest) {
         setup_with_credential_requests(NormalizedCredentialRequests::new_mock_mdoc_iso_example())
+    }
+
+    fn setup_mdoc_without_crl_distribution_point() -> (Ca, KeyPair, JweEcdhSecretKey, NormalizedVpAuthorizationRequest)
+    {
+        setup_with_credential_requests_and_crl_distribution_point(
+            NormalizedCredentialRequests::new_mock_mdoc_iso_example(),
+            false,
+        )
     }
 
     fn setup_with_credential_requests(
         credential_requests: NormalizedCredentialRequests,
-    ) -> (
-        TrustAnchor<'static>,
-        KeyPair,
-        EcKeyPair,
-        NormalizedVpAuthorizationRequest,
-    ) {
-        let ca = Ca::generate("myca", Default::default()).unwrap();
-        let trust_anchor = ca.to_trust_anchor().to_owned();
-        let rp_keypair = ca.generate_reader_mock().unwrap();
+    ) -> (Ca, KeyPair, JweEcdhSecretKey, NormalizedVpAuthorizationRequest) {
+        setup_with_credential_requests_and_crl_distribution_point(credential_requests, true)
+    }
 
-        let encryption_privkey = EcKeyPair::generate(EcCurve::P256).unwrap();
+    fn setup_with_credential_requests_and_crl_distribution_point(
+        credential_requests: NormalizedCredentialRequests,
+        with_crl_distribution_point: bool,
+    ) -> (Ca, KeyPair, JweEcdhSecretKey, NormalizedVpAuthorizationRequest) {
+        let ca = Ca::generate_mock();
+        let rp_keypair = if with_crl_distribution_point {
+            ca.generate_wrpac_verifier_mock_with_crl().unwrap()
+        } else {
+            ca.generate_wrpac_verifier_mock().unwrap()
+        };
 
-        let auth_request = NormalizedVpAuthorizationRequest::new(
+        let encryption_secret_key = JweEcdhSecretKey::new_random(Some("test-kid".to_string()), EcdhAlgorithm::EcdhEs);
+        let encryption_public_key = encryption_secret_key.to_jwe_public_key();
+
+        let response_uri = "https://cert.rp.example.com/response_uri".parse().unwrap();
+
+        let registration_certificate =
+            MockRegistrationCertificate::new_verifier(rp_keypair.certificate(), credential_requests.clone().into());
+        let registration_certificate =
+            RegistrationCertificateEnvelope::from_slice(registration_certificate.certificate.as_slice()).unwrap();
+        let auth_request = NormalizedVpAuthorizationRequest::new_for_verifier(
             credential_requests,
-            rp_keypair.certificate(),
-            "nonce".to_string(),
-            encryption_privkey.to_jwk_public_key().try_into().unwrap(),
-            "https://example.com/response_uri".parse().unwrap(),
+            ClientId::x509_hash_from_certificate(rp_keypair.certificate()),
+            Nonce::from("nonce".to_string()),
+            encryption_public_key,
+            response_uri,
             None,
-        )
-        .unwrap();
+            registration_certificate,
+        );
 
-        (trust_anchor, rp_keypair, encryption_privkey, auth_request)
+        (ca, rp_keypair, encryption_secret_key, auth_request)
     }
 
     #[test]
     fn test_encrypt_decrypt_authorization_response() {
-        let (_, _, encryption_privkey, auth_request) = setup_mdoc();
+        let (_, _, encryption_secret_key, auth_request) = setup_mdoc();
 
         // NB: the example DeviceResponse verifies as an ISO 18013-5 DeviceResponse while here we use it in
         // an OpenID4VP setting, i.e. with different SessionTranscript contents, so it can't be verified.
@@ -1115,20 +1386,19 @@ mod tests {
         // an Authorization Response JWE.
         let encryption_nonce = "encryption_nonce".to_string();
         let encrypted_device_response = DeviceResponse::example();
-        // the ISO examples only use one Mdoc and therefore there is no need for a PoA
         let auth_response = VpAuthorizationResponse::new(
             HashMap::from([(
                 "id".try_into().unwrap(),
                 VerifiablePresentation::MsoMdoc(vec_nonempty![encrypted_device_response.clone()]),
             )]),
             None,
-            None,
         );
-        let jwe = auth_response.encrypt(&auth_request, &encryption_nonce).unwrap();
 
-        let (decrypted, jwe_encryption_nonce) = VpAuthorizationResponse::decrypt(&jwe, &encryption_privkey).unwrap();
+        let jwe = auth_response
+            .encrypt(&auth_request, EncryptionAlgorithm::A256Gcm, &encryption_nonce)
+            .unwrap();
+        let decrypted = VpAuthorizationResponse::decrypt(&jwe, &encryption_secret_key).unwrap();
 
-        assert_eq!(jwe_encryption_nonce, Some(encryption_nonce));
         assert_eq!(decrypted.vp_token.len(), 1);
 
         let (decrypted_identifier, VerifiablePresentation::MsoMdoc(decrypted_device_responses)) =
@@ -1142,34 +1412,102 @@ mod tests {
 
         let decrypted_device_response = decrypted_device_responses.into_first();
 
-        assert_eq!(
-            decrypted_device_response
-                .documents
-                .as_ref()
-                .map(|documents| documents.len())
-                .unwrap_or_default(),
-            1
-        );
+        let decrypted_documents = decrypted_device_response.documents.unwrap();
+        assert_eq!(decrypted_documents.len().get(), 1);
 
-        let encrypted_document = encrypted_device_response.documents.unwrap().into_iter().next().unwrap();
-        let decrypted_document = decrypted_device_response.documents.unwrap().into_iter().next().unwrap();
-
+        let encrypted_document = encrypted_device_response.documents.unwrap().into_first();
+        let decrypted_document = decrypted_documents.into_first();
         assert_eq!(decrypted_document.doc_type, encrypted_document.doc_type);
         assert_eq!(decrypted_document.issuer_signed, encrypted_document.issuer_signed);
     }
 
-    #[test]
-    fn test_authorization_request_jwt() {
-        let (trust_anchor, rp_keypair, _, auth_request) = setup_mdoc();
+    #[tokio::test]
+    async fn test_authorization_request_jwt() {
+        let (ca, rp_keypair, _, mut auth_request) = setup_mdoc();
+        let trust_anchors = ca.to_trust_anchors();
+        let crl_verifier = MockCertificateCrlVerifier::new_for_ca(&ca);
+        auth_request.state = Some("authorization_state".to_string());
 
         let auth_request_jwt =
-            SignedJwt::sign_with_certificate(&VpAuthorizationRequest::from(auth_request), &rp_keypair)
-                .now_or_never()
-                .unwrap()
+            SignedJwt::sign_with_certificate(&authorization_request_from_normalized(auth_request), &rp_keypair)
+                .await
                 .unwrap();
 
-        let (auth_request, cert) = VpAuthorizationRequest::try_new(&auth_request_jwt.into(), &[trust_anchor]).unwrap();
-        auth_request.validate(&cert, None).unwrap();
+        let (auth_request, cert) =
+            VpAuthorizationRequest::authenticate_request(&auth_request_jwt.into(), &trust_anchors, &crl_verifier)
+                .await
+                .unwrap();
+        let (auth_request, _) = auth_request.normalize_request(&cert, None).unwrap();
+        assert_eq!(auth_request.state.as_deref(), Some("authorization_state"));
+    }
+
+    #[tokio::test]
+    async fn test_authorization_request_jwt_with_crl_fails_without_distribution_point() {
+        let (ca, rp_keypair, _, auth_request) = setup_mdoc_without_crl_distribution_point();
+        let trust_anchors = ca.to_trust_anchors();
+        let auth_request_jwt =
+            SignedJwt::sign_with_certificate(&authorization_request_from_normalized(auth_request), &rp_keypair)
+                .await
+                .unwrap();
+
+        let verifier = MockCertificateCrlVerifier::default();
+        let result =
+            VpAuthorizationRequest::authenticate_request(&auth_request_jwt.into(), &trust_anchors, &verifier).await;
+
+        assert_matches!(
+            result,
+            Err(AuthRequestValidationError::JwtVerification(
+                JwtX5cVerifyError::CertificateCrlValidation(CertificateCrlVerificationError::NoCrlDistributionPoint)
+            ))
+        );
+    }
+
+    #[test]
+    fn test_authorization_request_validate_unauthorized_x509_hash_client_id() {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        let expected_hash = ClientId::x509_hash_value(rp_keypair.certificate());
+
+        auth_request.oauth_request.client_id = "x509_hash:wrong-hash".to_string();
+
+        let err = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+        assert_matches!(
+            err,
+            AuthRequestValidationError::UnauthorizedClientIdHash { client_id, certificate_hash }
+            if client_id == "x509_hash:wrong-hash" && certificate_hash == expected_hash
+        );
+    }
+
+    #[test]
+    fn test_authorization_request_validate_unsupported_client_id_scheme() {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        let certificate_hash = ClientId::x509_hash_value(rp_keypair.certificate());
+        auth_request.oauth_request.client_id = format!("redirect_uri:{certificate_hash}");
+
+        let err = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+        assert_matches!(
+            err,
+            AuthRequestValidationError::UnsupportedClientIdScheme {
+                scheme: ClientIdScheme::RedirectUri
+            }
+        );
+    }
+
+    #[test]
+    fn test_authorization_request_validate_unsupported_client_id_without_scheme() {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        auth_request.oauth_request.client_id = ClientId::x509_hash_value(rp_keypair.certificate());
+
+        let err = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+        assert_matches!(err, AuthRequestValidationError::UnsupportedClientIdWithoutScheme);
     }
 
     #[test]
@@ -1179,23 +1517,26 @@ mod tests {
                 "aud": "https://self-issued.me/v2",
                 "response_type": "vp_token",
                 "response_mode": "direct_post.jwt",
-                "client_id_scheme": "x509_san_dns",
-                "client_id": "example.com",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
                 "response_uri": "https://example.com/post",
                 "nonce": "%%2_fsd32434!==r",
                 "client_metadata": {
                     "jwks": {
                         "keys": [{
-                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES",
+                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES", "kid": "my-key-id",
                             "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
                             "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
                         }]
                     },
-                    "authorization_encryption_alg_values_supported": "ECDH-ES",
-                    "authorization_encryption_enc_values_supported": "A256GCM",
-                    "vp_formats": {
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
                         "mso_mdoc": {
-                            "alg": [ "ES256" ]
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
                         }
                     }
                 },
@@ -1217,7 +1558,873 @@ mod tests {
             }
         );
 
+        let auth_request = with_mock_registration_certificate(serde_json::from_value(example_json).unwrap());
+        NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap();
+    }
+
+    #[test]
+    fn deserialize_authorization_request_single_encryption_enc_supported() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [{
+                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES", "kid": "my-key-id",
+                            "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                            "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                        }]
+                    },
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        let auth_request = with_mock_registration_certificate(serde_json::from_value(example_json).unwrap());
+        let normalized_request = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap();
+
+        assert_eq!(
+            normalized_request
+                .client_metadata
+                .encrypted_response_enc_values_supported,
+            Some(vec_nonempty![EncryptionAlgorithm::A256Gcm.into()])
+        );
+    }
+
+    #[test]
+    fn deserialize_authorization_request_default_encryption_enc_supported() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [{
+                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES", "kid": "my-key-id",
+                            "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                            "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                        }]
+                    },
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        let auth_request = with_mock_registration_certificate(serde_json::from_value(example_json).unwrap());
+        let normalized_request = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap();
+
+        assert!(
+            normalized_request
+                .client_metadata
+                .encrypted_response_enc_values_supported
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn select_encryption_algorithm_should_default_to_a128gcm_when_not_advertised() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let mut client_metadata = auth_request.client_metadata.clone();
+        client_metadata.encrypted_response_enc_values_supported = None;
+
+        let encryption_algorithm =
+            NormalizedVpAuthorizationRequest::select_encryption_algorithm(&client_metadata).unwrap();
+
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::A128Gcm);
+    }
+
+    #[test]
+    fn select_encryption_algorithm_should_ignore_unknown_algorithms() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let mut client_metadata = auth_request.client_metadata.clone();
+        client_metadata.encrypted_response_enc_values_supported = Some(vec_nonempty![
+            JweEncryptionAlgorithm::Unknown("A512GCM".to_string()),
+            EncryptionAlgorithm::A256Gcm.into()
+        ]);
+
+        let encryption_algorithm =
+            NormalizedVpAuthorizationRequest::select_encryption_algorithm(&client_metadata).unwrap();
+
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::A256Gcm);
+    }
+
+    #[test]
+    fn select_encryption_algorithm_should_prefer_a256gcm_over_a128gcm() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let mut client_metadata = auth_request.client_metadata.clone();
+        client_metadata.encrypted_response_enc_values_supported = Some(vec_nonempty![
+            EncryptionAlgorithm::A128Gcm.into(),
+            EncryptionAlgorithm::A256Gcm.into()
+        ]);
+
+        let encryption_algorithm =
+            NormalizedVpAuthorizationRequest::select_encryption_algorithm(&client_metadata).unwrap();
+
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::A256Gcm);
+    }
+
+    #[test]
+    fn validate_should_return_selected_encryption_algorithm() {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        auth_request
+            .client_metadata
+            .as_mut()
+            .unwrap()
+            .encrypted_response_enc_values_supported = Some(vec_nonempty![
+            JweEncryptionAlgorithm::Unknown("A512GCM".to_string()),
+            EncryptionAlgorithm::A256Gcm.into()
+        ]);
+
+        let (_, encryption_algorithm) = auth_request.normalize_request(rp_keypair.certificate(), None).unwrap();
+
+        assert_eq!(encryption_algorithm, EncryptionAlgorithm::A256Gcm);
+    }
+
+    #[rstest]
+    #[case::nonce("nonce")]
+    #[case::response_mode("response_mode")]
+    #[case::response_uri("response_uri")]
+    #[case::client_metadata("client_metadata")]
+    fn authorization_request_missing_required_field_should_error(#[case] missing_field: &'static str) {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = VpAuthorizationRequest::from(auth_request);
+
+        match missing_field {
+            "nonce" => auth_request.nonce = None,
+            "response_mode" => auth_request.response_mode = None,
+            "response_uri" => auth_request.response_uri = None,
+            "client_metadata" => auth_request.client_metadata = None,
+            _ => unreachable!("test case should remove a supported field"),
+        }
+
+        let error = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+
+        assert_matches!(
+            error,
+            AuthRequestValidationError::ExpectedFieldMissing(field) if field == missing_field
+        );
+    }
+
+    #[rstest]
+    #[case::empty(HashSet::new())]
+    #[case::code(HashSet::from([ResponseType::Code]))]
+    #[case::id_token(HashSet::from([ResponseType::IdToken]))]
+    #[case::mixed(HashSet::from([ResponseType::VpToken, ResponseType::Code, ResponseType::IdToken]))]
+    fn authorization_request_unsupported_response_type_should_error(#[case] response_types: HashSet<ResponseType>) {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = VpAuthorizationRequest::from(auth_request);
+        auth_request.oauth_request.response_type = response_types.clone();
+
+        let error = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+
+        assert_matches!(
+            error,
+            AuthRequestValidationError::UnsupportedFieldValue {
+                field: "response_type",
+                expected: "vp_token",
+                found,
+            } if serde_json::from_str::<HashSet<ResponseType>>(&found).unwrap() == response_types
+        );
+    }
+
+    #[rstest]
+    #[case::query(ResponseMode::Query, r#""query""#)]
+    #[case::fragment(ResponseMode::Fragment, r#""fragment""#)]
+    #[case::direct_post(ResponseMode::DirectPost, r#""direct_post""#)]
+    fn authorization_request_unsupported_response_mode_should_error(
+        #[case] response_mode: ResponseMode,
+        #[case] expected_found: &str,
+    ) {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = VpAuthorizationRequest::from(auth_request);
+        auth_request.response_mode = Some(response_mode);
+
+        let error = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+
+        assert_matches!(
+            error,
+            AuthRequestValidationError::UnsupportedFieldValue {
+                field: "response_mode",
+                expected: "direct_post.jwt",
+                found,
+            } if found == expected_found
+        );
+    }
+
+    #[test]
+    fn deserialize_authorization_request_unknown_and_supported_encryption_enc_supported() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [{
+                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES", "kid": "my-key-id",
+                            "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                            "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                        }]
+                    },
+                    "encrypted_response_enc_values_supported": ["A512GCM", "A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        let auth_request = with_mock_registration_certificate(serde_json::from_value(example_json).unwrap());
+        let normalized_request = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap();
+
+        assert_eq!(
+            normalized_request
+                .client_metadata
+                .encrypted_response_enc_values_supported,
+            Some(vec_nonempty![
+                JweEncryptionAlgorithm::Unknown("A512GCM".to_string()),
+                EncryptionAlgorithm::A256Gcm.into()
+            ])
+        );
+    }
+
+    #[test]
+    fn validate_should_error_when_no_supported_encryption_algorithm_is_advertised() {
+        let (_, rp_keypair, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+
+        let enc_values = vec_nonempty![JweEncryptionAlgorithm::Unknown("A512GCM".to_string())];
+        auth_request
+            .client_metadata
+            .as_mut()
+            .unwrap()
+            .encrypted_response_enc_values_supported = Some(enc_values.clone());
+
+        let error = auth_request
+            .normalize_request(rp_keypair.certificate(), None)
+            .unwrap_err();
+        assert_matches!(
+            error,
+            AuthRequestValidationError::NoSupportedEncryptedResponseEnc(received_enc_values)
+                if received_enc_values == enc_values
+        );
+    }
+
+    #[test]
+    fn authorization_request_missing_kid_should_error() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [{
+                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES",
+                            "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                            "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                        }]
+                    },
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
         let auth_request: VpAuthorizationRequest = serde_json::from_value(example_json).unwrap();
+        let error = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap_err();
+        assert_matches!(error, AuthRequestValidationError::MissingJwkKid(indices) if indices == vec_nonempty![0]);
+    }
+
+    #[test]
+    fn authorization_request_should_select_first_supported_key() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [
+                            {
+                                "kty": "EC", "use": "enc", "crv": "P-521", "alg": "ECDH-ES", "kid": "unsupported-curve",
+                                "x": "AekpBQ8ST8a8VcfVOTNl353vSrDCLLJXmPk06wTjxrrj\
+                                      cBpXp5EOnYG_NjFZ6OvLFV1jSfS9tsz4qUxcWceqwQGk",
+                                "y": "ADSmRA43Z1DSNx_RvcLI87cdL07l6jQyyBXMoxVg_l2T\
+                                      h-x3S1WDhjDly79ajL4Kkd0AZMaZmh9ubmf63e3kyMj2"
+                            },
+                            {
+                                "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES", "kid": "supported",
+                                "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                                "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                            }
+                        ]
+                    },
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        let auth_request = with_mock_registration_certificate(serde_json::from_value(example_json).unwrap());
+        let normalized_request = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap();
+
+        assert_eq!(normalized_request.encryption_pubkey.id(), Some("supported"));
+    }
+
+    #[test]
+    fn authorization_request_without_supported_keys_should_collect_jwk_errors() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [
+                            {
+                                "kty": "EC", "use": "enc", "crv": "P-521", "alg": "ECDH-ES", "kid": "unsupported-curve",
+                                "x": "AekpBQ8ST8a8VcfVOTNl353vSrDCLLJXmPk06wTjxrrj\
+                                      cBpXp5EOnYG_NjFZ6OvLFV1jSfS9tsz4qUxcWceqwQGk",
+                                "y": "ADSmRA43Z1DSNx_RvcLI87cdL07l6jQyyBXMoxVg_l2T\
+                                      h-x3S1WDhjDly79ajL4Kkd0AZMaZmh9ubmf63e3kyMj2"
+                            },
+                            {
+                                "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ES256", "kid": "unsupported-alg",
+                                "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                                "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                            }
+                        ]
+                    },
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        let auth_request: VpAuthorizationRequest = serde_json::from_value(example_json).unwrap();
+        let error = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap_err();
+
+        assert_matches!(error, AuthRequestValidationError::NoSupportedJwk(errors) if errors.len().get() == 2);
+    }
+
+    #[test]
+    fn authorization_request_empty_jwks_should_fail_to_deserialize() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": []
+                    },
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        let error = serde_json::from_value::<VpAuthorizationRequest>(example_json).unwrap_err();
+        assert!(error.to_string().contains("vector does not contain least 1 item"));
+    }
+
+    #[test]
+    fn authorization_request_with_jwks_uri_should_fail_to_deserialize() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks_uri": "https://example.com/jwks.json",
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false }
+                        ]
+                    }]
+                }
+            }
+        );
+
+        assert!(serde_json::from_value::<VpAuthorizationRequest>(example_json).is_err());
+    }
+
+    #[test]
+    fn authorization_request_with_transaction_data_should_error() {
+        let example_json = json!(
+            {
+                "aud": "https://self-issued.me/v2",
+                "response_type": "vp_token",
+                "response_mode": "direct_post.jwt",
+                "client_id": EXAMPLE_X509_HASH_CLIENT_ID,
+                "response_uri": "https://example.com/post",
+                "nonce": "%%2_fsd32434!==r",
+                "client_metadata": {
+                    "jwks": {
+                        "keys": [{
+                            "kty": "EC", "use": "enc", "crv": "P-256", "alg": "ECDH-ES", "kid": "my-key-id",
+                            "x": "xVLtZaPPK-xvruh1fEClNVTR6RCZBsQai2-DrnyKkxg",
+                            "y": "-5-QtFqJqGwOjEL3Ut89nrE0MeaUp5RozksKHpBiyw0"
+                        }]
+                    },
+                    "encrypted_response_enc_values_supported": ["A256GCM"],
+                    "vp_formats_supported": {
+                        "mso_mdoc": {
+                            "issuerauth_alg_values": [-9],
+                            "deviceauth_alg_values": [-9]
+                        },
+                        "dc+sd-jwt": {
+                            "sd-jwt_alg_values": ["ES256"],
+                            "kb-jwt_alg_values": ["ES256"]
+                        }
+                    }
+                },
+                "dcql_query": {
+                    "credentials": [{
+                        "id": "pid",
+                        "format": "mso_mdoc",
+                        "meta": {
+                            "doctype_value": "org.iso.18013.5.1.mDL",
+                        },
+                        "claims": [
+                            { "path": ["org.iso.18013.5.1", "family_name"], "intent_to_retain": false },
+                        ]
+                    }]
+                },
+                "transaction_data": ["eyJ0eXBlIjoiZXhhbXBsZSJ9"]
+            }
+        );
+
+        let auth_request: VpAuthorizationRequest = serde_json::from_value(example_json).unwrap();
+        let error = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap_err();
+        assert_matches!(error, AuthRequestValidationError::UnsupportedField("transaction_data"));
+    }
+
+    #[test]
+    fn transaction_data_should_be_non_empty() {
+        let error = serde_json::from_value::<TransactionDataEntries>(json!([])).unwrap_err();
+        assert!(error.to_string().contains("vector does not contain least 1 item"));
+    }
+
+    #[test]
+    fn transaction_data_entries_should_be_base64url_encoded_json_objects() {
+        let invalid_base64_error = serde_json::from_value::<TransactionDataEntries>(json!(["not-base64"])).unwrap_err();
+        assert!(
+            invalid_base64_error
+                .to_string()
+                .contains("error decoding entry as base64")
+        );
+
+        let encoded_json_array = BASE64_URL_SAFE_NO_PAD.encode(br#"["not-an-object"]"#);
+        let json_array_error =
+            serde_json::from_value::<TransactionDataEntries>(json!([encoded_json_array])).unwrap_err();
+        assert!(json_array_error.to_string().contains("error parsing entry as JSON"));
+    }
+
+    #[rstest]
+    #[case::jwt(RegistrationCertificateFormat::Jwt)]
+    #[case::cwt(RegistrationCertificateFormat::Cwt)]
+    fn registration_certificate_verifier_info_should_roundtrip_exact_json(
+        #[case] format: RegistrationCertificateFormat,
+    ) {
+        let (_, access_key_pair, _, auth_request) = setup_mdoc();
+        let authority = MockRegistrationCertificateAuthority::new();
+        let query = Query::from(auth_request.credential_requests);
+        let certificate = match format {
+            RegistrationCertificateFormat::Jwt => authority.issue_jwt(access_key_pair.certificate(), query),
+            RegistrationCertificateFormat::Cwt => authority.issue_cwt(access_key_pair.certificate(), query),
+        };
+        let expected_json = json!({
+            "format": REGISTRATION_CERTIFICATE_FORMAT,
+            "data": BASE64_URL_SAFE_NO_PAD.encode(&certificate),
+        });
+        let envelope = RegistrationCertificateEnvelope::from_slice(certificate.as_slice()).unwrap();
+
+        let json = serde_json::to_value(VerifierInfo::registration_certificate(envelope)).unwrap();
+        assert_eq!(json, expected_json);
+
+        let deserialized = serde_json::from_value::<VerifierInfo>(json).unwrap();
+        assert_eq!(serde_json::to_value(deserialized).unwrap(), expected_json);
+    }
+
+    #[test]
+    fn registration_certificate_verifier_info_should_accept_compact_jwt_without_base64_encoding() {
+        let (_, access_key_pair, _, auth_request) = setup_mdoc();
+        let authority = MockRegistrationCertificateAuthority::new();
+        let certificate = authority.issue_jwt(
+            access_key_pair.certificate(),
+            Query::from(auth_request.credential_requests),
+        );
+        let compact_jwt = String::from_utf8(certificate.clone()).unwrap();
+
+        let verifier_info = serde_json::from_value::<VerifierInfo>(json!({
+            "format": REGISTRATION_CERTIFICATE_FORMAT,
+            "data": compact_jwt,
+        }))
+        .unwrap();
+        assert_matches!(
+            &verifier_info,
+            VerifierInfo::RegistrationCertificate {
+                data: RegistrationCertificateEnvelope::Jwt(_)
+            }
+        );
+
+        // Serializing should still result in the base64url encoding required by ETSI TS 119 472-2.
+        assert_eq!(
+            serde_json::to_value(verifier_info).unwrap(),
+            json!({
+                "format": REGISTRATION_CERTIFICATE_FORMAT,
+                "data": BASE64_URL_SAFE_NO_PAD.encode(&certificate),
+            })
+        );
+    }
+
+    #[rstest]
+    #[case::missing_jwt_part("header.payload")]
+    #[case::extra_jwt_part("header.payload.signature.extra")]
+    fn registration_certificate_verifier_info_should_defer_jwt_validation(
+        #[case] malformed_jwt: &str,
+        #[values(false, true)] base64_encoded: bool,
+    ) {
+        let data = if base64_encoded {
+            BASE64_URL_SAFE_NO_PAD.encode(malformed_jwt)
+        } else {
+            malformed_jwt.to_string()
+        };
+        let verifier_info = serde_json::from_value::<VerifierInfo>(json!({
+            "format": REGISTRATION_CERTIFICATE_FORMAT,
+            "data": data,
+        }))
+        .unwrap();
+
+        assert_matches!(
+            verifier_info,
+            VerifierInfo::RegistrationCertificate {
+                data: RegistrationCertificateEnvelope::Jwt(_)
+            }
+        );
+    }
+
+    #[test]
+    fn registration_certificate_verifier_info_should_reject_malformed_base64() {
+        let error = serde_json::from_value::<VerifierInfo>(json!({
+            "format": REGISTRATION_CERTIFICATE_FORMAT,
+            "data": "***",
+        }))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("could not decode registration certificate as Base64")
+        );
+    }
+
+    #[rstest]
+    #[case::not_an_envelope(b"not a registration certificate", "expected 3, found 1")]
+    #[case::invalid_utf8(b"\xff", "not valid UTF-8")]
+    fn registration_certificate_verifier_info_should_report_both_parse_errors(
+        #[case] malformed_certificate: &[u8],
+        #[case] jwt_error: &str,
+    ) {
+        let invalid_envelope = BASE64_URL_SAFE_NO_PAD.encode(malformed_certificate);
+        let error = serde_json::from_value::<VerifierInfo>(json!({
+            "format": REGISTRATION_CERTIFICATE_FORMAT,
+            "data": invalid_envelope,
+        }))
+        .unwrap_err();
+
+        let error = error.to_string();
+        assert!(error.contains("as JWT ("));
+        assert!(error.contains(jwt_error));
+        assert!(error.contains("or CWT ("));
+    }
+
+    #[test]
+    fn verifier_info_should_accept_unknown_format() {
+        let verifier_info = serde_json::from_value::<VerifierInfo>(json!({
+            "format": "other_format",
+            "data": { "future": "data" },
+        }))
+        .unwrap();
+
+        assert_matches!(verifier_info, VerifierInfo::Other);
+    }
+
+    #[test]
+    fn verifier_info_should_reject_malformed_registration_certificate_among_valid_entries() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let valid = serde_json::to_value(VerifierInfo::registration_certificate(
+            auth_request.registration_certificate,
+        ))
+        .unwrap();
+
+        serde_json::from_value::<Vec<VerifierInfo>>(json!([
+            { "format": REGISTRATION_CERTIFICATE_FORMAT, "data": "***" },
+            valid,
+        ]))
+        .unwrap_err();
+    }
+
+    #[test]
+    fn authorization_request_should_reject_missing_registration_certificate() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        auth_request.verifier_info = None;
+
+        let error = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap_err();
+
+        assert_matches!(
+            error,
+            AuthRequestValidationError::RegistrationCertificate(registration_error)
+                if matches!(registration_error.as_ref(), RegistrationCertificateError::Missing)
+        );
+    }
+
+    #[test]
+    fn authorization_request_should_reject_other_verifier_info_without_registration_certificate() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        auth_request.verifier_info = Some(vec_nonempty![VerifierInfo::Other]);
+
+        let error = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap_err();
+
+        assert_matches!(
+            error,
+            AuthRequestValidationError::RegistrationCertificate(registration_error)
+                if matches!(registration_error.as_ref(), RegistrationCertificateError::Missing)
+        );
+    }
+
+    #[test]
+    fn authorization_request_should_reject_multiple_registration_certificates() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let duplicate = auth_request.registration_certificate.clone();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        auth_request
+            .verifier_info
+            .as_mut()
+            .unwrap()
+            .push(VerifierInfo::registration_certificate(duplicate));
+
+        let error = NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap_err();
+
+        assert_matches!(
+            error,
+            AuthRequestValidationError::RegistrationCertificate(registration_error)
+                if matches!(registration_error.as_ref(), RegistrationCertificateError::Multiple)
+        );
+    }
+
+    #[test]
+    fn authorization_request_should_accept_registration_certificate_among_other_verifier_info() {
+        let (_, _, _, auth_request) = setup_mdoc();
+        let mut auth_request = authorization_request_from_normalized(auth_request);
+        auth_request
+            .verifier_info
+            .as_mut()
+            .unwrap()
+            .insert(0, VerifierInfo::Other);
+
         NormalizedVpAuthorizationRequest::try_from(auth_request).unwrap();
     }
 
@@ -1341,17 +2548,10 @@ mod tests {
 
         let decrypted_device_response = device_responses.into_first();
 
-        assert_eq!(
-            decrypted_device_response
-                .documents
-                .as_ref()
-                .map(|documents| documents.len())
-                .unwrap_or_default(),
-            1
-        );
+        let decrypted_documents = decrypted_device_response.documents.unwrap();
+        assert_eq!(decrypted_documents.len().get(), 1);
 
-        let decrypted_document = decrypted_device_response.documents.unwrap().into_iter().next().unwrap();
-
+        let decrypted_document = decrypted_documents.into_first();
         assert_eq!(decrypted_document.doc_type, "org.iso.18013.5.1.mDL".to_string());
     }
 
@@ -1379,39 +2579,27 @@ mod tests {
         // TODO (PVW-4817): Test the deserialized types once we no longer use `String` to transport SD-JWT.
     }
 
-    /// Construct mock `VerifiablePresentation`s and a PoA using the given
-    /// authorization request, partial mdocs and encryption nonce.
+    /// Construct mock `VerifiablePresentation`s using the given authorization request and partial mdocs.
     fn setup_mdoc_vp_token(
         auth_request: &NormalizedVpAuthorizationRequest,
-        partial_mdocs: HashMap<CredentialQueryIdentifier, VecNonEmpty<PartialMdoc>>,
-        encryption_nonce: &str,
-        wscd: &MockRemoteWscd,
-    ) -> (HashMap<CredentialQueryIdentifier, VerifiablePresentation>, Option<Poa>) {
-        let session_transcript = SessionTranscript::new_oid4vp(
-            &auth_request.response_uri,
-            &auth_request.client_id,
-            auth_request.nonce.clone(),
-            encryption_nonce,
-        );
-
-        let poa_input = JwtPoaInput::new(Some(auth_request.nonce.clone()), auth_request.client_id.clone());
-
+        partial_mdocs: HashMap<CredentialQueryIdentifier, VecNonEmpty<(PartialMdoc, String)>>,
+        wscd: &DisclosureMockRemoteWscd,
+    ) -> HashMap<CredentialQueryIdentifier, VerifiablePresentation> {
         let (query_ids, partial_mdocs) = partial_mdocs
             .into_iter()
             .map(|(query_id, partial_mdocs)| (query_id, partial_mdocs.into_iter().exactly_one().unwrap()))
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
-        let (device_responses, poa) = DeviceResponse::sign_multiple_from_partial_mdocs(
+        let device_responses = DeviceResponse::sign_multiple_from_partial_mdocs(
             partial_mdocs.try_into().unwrap(),
-            &session_transcript,
+            &auth_request.session_transcript(),
             wscd,
-            poa_input,
         )
         .now_or_never()
         .unwrap()
         .unwrap();
 
-        let vp_token = query_ids
+        query_ids
             .into_iter()
             .zip_eq(device_responses)
             .map(|(query_id, device_response)| {
@@ -1419,9 +2607,7 @@ mod tests {
 
                 (query_id, presentation)
             })
-            .collect();
-
-        (vp_token, poa)
+            .collect()
     }
 
     #[test]
@@ -1429,11 +2615,8 @@ mod tests {
         let (_, _, _, auth_request) =
             setup_with_credential_requests(NormalizedCredentialRequests::new_mock_mdoc_from_slices(
                 &[(
-                    PID_ATTESTATION_TYPE,
-                    &[
-                        &[PID_ATTESTATION_TYPE, "given_name"],
-                        &[PID_ATTESTATION_TYPE, "family_name"],
-                    ],
+                    PID_MDOC_DOCTYPE,
+                    &[&[PID_MDOC_DOCTYPE, "given_name"], &[PID_MDOC_DOCTYPE, "family_name"]],
                 )],
                 None,
             ));
@@ -1447,22 +2630,23 @@ mod tests {
         )
         .unwrap();
 
-        let wscd = MockRemoteWscd::new(vec![holder_key]);
-        let encryption_nonce = "encryption_nonce";
+        let key_identifier = holder_key.identifier.clone();
+        let wscd = DisclosureMockRemoteWscd::new(vec![holder_key]);
 
-        let partial_mdocs = HashMap::from([("mdoc_0".parse().unwrap(), vec_nonempty![partial_mdoc])]);
-        let (vp_token, poa) = setup_mdoc_vp_token(&auth_request, partial_mdocs, encryption_nonce, &wscd);
-        let auth_response = VpAuthorizationResponse::new(vp_token, None, poa);
+        let partial_mdocs = HashMap::from([("mdoc_0".parse().unwrap(), vec_nonempty![(partial_mdoc, key_identifier)])]);
+        let vp_token = setup_mdoc_vp_token(&auth_request, partial_mdocs, &wscd);
+        let auth_response = VpAuthorizationResponse::new(vp_token, None);
 
         let attestations = auth_response
             .verify(
                 &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                Some(encryption_nonce),
                 &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
+                &ca.to_trust_anchors(),
                 &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+                &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                    ca.generate_issuer_status_list_mock().unwrap(),
+                ))),
+                false,
             )
             .now_or_never()
             .unwrap()
@@ -1476,13 +2660,13 @@ mod tests {
 
         let attestation = disclosed_attestations.into_first();
 
-        assert_eq!(attestation.attestation_type.as_str(), PID_ATTESTATION_TYPE);
+        assert_eq!(attestation.attestation_type.as_str(), PID_MDOC_DOCTYPE);
         let DisclosedAttributes::MsoMdoc(attributes) = &attestation.attributes else {
             panic!("should be mdoc attributes")
         };
 
         let (namespace, mdoc_attributes) = &attributes.first().unwrap();
-        assert_eq!(namespace.as_str(), PID_ATTESTATION_TYPE);
+        assert_eq!(namespace.as_str(), PID_MDOC_DOCTYPE);
 
         assert_eq!(
             vec!["given_name", "family_name"],
@@ -1501,15 +2685,13 @@ mod tests {
 
         // Setup both issuer and holder keys.
         let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let issuer_key_pair = ca
-            .generate_key_pair(ISSUANCE_CERT_CN, CertificateUsage::Mdl, Default::default())
-            .unwrap();
+        let issuer_key_pair = ca.generate_issuer_mock().unwrap();
 
         let holder_key1 = MockRemoteEcdsaKey::new_random("sd_jwt_key_1".to_string());
-        let holder_public_key1 = *holder_key1.verifying_key();
+        let holder_public_key1 = PublicKey::from(*holder_key1.verifying_key());
         let holder_key2 = MockRemoteEcdsaKey::new_random("sd_jwt_key_2".to_string());
-        let holder_public_key2 = *holder_key2.verifying_key();
-        let wscd = MockRemoteWscd::new(vec![holder_key1, holder_key2]);
+        let holder_public_key2 = PublicKey::from(*holder_key2.verifying_key());
+        let wscd = DisclosureMockRemoteWscd::new(vec![holder_key1, holder_key2]);
 
         // Create two `UnsignedSdJwtPresentation`s with the requested attributes.
         let verified_sd_jwt1 = SignedSdJwt::pid_example(&issuer_key_pair, &holder_public_key1).into_verified();
@@ -1530,17 +2712,15 @@ mod tests {
             .unwrap()
             .finish();
 
-        // Sign these into two `SdJwtPresentation`s and a PoA.
-        let kb_jwt_builder = KeyBindingJwtBuilder::new(auth_request.client_id.clone(), auth_request.nonce.clone());
-        let poa_input = JwtPoaInput::new(Some(auth_request.nonce.clone()), auth_request.client_id.clone());
-        let (sd_jwt_presentations, poa) = UnsignedSdJwtPresentation::sign_multiple(
+        // Sign these into two `SdJwtPresentation`s.
+        let kb_jwt_builder = KeyBindingJwtBuilder::new(auth_request.client_id.to_string(), auth_request.nonce.clone());
+        let sd_jwt_presentations = UnsignedSdJwtPresentation::sign_multiple(
             vec_nonempty![
                 (unsigned_presentation1, "sd_jwt_key_1"),
                 (unsigned_presentation2, "sd_jwt_key_2")
             ],
             kb_jwt_builder,
             &wscd,
-            poa_input,
             &MockTimeGenerator::default(),
         )
         .now_or_never()
@@ -1560,17 +2740,18 @@ mod tests {
                 VerifiablePresentation::SdJwt(vec_nonempty![sd_jwt_presentation2.into_unverified()]),
             ),
         ]);
-        let auth_response = VpAuthorizationResponse::new(vp_token, auth_request.state.clone(), poa);
+        let auth_response = VpAuthorizationResponse::new(vp_token, auth_request.state.clone());
 
         let attestations = auth_response
             .verify(
                 &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                None,
                 &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
+                &ca.to_trust_anchors(),
                 &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+                &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                    ca.generate_issuer_status_list_mock().unwrap(),
+                ))),
+                false,
             )
             .now_or_never()
             .unwrap()
@@ -1640,11 +2821,9 @@ mod tests {
 
         // Setup the issuer keys.
         let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let sd_jwt_issuer_key_pair = ca
-            .generate_key_pair(ISSUANCE_CERT_CN, CertificateUsage::Mdl, Default::default())
-            .unwrap();
+        let sd_jwt_issuer_key_pair = ca.generate_issuer_mock().unwrap();
 
-        // Create an mdoc holder key and device response using the WSCD. Note that the `PoaInput` is not actually used.
+        // Create an mdoc holder key and device response using the WSCD.
         let mdoc_holder_key = MockRemoteEcdsaKey::new_random("mdoc".to_string());
         let partial_mdoc = PartialMdoc::try_new(
             Mdoc::new_mock_with_ca_and_key(&ca, &mdoc_holder_key)
@@ -1654,22 +2833,12 @@ mod tests {
         )
         .unwrap();
 
-        let encryption_nonce = "encryption_nonce";
-        let session_transcript = SessionTranscript::new_oid4vp(
-            &auth_request.response_uri,
-            &auth_request.client_id,
-            auth_request.nonce.clone(),
-            encryption_nonce,
-        );
+        let wscd = DisclosureMockRemoteWscd::new(vec![mdoc_holder_key.clone()]);
 
-        let wscd = MockRemoteWscd::new(vec![mdoc_holder_key.clone()]);
-
-        let poa_input = JwtPoaInput::new(None, "".to_string());
-        let (device_responses, _) = DeviceResponse::sign_multiple_from_partial_mdocs(
-            vec_nonempty![partial_mdoc],
-            &session_transcript,
+        let device_responses = DeviceResponse::sign_multiple_from_partial_mdocs(
+            vec_nonempty![(partial_mdoc, mdoc_holder_key.identifier.clone())],
+            &auth_request.session_transcript(),
             &wscd,
-            poa_input,
         )
         .now_or_never()
         .unwrap()
@@ -1679,8 +2848,11 @@ mod tests {
 
         // Create the a SD-JWT holder key and presentation.
         let sd_jwt_holder_key = MockRemoteEcdsaKey::new_random("sd_jwt".to_string());
-        let verified_sd_jwt =
-            SignedSdJwt::pid_example(&sd_jwt_issuer_key_pair, sd_jwt_holder_key.verifying_key()).into_verified();
+        let verified_sd_jwt = SignedSdJwt::pid_example(
+            &sd_jwt_issuer_key_pair,
+            &PublicKeyRef::from(sd_jwt_holder_key.verifying_key()),
+        )
+        .into_verified();
         let unsigned_presentation = verified_sd_jwt
             .into_presentation_builder()
             .disclose(&vec_nonempty![ClaimPath::SelectByKey("bsn".to_string())])
@@ -1691,7 +2863,7 @@ mod tests {
             .unwrap()
             .finish();
 
-        let kb_jwt_builder = KeyBindingJwtBuilder::new(auth_request.client_id.clone(), auth_request.nonce.clone());
+        let kb_jwt_builder = KeyBindingJwtBuilder::new(auth_request.client_id.to_string(), auth_request.nonce.clone());
         let sd_jwt_presentation = unsigned_presentation
             .sign(kb_jwt_builder, &sd_jwt_holder_key, &MockTimeGenerator::default())
             .now_or_never()
@@ -1710,31 +2882,19 @@ mod tests {
             ),
         ]);
 
-        // Manually create a PoA accross the two holder keys.
-        let poa = Poa::new(
-            vec![&mdoc_holder_key, &sd_jwt_holder_key].try_into().unwrap(),
-            JwtPopClaims::new(
-                Some(auth_request.nonce.clone()),
-                MOCK_WALLET_CLIENT_ID.to_string(),
-                auth_request.client_id.clone(),
-            ),
-        )
-        .now_or_never()
-        .unwrap()
-        .unwrap();
-
         // Create a `VpAuthorizationResponse` from these values, then verify it.
-        let auth_response = VpAuthorizationResponse::new(vp_token, auth_request.state.clone(), Some(poa));
+        let auth_response = VpAuthorizationResponse::new(vp_token, auth_request.state.clone());
 
         let attestations = auth_response
             .verify(
                 &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                Some(encryption_nonce),
                 &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
+                &ca.to_trust_anchors(),
                 &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+                &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                    ca.generate_issuer_status_list_mock().unwrap(),
+                ))),
+                false,
             )
             .now_or_never()
             .unwrap()
@@ -1743,23 +2903,22 @@ mod tests {
         assert_eq!(attestations.len().get(), 2);
     }
 
-    fn setup_poa_test(
+    #[expect(clippy::type_complexity, reason = "test code")]
+    fn setup_multiple_mdocs_test(
         ca: &Ca,
     ) -> (
         NormalizedVpAuthorizationRequest,
-        HashMap<CredentialQueryIdentifier, VecNonEmpty<PartialMdoc>>,
-        MockRemoteWscd,
+        HashMap<CredentialQueryIdentifier, VecNonEmpty<(PartialMdoc, String)>>,
+        DisclosureMockRemoteWscd,
     ) {
         let test_credentials = nl_pid_credentials_full_name() + nl_pid_address_minimal_address();
         let credential_requests =
-            test_credentials.to_normalized_credential_requests([CredentialFormat::MsoMdoc, CredentialFormat::MsoMdoc]);
+            test_credentials.to_normalized_credential_requests([Format::MsoMdoc, Format::MsoMdoc]);
 
         let (_, _, _, auth_request) = setup_with_credential_requests(credential_requests);
 
-        let issuer_keypair = ca
-            .generate_key_pair(PID_ISSUER_CERT_CN, CertificateUsage::Mdl, Default::default())
-            .unwrap();
-        let wscd = MockRemoteWscd::default();
+        let issuer_keypair = ca.generate_pid_issuer_mock().unwrap();
+        let wscd = DisclosureMockRemoteWscd::default();
 
         let partial_mdocs = test_credentials.to_partial_mdocs(&issuer_keypair, &wscd);
 
@@ -1767,129 +2926,135 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_poa() {
-        let encryption_nonce = "encryption_nonce";
+    fn test_verify_multiple_mdocs() {
         let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let (auth_request, partial_mdocs, wscd) = setup_poa_test(&ca);
-        let (vp_token, poa) = setup_mdoc_vp_token(&auth_request, partial_mdocs, encryption_nonce, &wscd);
+        let (auth_request, partial_mdocs, wscd) = setup_multiple_mdocs_test(&ca);
+        let vp_token = setup_mdoc_vp_token(&auth_request, partial_mdocs, &wscd);
 
-        let auth_response = VpAuthorizationResponse::new(vp_token, None, poa);
+        let auth_response = VpAuthorizationResponse::new(vp_token, None);
         auth_response
             .verify(
                 &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                Some(encryption_nonce),
                 &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
+                &ca.to_trust_anchors(),
                 &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(
-                    ca.generate_status_list_mock_with_dn(PID_ISSUER_CERT_CN).unwrap(),
-                )),
+                &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                    ca.generate_pid_issuer_status_list_mock().unwrap(),
+                ))),
+                false,
             )
             .now_or_never()
             .unwrap()
             .unwrap();
     }
 
-    #[test]
-    fn test_verify_apu() {
-        let encryption_nonce = "encryption_nonce";
-        let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let (auth_request, partial_mdocs, wscd) = setup_poa_test(&ca);
-        let (vp_token, poa) = setup_mdoc_vp_token(&auth_request, partial_mdocs, encryption_nonce, &wscd);
-
-        let auth_response = VpAuthorizationResponse::new(vp_token, None, poa);
-        let error = auth_response
-            .verify(
-                &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                None,
-                &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
-                &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
-            )
-            .now_or_never()
-            .unwrap()
-            .expect_err("verifying authorization response should fail");
-
-        assert_matches!(error, AuthResponseError::MissingApu);
-    }
-
-    #[test]
-    fn test_verify_missing_poa() {
-        let encryption_nonce = "encryption_nonce";
-        let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let (auth_request, partial_mdocs, wscd) = setup_poa_test(&ca);
-        let (vp_token, _) = setup_mdoc_vp_token(&auth_request, partial_mdocs, encryption_nonce, &wscd);
-
-        let auth_response = VpAuthorizationResponse::new(vp_token, None, None);
-        let error = auth_response
-            .verify(
-                &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                Some(encryption_nonce),
-                &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
-                &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(
-                    ca.generate_status_list_mock_with_dn(PID_ISSUER_CERT_CN).unwrap(),
-                )),
-            )
-            .now_or_never()
-            .unwrap()
-            .expect_err("should fail due to missing PoA");
-
-        assert!(matches!(error, AuthResponseError::MissingPoa));
-    }
-
-    #[test]
-    fn test_verify_invalid_poa() {
-        let encryption_nonce = "encryption_nonce";
-        let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let (auth_request, partial_mdocs, wscd) = setup_poa_test(&ca);
-        let (vp_token, poa) = setup_mdoc_vp_token(&auth_request, partial_mdocs, encryption_nonce, &wscd);
-
-        let mut poa = poa.unwrap();
-        poa.set_payload("edited".to_owned());
-
-        let auth_response = VpAuthorizationResponse::new(vp_token, None, Some(poa));
-        let error = auth_response
-            .verify(
-                &auth_request,
-                &[MOCK_WALLET_CLIENT_ID.to_string()],
-                Some(encryption_nonce),
-                &MockTimeGenerator::default(),
-                &[ca.to_trust_anchor()],
-                &ExtendingVctRetrieverStub,
-                &RevocationVerifier::new(StatusListClientStub::new(
-                    ca.generate_status_list_mock_with_dn(PID_ISSUER_CERT_CN).unwrap(),
-                )),
-            )
-            .now_or_never()
-            .unwrap()
-            .expect_err("should fail due to missing PoA");
-
-        assert!(matches!(error, AuthResponseError::PoaVerification(_)));
-    }
-
     #[rstest]
-    #[case(&[Some(RevocationStatus::Valid)], Ok(()))]
-    #[case(&[Some(RevocationStatus::Valid), Some(RevocationStatus::Valid)], Ok(()))]
-    #[case(&[Some(RevocationStatus::Invalid)], Err(AuthResponseError::RevocationStatusNotAllValid))]
-    #[case(&[Some(RevocationStatus::Corrupted)], Err(AuthResponseError::RevocationStatusNotAllValid))]
-    #[case(&[Some(RevocationStatus::Undetermined)], Err(AuthResponseError::RevocationStatusNotAllValid))]
-    #[case(&[Some(RevocationStatus::Invalid), Some(RevocationStatus::Valid)], Err(AuthResponseError::RevocationStatusNotAllValid))]
-    #[case(&[Some(RevocationStatus::Corrupted), Some(RevocationStatus::Valid)], Err(AuthResponseError::RevocationStatusNotAllValid))]
-    #[case(&[Some(RevocationStatus::Undetermined), Some(RevocationStatus::Valid)], Err(AuthResponseError::RevocationStatusNotAllValid))]
-    #[case(&[Some(RevocationStatus::Valid), Some(RevocationStatus::Valid), None], Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c1(&[Some(RevocationStatus::Valid)], false, Ok(()))]
+    #[case::c2(&[Some(RevocationStatus::Valid), Some(RevocationStatus::Valid)], false, Ok(()))]
+    #[case::c3(&[Some(RevocationStatus::Revoked)], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c4(&[Some(RevocationStatus::Corrupted)], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c5(&[Some(RevocationStatus::Undetermined)], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c6(&[Some(RevocationStatus::Revoked), Some(RevocationStatus::Valid)], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c7(&[Some(RevocationStatus::Corrupted), Some(RevocationStatus::Valid)], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c8(&[Some(RevocationStatus::Undetermined), Some(RevocationStatus::Valid)], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c9(&[Some(RevocationStatus::Valid), Some(RevocationStatus::Valid), None], false, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c10(&[Some(RevocationStatus::Valid), Some(RevocationStatus::Valid)], true, Ok(()))]
+    #[case::c11(&[Some(RevocationStatus::Undetermined)], true, Ok(()))]
+    #[case::c12(&[Some(RevocationStatus::Valid), Some(RevocationStatus::Undetermined)], true, Ok(()))]
+    #[case::c13(&[Some(RevocationStatus::Corrupted), Some(RevocationStatus::Valid)], true, Err(AuthResponseError::RevocationStatusNotAllValid))]
+    #[case::c14(&[Some(RevocationStatus::Corrupted), Some(RevocationStatus::Undetermined)], true, Err(AuthResponseError::RevocationStatusNotAllValid))]
     fn test_evaluate_revocation_policy(
         #[case] statuses: &[Option<RevocationStatus>],
+        #[case] accept_undetermined: bool,
         #[case] expected: Result<(), AuthResponseError>,
     ) {
-        match VpAuthorizationResponse::evaluate_revocation_policy(statuses.iter()) {
+        match VpAuthorizationResponse::evaluate_revocation_policy(statuses.iter(), accept_undetermined) {
             Ok(()) => assert!(expected.is_ok()),
             Err(error) => assert_eq!(error.to_string(), expected.err().unwrap().to_string()),
         };
+    }
+
+    #[test]
+    fn test_authorization_request_object_as_reference() {
+        let query = "client_id=test_client&request_uri=https%3A%2F%2Fclient.example.org%2Frequest%\
+                     2Fvapof4ql2i7m41m68uep&request_uri_method=post";
+        let result = serde_qs::from_str::<VpRequestUri>(query).unwrap();
+
+        assert_matches!(
+            result,
+            VpRequestUri {
+                client_id,
+                object: VpRequestUriObject::AsReference { .. },
+            } if client_id.to_string() == "test_client"
+        );
+    }
+
+    #[test]
+    fn test_authorization_request_object_as_value() {
+        let query = "client_id=test_client&request=eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJzIiwiYXVkIjoicyJ9.sig";
+        let result = serde_qs::from_str::<VpRequestUri>(query).unwrap();
+
+        assert_matches!(
+            result,
+            VpRequestUri {
+                client_id,
+                object: VpRequestUriObject::AsValue { request },
+            } if client_id.to_string() == "test_client" && request.starts_with("eyJ")
+        );
+    }
+
+    #[test]
+    fn test_authorization_request_object_as_query_parameters() {
+        let query = "response_type=vp_token&client_id=test_client&nonce=abc123";
+        let result = serde_qs::from_str::<VpRequestUri>(query).unwrap();
+
+        assert_matches!(
+            result,
+            VpRequestUri {
+                client_id,
+                object: VpRequestUriObject::AsQueryParameters { response_type, nonce },
+            } if response_type == "vp_token" && client_id.to_string() == "test_client" && nonce == "abc123"
+        );
+    }
+
+    #[test]
+    fn test_authorization_request_unrecognized() {
+        let query = "foo=bar";
+        let result = serde_qs::from_str::<VpRequestUri>(query)
+            .map_err(VpClientError::RequestUri)
+            .expect_err("unrecognized request object should fail to parse as VpRequestUri");
+
+        assert_matches!(result, crate::disclosure_session::VpClientError::RequestUri(_));
+    }
+
+    #[test]
+    fn deserialize_vp_formats_supported() {
+        let json = json!({
+            "mso_mdoc": {
+                "issuerauth_alg_values": [-9],
+                "deviceauth_alg_values": [-9]
+            },
+            "dc+sd-jwt": {
+                "sd-jwt_alg_values": ["ES256"],
+                "kb-jwt_alg_values": ["ES256"]
+            }
+        });
+
+        let deserialized: VpFormatsSupported = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            deserialized.mso_mdoc,
+            Some(MsoMdocAlgValues {
+                issuerauth_alg_values: vec_nonempty![iana::Algorithm::ESP256.into()].into(),
+                deviceauth_alg_values: vec_nonempty![iana::Algorithm::ESP256.into()].into(),
+            })
+        );
+        assert_eq!(
+            deserialized.sd_jwt,
+            Some(SdJwtAlgValues {
+                sd_jwt_alg_values: vec_nonempty![JwsAlgorithm::ES256].into(),
+                kb_jwt_alg_values: vec_nonempty![JwsAlgorithm::ES256].into(),
+            })
+        );
     }
 }

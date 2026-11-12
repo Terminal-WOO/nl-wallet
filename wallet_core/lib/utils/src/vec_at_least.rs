@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Formatter;
@@ -7,7 +8,10 @@ use std::num::NonZeroUsize;
 use derive_more::Index;
 use itertools::Itertools;
 use nonempty_collections::FromNonEmptyIterator;
+pub use nonempty_collections::IntoNonEmptyIterator;
 use nonempty_collections::Singleton;
+pub use nonempty_collections::iter::NonEmptyIterator;
+use rand::seq::IndexedRandom;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
@@ -16,11 +20,27 @@ use serde::de;
 use serde_with::DeserializeAs;
 use serde_with::SerializeAs;
 
-pub use nonempty_collections::IntoNonEmptyIterator;
-pub use nonempty_collections::iter::NonEmptyIterator;
+#[derive(Debug, thiserror::Error)]
+#[error("{kind}")]
+pub struct VecAtLeastNError<T> {
+    inner: Vec<T>,
+
+    #[source]
+    kind: VecAtLeastNErrorKind,
+}
+
+impl<T> VecAtLeastNError<T> {
+    pub fn into_kind(self) -> VecAtLeastNErrorKind {
+        self.kind
+    }
+
+    pub fn into_inner(self) -> Vec<T> {
+        self.inner
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
-pub enum VecAtLeastNError {
+pub enum VecAtLeastNErrorKind {
     #[error(
         "vector does not contain least {expected} {noun}, received {received}",
         noun=if *expected == 1 { "item" } else { "items" }
@@ -36,21 +56,21 @@ pub enum VecAtLeastNError {
 /// ```
 /// use utils::vec_nonempty;
 ///
-/// let vec1 = vec_nonempty![1, 2, 3]; // Creates a VecNonEmpty<i32>
-/// let vec2 = vec_nonempty![u8; 1, 2, 3]; // Creates a VecNonEmpty<u8> by explicitly stating the type
+/// let vec1 = vec_nonempty![1, 2, 3]; // Creates a `VecNonEmpty<i32>`
+/// let vec2 = vec_nonempty![1; 3]; // Creates a `VecNonEmpty<i32>` with 3 times the element 1, similar to `vec![1; 3]`
 /// ```
 #[macro_export]
 macro_rules! vec_nonempty {
     // Version without type parameter (relies on type inference)
+    // .unwrap() requires `Debug` to be implemented for `T`, so `.unwrap_or_else` is used
     ($($x:expr),+ $(,)?) => (
-        $crate::vec_at_least::VecNonEmpty::try_from(vec![$($x),+]).unwrap()
+        $crate::vec_at_least::VecNonEmpty::try_from(vec![$($x),+]).unwrap_or_else(|_| panic!("vec_nonempty! called with empty list"))
     );
 
-    // Version with explicit type parameter
-    ($t:ty; $($x:expr),+ $(,)?) => {{
-        let vec: Vec<$t> = vec![$($x),+];
-        <Vec<$t> as TryInto<$crate::vec_at_least::VecNonEmpty<$t>>>::try_into(vec).unwrap()
-    }};
+    // Version with length parameter
+    ($x:expr; $l:expr) => (
+        $crate::vec_at_least::VecNonEmpty::try_from(vec![$x; $l]).unwrap_or_else(|_| panic!("vec_nonempty! called with empty list"))
+    );
 }
 
 // These should cover the most common use cases of `VecAtLeastN`.
@@ -66,7 +86,7 @@ pub type VecAtLeastTwoUnique<T> = VecAtLeastN<T, 2, true>;
 pub struct VecAtLeastN<T, const N: usize, const UNIQUE: bool>(Vec<T>);
 
 impl<T, const N: usize, const UNIQUE: bool> VecAtLeastN<T, N, UNIQUE> {
-    fn new(inner: Vec<T>) -> Result<Self, VecAtLeastNError> {
+    fn new(inner: Vec<T>) -> Result<Self, VecAtLeastNError<T>> {
         // Unfortunately this cannot be a compile time check on N, so
         // it is checked at runtime in the type's only constructor.
         assert!(N > 0, "minimum length N must be a positive integer");
@@ -77,9 +97,12 @@ impl<T, const N: usize, const UNIQUE: bool> VecAtLeastN<T, N, UNIQUE> {
         if length >= N {
             Ok(Self(inner))
         } else {
-            Err(VecAtLeastNError::TooFewItems {
-                received: length,
-                expected: N,
+            Err(VecAtLeastNError {
+                inner,
+                kind: VecAtLeastNErrorKind::TooFewItems {
+                    received: length,
+                    expected: N,
+                },
             })
         }
     }
@@ -92,6 +115,11 @@ impl<T, const N: usize, const UNIQUE: bool> VecAtLeastN<T, N, UNIQUE> {
     pub fn first(&self) -> &T {
         // Guaranteed to succeed, as N is at least 1.
         self.0.first().unwrap()
+    }
+
+    pub fn split_first(&self) -> (&T, &[T]) {
+        // Guaranteed to succeed, as N is at least 1.
+        self.0.split_first().unwrap()
     }
 
     pub fn into_first(self) -> T {
@@ -115,6 +143,14 @@ impl<T, const N: usize, const UNIQUE: bool> VecAtLeastN<T, N, UNIQUE> {
         (self.0, last)
     }
 
+    /// Choose a value at random. This forwards to `SliceRandom::choose()` from the `rand` crate using the thread-local
+    /// random number generator. A return value is guaranteed.
+    pub fn choose(&self) -> &T {
+        self.0
+            .choose(&mut rand::rng())
+            .expect("inner Vec should never be empty")
+    }
+
     pub fn as_slice(&self) -> &[T] {
         &self.0
     }
@@ -130,16 +166,6 @@ impl<T, const N: usize, const UNIQUE: bool> VecAtLeastN<T, N, UNIQUE> {
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.0.iter_mut()
     }
-}
-
-impl<T, const N: usize> VecAtLeastN<T, N, false> {
-    pub fn insert(&mut self, index: usize, element: T) {
-        self.0.insert(index, element);
-    }
-
-    pub fn push(&mut self, e: T) {
-        self.0.push(e);
-    }
 
     pub fn nonempty_iter(&self) -> Iter<'_, T> {
         Iter { iter: self.0.iter() }
@@ -152,15 +178,25 @@ impl<T, const N: usize> VecAtLeastN<T, N, false> {
     }
 }
 
+impl<T, const N: usize> VecAtLeastN<T, N, false> {
+    pub fn insert(&mut self, index: usize, element: T) {
+        self.0.insert(index, element);
+    }
+
+    pub fn push(&mut self, e: T) {
+        self.0.push(e);
+    }
+}
+
 impl<A, const N: usize> Extend<A> for VecAtLeastN<A, N, false> {
     fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
         self.0.extend(iter);
     }
 }
 
-/// Should be used as the constructor for types where the uniqueness constraint is set.
+/// Should be used as the constructor for types where the uniqueness constraint is not set.
 impl<T, const N: usize> TryFrom<Vec<T>> for VecAtLeastN<T, N, false> {
-    type Error = VecAtLeastNError;
+    type Error = VecAtLeastNError<T>;
 
     fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -173,7 +209,7 @@ impl<T, const N: usize> TryFrom<Vec<T>> for VecAtLeastN<T, N, true>
 where
     T: Eq + Hash,
 {
-    type Error = VecAtLeastNError;
+    type Error = VecAtLeastNError<T>;
 
     fn try_from(value: Vec<T>) -> Result<Self, Self::Error> {
         // Perform the check on the number of items in the internal constructor.
@@ -181,10 +217,39 @@ where
 
         // Additionally check for uniqueness.
         if !vec_at_least.0.iter().all_unique() {
-            return Err(VecAtLeastNError::DuplicateItems);
+            return Err(VecAtLeastNError {
+                inner: vec_at_least.0,
+                kind: VecAtLeastNErrorKind::DuplicateItems,
+            });
         }
 
         Ok(vec_at_least)
+    }
+}
+
+/// Create a deduplicated VecNonEmptyUnique from a VecNonEmpty.
+///
+/// Note: only works for N=1 since for N > 1 we cannot maintain the guarantee that
+/// the vec is at least N because of the deduplication.
+impl<T: Eq + Hash> From<VecNonEmpty<T>> for VecNonEmptyUnique<T> {
+    fn from(value: VecNonEmpty<T>) -> Self {
+        let mut seen = HashSet::with_capacity(value.len().get());
+        let mask = value.iter().map(|item| seen.insert(item)).collect_vec();
+
+        Self(
+            value
+                .0
+                .into_iter()
+                .zip(mask)
+                .filter_map(|(item, keep)| keep.then_some(item))
+                .collect(),
+        )
+    }
+}
+
+impl<T, const N: usize> From<VecAtLeastN<T, N, true>> for VecAtLeastN<T, N, false> {
+    fn from(value: VecAtLeastN<T, N, true>) -> Self {
+        Self(value.0)
     }
 }
 
@@ -257,7 +322,7 @@ impl<'a, T> IntoIterator for IterMut<'a, T> {
     }
 }
 
-/// An owned non-empty iterator over values from an [`VecNonEmpty`].
+/// An owned non-empty iterator over values from an [`VecAtLeastN`].
 #[derive(Clone)]
 #[must_use = "non-empty iterators are lazy and do nothing unless consumed"]
 pub struct IntoIter<T> {
@@ -282,7 +347,7 @@ impl<T: Debug> Debug for IntoIter<T> {
     }
 }
 
-impl<T> IntoNonEmptyIterator for VecNonEmpty<T> {
+impl<T, const N: usize, const UNIQUE: bool> IntoNonEmptyIterator for VecAtLeastN<T, N, UNIQUE> {
     type IntoNEIter = IntoIter<T>;
 
     fn into_nonempty_iter(self) -> Self::IntoNEIter {
@@ -292,7 +357,7 @@ impl<T> IntoNonEmptyIterator for VecNonEmpty<T> {
     }
 }
 
-impl<'a, T> IntoNonEmptyIterator for &'a VecNonEmpty<T> {
+impl<'a, T, const N: usize, const UNIQUE: bool> IntoNonEmptyIterator for &'a VecAtLeastN<T, N, UNIQUE> {
     type IntoNEIter = Iter<'a, T>;
 
     fn into_nonempty_iter(self) -> Self::IntoNEIter {
@@ -300,7 +365,7 @@ impl<'a, T> IntoNonEmptyIterator for &'a VecNonEmpty<T> {
     }
 }
 
-impl<T> IntoIterator for VecNonEmpty<T> {
+impl<T, const N: usize, const UNIQUE: bool> IntoIterator for VecAtLeastN<T, N, UNIQUE> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
@@ -309,7 +374,7 @@ impl<T> IntoIterator for VecNonEmpty<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a VecNonEmpty<T> {
+impl<'a, T, const N: usize, const UNIQUE: bool> IntoIterator for &'a VecAtLeastN<T, N, UNIQUE> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
 
@@ -318,7 +383,7 @@ impl<'a, T> IntoIterator for &'a VecNonEmpty<T> {
     }
 }
 
-impl<'a, T> IntoIterator for &'a mut VecNonEmpty<T> {
+impl<'a, T, const N: usize, const UNIQUE: bool> IntoIterator for &'a mut VecAtLeastN<T, N, UNIQUE> {
     type Item = &'a mut T;
     type IntoIter = std::slice::IterMut<'a, T>;
 
@@ -332,7 +397,21 @@ impl<T> FromNonEmptyIterator<T> for VecNonEmpty<T> {
     where
         I: IntoNonEmptyIterator<Item = T>,
     {
-        VecNonEmpty::new(iter.into_iter().collect::<Vec<_>>()).unwrap()
+        VecNonEmpty::new(iter.into_iter().collect::<Vec<_>>())
+            // .unwrap() requires `Debug` to be implemented for `T`, so `.unwrap_or_else` is used
+            .unwrap_or_else(|_| panic!("NonEmptyIterator produces empty iterator"))
+    }
+}
+
+impl<T: Eq + Hash> FromNonEmptyIterator<T> for VecNonEmptyUnique<T> {
+    fn from_nonempty_iter<I>(iter: I) -> Self
+    where
+        I: IntoNonEmptyIterator<Item = T>,
+    {
+        VecNonEmpty::new(iter.into_iter().collect::<Vec<_>>())
+            // .unwrap() requires `Debug` to be implemented for `T`, so `.unwrap_or_else` is used
+            .unwrap_or_else(|_| panic!("NonEmptyIterator produces empty iterator"))
+            .into()
     }
 }
 
@@ -342,7 +421,7 @@ impl<T> Singleton for VecNonEmpty<T> {
     type Item = T;
 
     fn singleton(item: Self::Item) -> Self {
-        VecNonEmpty::try_from(vec![item]).unwrap()
+        vec_nonempty![item]
     }
 }
 
@@ -395,20 +474,84 @@ where
     }
 }
 
+#[must_use = "non-empty iterators are lazy and do nothing unless consumed"]
+pub struct RepeatN<T: Clone> {
+    inner: std::iter::RepeatN<T>,
+}
+
+pub fn repeat_n<T: Clone>(value: T, count: NonZeroUsize) -> RepeatN<T> {
+    RepeatN {
+        inner: std::iter::repeat_n(value, count.get()),
+    }
+}
+
+impl<T: Clone> NonEmptyIterator for RepeatN<T> {}
+
+impl<T: Clone> IntoIterator for RepeatN<T> {
+    type Item = T;
+
+    type IntoIter = std::iter::RepeatN<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner
+    }
+}
+
+impl<T: Clone + Debug> Debug for RepeatN<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+/// Like [`futures::future::try_join_all`], but for a non-empty collection of futures, so that the result is
+/// non-empty as well. The outputs are in the same order as the futures.
+///
+/// Like [`futures::future::try_join_all`], this consumes the iterator before returning, so that the returned future
+/// does not contain it. The returned future is therefore `Send` if the futures are, even if the iterator is not.
+pub fn try_join_all<I, F, T, E>(futures: I) -> impl Future<Output = Result<VecNonEmpty<T>, E>>
+where
+    I: IntoNonEmptyIterator<Item = F>,
+    F: Future<Output = Result<T, E>>,
+{
+    let (first, rest) = futures.into_nonempty_iter().next();
+    let joined = futures::future::try_join(first, futures::future::try_join_all(rest));
+
+    async move {
+        let (first, rest) = joined.await?;
+
+        let mut outputs = VecNonEmpty::singleton(first);
+        outputs.extend(rest);
+
+        Ok(outputs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::HashSet;
+    use std::future::pending;
+    use std::future::ready;
+    use std::num::NonZeroUsize;
     use std::panic;
+    use std::rc::Rc;
+    use std::time::Duration;
 
     use nonempty_collections::IntoNonEmptyIterator;
     use nonempty_collections::NonEmptyIterator;
     use rstest::rstest;
     use serde_json::json;
+    use tokio::time::Instant;
+    use tokio::time::sleep;
+    use tokio::time::timeout;
 
     use super::VecAtLeastN;
     use super::VecAtLeastTwo;
     use super::VecAtLeastTwoUnique;
     use super::VecNonEmpty;
+    use super::VecNonEmptyUnique;
+    use super::repeat_n;
+    use super::try_join_all;
 
     #[test]
     #[should_panic]
@@ -441,9 +584,18 @@ mod tests {
     }
 
     #[test]
+    fn test_vec_non_empty_to_vec_non_empty_unique_and_back() {
+        let vec = vec_nonempty![1, 2, 2, 3, 3];
+        let vec_unique: VecNonEmptyUnique<_> = vec.into();
+        assert_eq!(vec_unique.0, vec![1, 2, 3]);
+        assert_eq!(vec_nonempty![1, 2, 3], vec_unique.into());
+    }
+
+    #[test]
     fn test_vec_nonempty_macro() {
-        let uints = vec_nonempty![u32; 1, 2, 3];
-        assert_eq!(1, *uints.first());
+        let uints = vec_nonempty![1; 3];
+        assert_eq!(3, uints.len().get());
+        assert_eq!(vec![1, 1, 1], uints.0);
 
         let str_slices = vec_nonempty!["a", "b"];
         assert_eq!("a", *str_slices.first());
@@ -484,12 +636,18 @@ mod tests {
 
     #[test]
     fn test_vec_nonempty_index() {
-        let vec = VecNonEmpty::try_from(vec![1, 2, 3]).unwrap();
+        let vec = vec_nonempty![1, 2, 3];
         assert_eq!(vec[0], 1);
         assert_eq!(vec[1], 2);
         assert_eq!(vec[2], 3);
         let out_of_bounds = panic::catch_unwind(|| assert_eq!(vec[3], 3));
         assert!(out_of_bounds.is_err());
+    }
+
+    #[test]
+    fn test_vec_nonempty_split_first() {
+        assert_eq!(vec_nonempty![1].split_first(), (&1, [].as_slice()));
+        assert_eq!(vec_nonempty![1, 2, 3].split_first(), (&1, [2, 3].as_slice()));
     }
 
     #[test]
@@ -535,5 +693,133 @@ mod tests {
     fn test_nonempty_iter_fold() {
         let vec = vec_nonempty![1, 2, 3];
         assert_eq!(6, vec.nonempty_iter().fold(0, |acc, x| acc + x));
+    }
+
+    #[test]
+    fn test_repeat_n() {
+        let repeated = repeat_n("item", NonZeroUsize::new(3).unwrap())
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(repeated, vec!["item", "item", "item"]);
+    }
+
+    #[test]
+    fn test_repeat_n_is_nonempty_iterator() {
+        let repeated = repeat_n(42, NonZeroUsize::MIN).collect::<VecNonEmpty<_>>();
+
+        assert_eq!(repeated, vec_nonempty![42]);
+    }
+
+    #[test]
+    fn test_repeat_n_zips_with_nonempty_iterator() {
+        let vec = vec_nonempty![1, 2, 3];
+
+        let zipped = vec
+            .into_nonempty_iter()
+            .zip(repeat_n("item", NonZeroUsize::new(3).unwrap()))
+            .collect::<VecNonEmpty<_>>();
+
+        assert_eq!(zipped, vec_nonempty![(1, "item"), (2, "item"), (3, "item")]);
+    }
+
+    #[test]
+    fn test_repeat_n_does_not_clone_last_item() {
+        #[derive(Debug)]
+        struct CloneCounter {
+            clone_count: Rc<Cell<usize>>,
+        }
+
+        impl Clone for CloneCounter {
+            fn clone(&self) -> Self {
+                self.clone_count.set(self.clone_count.get() + 1);
+
+                Self {
+                    clone_count: Rc::clone(&self.clone_count),
+                }
+            }
+        }
+
+        let clone_count = Rc::new(Cell::new(0));
+        let item = CloneCounter {
+            clone_count: Rc::clone(&clone_count),
+        };
+
+        let repeated = repeat_n(item, NonZeroUsize::new(3).unwrap())
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(repeated.len(), 3);
+        assert_eq!(clone_count.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_try_join_all_single_future() {
+        let outputs = try_join_all(vec_nonempty![ready(Ok::<_, ()>(42))]).await;
+
+        assert_eq!(outputs, Ok(vec_nonempty![42]));
+    }
+
+    #[tokio::test]
+    async fn test_try_join_all_send_with_non_send_iterator() {
+        fn assert_send<T: Send>(_: &T) {}
+
+        // The closure captures an `Rc`, so the iterator is not `Send`, but the futures it creates are.
+        let offset = Rc::new(10);
+        let joined = try_join_all(
+            vec_nonempty![1, 2]
+                .into_nonempty_iter()
+                .map(move |value| ready(Ok::<_, ()>(value + *offset))),
+        );
+
+        assert_send(&joined);
+        assert_eq!(joined.await, Ok(vec_nonempty![11, 12]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_try_join_all_keeps_order_and_runs_concurrently() {
+        let start = Instant::now();
+
+        // The first future finishes last and the last future finishes first.
+        let outputs = try_join_all(
+            vec_nonempty![30, 20, 10]
+                .into_nonempty_iter()
+                .map(|delay_ms| async move {
+                    sleep(Duration::from_millis(delay_ms)).await;
+
+                    Ok::<_, ()>(delay_ms)
+                }),
+        )
+        .await;
+
+        assert_eq!(outputs, Ok(vec_nonempty![30, 20, 10]));
+
+        // The futures ran concurrently, so joining them took as long as the slowest one.
+        assert_eq!(start.elapsed(), Duration::from_millis(30));
+    }
+
+    #[rstest]
+    #[case::first_fails(0)]
+    #[case::middle_fails(1)]
+    #[case::last_fails(2)]
+    #[tokio::test(start_paused = true)]
+    async fn test_try_join_all_error(#[case] failing_index: usize, #[values(true, false)] others_complete: bool) {
+        let result = timeout(
+            Duration::from_secs(1),
+            try_join_all(vec_nonempty![0, 1, 2].into_nonempty_iter().map(|index| async move {
+                if index == failing_index {
+                    Err(index)
+                } else if others_complete {
+                    Ok(index)
+                } else {
+                    // If the other futures never complete, the error has to short-circuit the join.
+                    pending().await
+                }
+            })),
+        )
+        .await
+        .expect("try_join_all should return as soon as a future fails");
+
+        assert_eq!(result, Err(failing_index));
     }
 }

@@ -15,7 +15,6 @@ void main() {
     final mockOrganization = WalletMockData.organization;
     final mockLocalizedText = 'Localized Text'.untranslated;
     final mockCardRequests = <DiscloseCardRequest>[];
-    final mockPolicy = WalletMockData.policy;
     final mockMissingAttributes = <MissingAttribute>[];
 
     test('DisclosureInitial has correct default FlowProgress', () {
@@ -30,7 +29,7 @@ void main() {
     });
 
     test('DisclosureCheckUrl has correct FlowProgress', () {
-      const state = DisclosureCheckUrl(originUrl: 'https://example.com');
+      const state = DisclosureCheckUrl();
       expect(
         state.stepperProgress,
         const FlowProgress(currentStep: 1, totalSteps: kDisclosureSteps + kExtraCrossDeviceSteps),
@@ -41,9 +40,7 @@ void main() {
       test('is correct for same device flow', () {
         final state = DisclosureCheckOrganizationForLogin(
           relyingParty: mockOrganization,
-          originUrl: 'https://example.com',
           sessionType: DisclosureSessionType.sameDevice,
-          policy: mockPolicy,
           cardRequests: mockCardRequests,
           sharedDataWithOrganizationBefore: false,
         );
@@ -53,9 +50,7 @@ void main() {
       test('is correct for cross device flow', () {
         final state = DisclosureCheckOrganizationForLogin(
           relyingParty: mockOrganization,
-          originUrl: 'https://example.com',
           sessionType: DisclosureSessionType.crossDevice,
-          policy: mockPolicy,
           cardRequests: mockCardRequests,
           sharedDataWithOrganizationBefore: false,
         );
@@ -95,7 +90,6 @@ void main() {
           relyingParty: mockOrganization,
           requestPurpose: mockLocalizedText,
           cardRequests: mockCardRequests,
-          policy: mockPolicy,
           sessionType: DisclosureSessionType.sameDevice,
         );
         expect(state.stepperProgress, const FlowProgress(currentStep: 1, totalSteps: kDisclosureSteps));
@@ -106,7 +100,6 @@ void main() {
           relyingParty: mockOrganization,
           requestPurpose: mockLocalizedText,
           cardRequests: mockCardRequests,
-          policy: mockPolicy,
           sessionType: DisclosureSessionType.crossDevice,
         );
         expect(
@@ -183,27 +176,12 @@ void main() {
       });
 
       test('DisclosureGenericError has correct default FlowProgress', () {
-        final state = DisclosureGenericError(error: mockApplicationError);
-        expect(state.stepperProgress, isNull);
-      });
-
-      test('DisclosureRelyingPartyError has correct default FlowProgress', () {
-        final state = DisclosureRelyingPartyError(error: mockApplicationError);
+        final state = DisclosureError(error: mockApplicationError);
         expect(state.stepperProgress, isNull);
       });
 
       test('DisclosureSessionExpired has correct default FlowProgress', () {
         final state = DisclosureSessionExpired(error: mockApplicationError, isCrossDevice: false, canRetry: false);
-        expect(state.stepperProgress, isNull);
-      });
-
-      test('DisclosureSessionCancelled has correct default FlowProgress', () {
-        final state = DisclosureSessionCancelled(error: mockApplicationError);
-        expect(state.stepperProgress, isNull);
-      });
-
-      test('DisclosureNetworkError has correct default FlowProgress', () {
-        final state = DisclosureNetworkError(error: mockApplicationError);
         expect(state.stepperProgress, isNull);
       });
     });

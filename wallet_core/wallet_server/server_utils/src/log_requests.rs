@@ -12,9 +12,8 @@ use http::Method;
 use http::StatusCode;
 use http::Uri;
 use http::Version;
-
 use http_utils::error::APPLICATION_PROBLEM_JSON;
-use openid4vc::disclosure_session::APPLICATION_OAUTH_AUTHZ_REQ_JWT;
+use oauth::authorization::APPLICATION_OAUTH_AUTHZ_REQ_JWT;
 
 const MAX_BODY_SIZE: usize = 8 * 1024 * 1024; // 8 MiB
 
@@ -60,7 +59,7 @@ fn body_to_string(bytes: &Bytes, headers: &HeaderMap<HeaderValue>) -> String {
         "application/json",
         "application/x-www-form-urlencoded",
         "text/plain",
-        APPLICATION_OAUTH_AUTHZ_REQ_JWT.as_ref(),
+        APPLICATION_OAUTH_AUTHZ_REQ_JWT,
         APPLICATION_PROBLEM_JSON.as_ref(),
     ]
     .into_iter()

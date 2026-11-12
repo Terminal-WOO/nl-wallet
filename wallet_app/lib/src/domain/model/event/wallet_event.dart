@@ -5,10 +5,10 @@ import '../card/wallet_card.dart';
 import '../disclosure/disclosure_type.dart';
 import '../document.dart';
 import '../organization.dart';
-import '../policy/policy.dart';
 
 export '../disclosure/disclosure_type.dart';
 
+part 'deletion_event.dart';
 part 'disclosure_event.dart';
 part 'issuance_event.dart';
 part 'sign_event.dart';
@@ -24,13 +24,18 @@ sealed class WalletEvent extends Equatable {
     required this.status,
   });
 
+  const factory WalletEvent.deletion({
+    required DateTime dateTime,
+    required EventStatus status,
+    required WalletCard card,
+  }) = DeletionEvent;
+
   const factory WalletEvent.disclosure({
     required DateTime dateTime,
     required EventStatus status,
     required Organization relyingParty,
     required LocalizedText purpose,
     required List<WalletCard> cards,
-    required Policy policy,
     required DisclosureType type,
   }) = DisclosureEvent;
 
@@ -45,7 +50,6 @@ sealed class WalletEvent extends Equatable {
     required DateTime dateTime,
     required EventStatus status,
     required Organization relyingParty,
-    required Policy policy,
     required Document document,
   }) = SignEvent;
 }

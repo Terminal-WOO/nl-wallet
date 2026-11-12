@@ -1,10 +1,11 @@
+import groovy.json.JsonOutput
+import org.gradle.kotlin.dsl.android
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Base64
 import java.util.Properties
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -21,6 +22,10 @@ fun loadProperties(name: String): Map<String, String> {
     }
 }
 
+// Sentry dart-defines are raw strings, while buildConfigField expects a Java/Kotlin source literal.
+// Escape them here so quotes, backslashes, or line breaks cannot break generated BuildConfig code.
+fun String.asBuildConfigString(): String = JsonOutput.toJson(this)
+
 val keystoreProperties = loadProperties("key.properties")
 val signingConfigName = if (keystoreProperties["storeFile"] != null) "release" else "debug"
 
@@ -36,6 +41,22 @@ val dartEnvironmentVariables = if (project.hasProperty("dart-defines")) {
     }
 } else {
     mapOf()
+}
+
+fun Map<String, String>.nonEmptyDartDefine(key: String): String? =
+    this[key]?.takeIf { it.isNotEmpty() }
+
+val sentryDsn = dartEnvironmentVariables.nonEmptyDartDefine("SENTRY_DSN")
+val sentryEnvironment = dartEnvironmentVariables.nonEmptyDartDefine("SENTRY_ENVIRONMENT")
+val sentryRelease = dartEnvironmentVariables.nonEmptyDartDefine("SENTRY_RELEASE")
+val allowReleaseLogs = dartEnvironmentVariables.nonEmptyDartDefine("ALLOW_RELEASE_LOGS")
+
+check(sentryDsn == null || sentryEnvironment != null) {
+    "SENTRY_ENVIRONMENT must be set when SENTRY_DSN is set"
+}
+
+check(allowReleaseLogs == null || allowReleaseLogs == "true" || allowReleaseLogs == "false") {
+    "ALLOW_RELEASE_LOGS must be 'true' or 'false'"
 }
 
 val ndkTargets = System.getenv("ANDROID_NDK_TARGETS")?.split(' ')
@@ -84,6 +105,8 @@ android {
     // When the above-linked issue is merged and released, the above warnings
     // should disappear.
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
+
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
@@ -104,6 +127,12 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        buildConfigField("String", "SENTRY_DSN", (sentryDsn ?: "").asBuildConfigString())
+        buildConfigField("String", "SENTRY_ENVIRONMENT", (sentryEnvironment ?: "").asBuildConfigString())
+        buildConfigField("String", "SENTRY_RELEASE", (sentryRelease ?: "").asBuildConfigString())
+
+        multiDexEnabled = true
 
         manifestPlaceholders["appName"] = System.getenv("APP_NAME") ?: "NL Wallet"
 
@@ -144,7 +173,8 @@ android {
         }
         release {
             // Only allow release signing for release or unsigned
-            signingConfig = signingConfigName.takeIf { it == "release" }?.let { signingConfigs.getByName(it) }
+            signingConfig =
+                signingConfigName.takeIf { it == "release" }?.let { signingConfigs.getByName(it) }
             isMinifyEnabled = true
             proguardFiles += listOf(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -153,6 +183,16 @@ android {
             ndk {
                 abiFilters += ndkTargets
             }
+        }
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        val devenv = file("src/devenv")
+        if (devenv.resolve("res/raw/devenv_static_ca.pem").exists()) {
+            variant.sources.res?.addStaticSourceDirectory(devenv.resolve("res").path)
+            variant.sources.manifests.addStaticManifestFile(devenv.resolve("AndroidManifest.xml").path)
         }
     }
 }
@@ -170,7 +210,8 @@ flutter {
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.17.0@aar") // Java Native Access
-
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    implementation("io.sentry:sentry-android:8.43.0") // Also a transitive dependency from sentry_flutter, change both when upgrading
     implementation(project(path = ":platform_support"))
 }
 
@@ -179,11 +220,29 @@ val jniTargetDir = android.sourceSets.getByName("main").jniLibs.srcDirs.first()
 
 // Register tasks to build the Rust code and copy the resulting library files
 enum class BuildMode { Debug, Profile, Release }
-data class BuildOptions(val args: List<String> = emptyList())
+data class BuildOptions(
+    val args: List<String> = emptyList(),
+    val environment: Map<String, String> = emptyMap()
+)
+
+val sentryRustSymbolicationEnvironment = mapOf(
+    // Keep release artifacts optimized, but retain line tables in the CI-only
+    // debug files uploaded to Sentry. The packaged app should still be stripped
+    // by the Android build pipeline.
+    "CARGO_PROFILE_RELEASE_DEBUG" to "line-tables-only",
+    "CARGO_PROFILE_RELEASE_STRIP" to "none",
+)
+
 mapOf(
     BuildMode.Debug to BuildOptions(),
-    BuildMode.Profile to BuildOptions(args = listOf("--locked", "--release")),
-    BuildMode.Release to BuildOptions(args = listOf("--locked", "--release")),
+    BuildMode.Profile to BuildOptions(
+        args = listOf("--locked", "--release"),
+        environment = sentryRustSymbolicationEnvironment
+    ),
+    BuildMode.Release to BuildOptions(
+        args = listOf("--locked", "--release"),
+        environment = sentryRustSymbolicationEnvironment
+    ),
 ).forEach { (buildMode, options) ->
     tasks.register<Exec>("cargoBuildNativeLibrary${buildMode}") {
         workingDir("../../../wallet_core")
@@ -195,8 +254,19 @@ mapOf(
         args("-o", jniTargetDir)
         args("build", "-p", "flutter_api")
         args(options.args)
+        options.environment.forEach { (key, value) ->
+            environment(key, value)
+        }
         if (dartEnvironmentVariables["ALLOW_INSECURE_URL"] == "true") {
             args("--features", "wallet/allow_insecure_url")
+        }
+        mapOf(
+            "SENTRY_DSN" to sentryDsn,
+            "SENTRY_ENVIRONMENT" to sentryEnvironment,
+            "SENTRY_RELEASE" to sentryRelease,
+            "ALLOW_RELEASE_LOGS" to allowReleaseLogs,
+        ).forEach { (key, value) ->
+            value?.let { environment(key, it) }
         }
     }
     tasks.named { it == "merge${buildMode}NativeLibs" }.configureEach {
@@ -213,4 +283,10 @@ tasks.register<Delete>("cleanJni") {
 
 tasks.named("clean") {
     dependsOn("cleanJni")
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_11)
+    }
 }

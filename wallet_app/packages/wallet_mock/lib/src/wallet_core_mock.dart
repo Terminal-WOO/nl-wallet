@@ -1,6 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:developer';
 
+import 'package:collection/collection.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:wallet_core/core.dart';
 
 import '../mock.dart';
@@ -25,6 +29,10 @@ class WalletCoreMock implements WalletCoreApi {
 
   bool _isBiometricsEnabled = false;
 
+  /// The DigiD based PID session; unlike disclosure based issuance it has no [IssuanceManager].
+  /// Starts when the redirect uri is created, as it does in the core.
+  bool _hasActivePidSession = false;
+
   WalletCoreMock(
     this._pinManager,
     this._wallet,
@@ -43,6 +51,19 @@ class WalletCoreMock implements WalletCoreApi {
     if (isDisclosureBasedIssuance) return _issuanceManager.startIssuance(uri);
     // Proceed with normal disclosure
     return _disclosureManager.startDisclosure(uri, isQrCode: isQrCode);
+  }
+
+  @override
+  Future<StartDisclosureResult> crateApiFullContinueCloseProximityDisclosure() async {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<String?> crateApiFullCancelSession() async {
+    _hasActivePidSession = false;
+    if (_disclosureManager.hasActiveDisclosureSession) return _disclosureManager.cancelDisclosure().then((_) => null);
+    if (_issuanceManager.hasActiveIssuanceSession) return _issuanceManager.cancelIssuance();
+    return null;
   }
 
   @override
@@ -73,6 +94,7 @@ class WalletCoreMock implements WalletCoreApi {
 
     switch (result) {
       case WalletInstructionResult_Ok():
+        _hasActivePidSession = false;
         _wallet.add(kPidAttestations);
         for (final it in kPidAttestations) {
           _eventLog.logIssuance(it, isRenewal: isRenewalFlow);
@@ -101,6 +123,11 @@ class WalletCoreMock implements WalletCoreApi {
   }
 
   @override
+  Future<void> crateApiFullClearConfigExpiredStream() async {
+    // Stub only, no need to clear it on the mock
+  }
+
+  @override
   Future<void> crateApiFullClearVersionStateStream() async {
     // Stub only, no need to clear it on the mock
   }
@@ -116,11 +143,22 @@ class WalletCoreMock implements WalletCoreApi {
   }
 
   @override
-  Future<List<AttestationPresentation>> crateApiFullContinuePidIssuance({required String uri}) async =>
-      kPidAttestations;
+  Future<IssuanceContinueResult> crateApiFullContinueIssuance({required String uri}) async {
+    if (uri.contains('mock') && _issuanceManager.hasActiveIssuanceSession) {
+      return IssuanceContinueResult.previews(_issuanceManager.sessionAttestations!);
+    }
+    return IssuanceContinueResult.previews(kPidAttestations);
+  }
 
   @override
-  Future<String> crateApiFullCreatePidIssuanceRedirectUri() async => MockConstants.pidIssuanceRedirectUri;
+  Future<IssuanceStartResult> crateApiFullStartIssuanceFromOffer({required String offerUri}) =>
+      _issuanceManager.startIssuanceFromOffer(offerUri);
+
+  @override
+  Future<String> crateApiFullCreatePidIssuanceRedirectUri() async {
+    _hasActivePidSession = true;
+    return MockConstants.pidIssuanceRedirectUri;
+  }
 
   @override
   Future<bool> crateApiFullHasRegistration() async => _pinManager.isRegistered;
@@ -132,6 +170,7 @@ class WalletCoreMock implements WalletCoreApi {
     if (type == 'verify') return IdentifyUriResult.Disclosure;
     if (type == 'issue') return IdentifyUriResult.DisclosureBasedIssuance;
     if (type == 'sign') throw UnsupportedError('Sign not yet supported');
+    if (type == 'offer') return IdentifyUriResult.CredentialOffer;
     throw UnsupportedError('Unsupported uri: $uri');
   }
 
@@ -175,6 +214,7 @@ class WalletCoreMock implements WalletCoreApi {
 
   @override
   Future<void> crateApiFullResetWallet() async {
+    _hasActivePidSession = false;
     await _pinManager.resetPin();
     _wallet.reset();
     _eventLog.reset();
@@ -190,12 +230,21 @@ class WalletCoreMock implements WalletCoreApi {
         inactiveWarningTimeout: const Duration(minutes: 1).inSeconds,
         inactiveLockTimeout: const Duration(minutes: 3).inSeconds,
         backgroundLockTimeout: const Duration(seconds: 20).inSeconds,
-        pidAttestationTypes: ['urn:eudi:pid:nl:1'],
+        // Prioritised list of PID variants; anything matching after the first match is hidden.
+        // Listing another attestation type here (e.g. the address card) would thus hide it.
+        pidAttestations: [
+          const PidAttestation(format: Format.SdJwt, attestationType: MockAttestationTypes.pid),
+          const PidAttestation(format: Format.MsoMdoc, attestationType: MockAttestationTypes.pid),
+        ],
         staticAssetsBaseUrl: 'https://example.com/',
-        version: BigInt.one,
+        version: '1',
+        environment: 'mock',
       ),
     );
   }
+
+  @override
+  Stream<bool> crateApiFullSetConfigExpiredStream() => Stream.value(false);
 
   @override
   Stream<FlutterVersionState> crateApiFullSetVersionStateStream() {
@@ -218,7 +267,8 @@ class WalletCoreMock implements WalletCoreApi {
   }
 
   @override
-  Future<List<WalletEvent>> crateApiFullGetHistory() async => _eventLog.log;
+  Future<List<WalletEvent>> crateApiFullGetHistory({required int page, required int pageSize}) async =>
+      _eventLog.log.slices(pageSize).elementAtOrNull(page) ?? [];
 
   @override
   Future<List<WalletEvent>> crateApiFullGetHistoryForCard({required String attestationId}) async =>
@@ -228,22 +278,20 @@ class WalletCoreMock implements WalletCoreApi {
   Stream<List<WalletEvent>> crateApiFullSetRecentHistoryStream() => _eventLog.logStream;
 
   @override
-  Future<bool> crateApiFullHasActiveDisclosureSession() async => _disclosureManager.hasActiveDisclosureSession;
-
-  @override
-  Future<bool> crateApiFullHasActiveIssuanceSession() async => _issuanceManager.hasActiveIssuanceSession;
-
-  @override
-  Future<DisclosureBasedIssuanceResult> crateApiFullContinueDisclosureBasedIssuance({
+  Future<DisclosureBasedIssuanceInstructionResult> crateApiFullContinueDisclosureBasedIssuance({
     required List<int> selectedIndices,
     required String pin,
   }) async {
     assert(_issuanceManager.hasActiveIssuanceSession, 'invalid state');
     final attestations = await _issuanceManager.discloseForIssuance(pin);
     try {
-      return DisclosureBasedIssuanceResult.ok(attestations);
+      return DisclosureBasedIssuanceInstructionResult.ok(
+        attestations.isEmpty
+            ? const DisclosureBasedIssuanceResult.noIssuableAttestations()
+            : DisclosureBasedIssuanceResult.previews(attestations),
+      );
     } on WalletInstructionError catch (error) {
-      return DisclosureBasedIssuanceResult.instructionError(error: error);
+      return DisclosureBasedIssuanceInstructionResult.instructionError(error: error);
     } catch (ex) {
       rethrow;
     }
@@ -284,6 +332,7 @@ class WalletCoreMock implements WalletCoreApi {
   @override
   Future<String> crateApiFullCreatePidRenewalRedirectUri() async {
     await Future.delayed(const Duration(seconds: 1));
+    _hasActivePidSession = true;
     return MockConstants.pidRenewalRedirectUri;
   }
 
@@ -334,8 +383,101 @@ class WalletCoreMock implements WalletCoreApi {
   Future<TransferSessionState> crateApiFullGetWalletTransferState() => _transferManager.getTransferState();
 
   @override
-  Future<WalletState> crateApiFullGetWalletState() async => const WalletState.ready();
+  Future<WalletState> crateApiFullGetWalletState() async {
+    if (!_pinManager.isRegistered) return const WalletState.unregistered();
+
+    // Support basic [WalletState]s for the mock build. Like the core, an active session wins
+    // over 'empty': during the initial PID issuance the wallet is still empty.
+    WalletState state = const WalletState.ready();
+    if (_hasActivePidSession || _issuanceManager.hasActiveIssuanceSession) {
+      state = const WalletState.inIssuanceFlow();
+    } else if (_disclosureManager.hasActiveDisclosureSession) {
+      state = const WalletState.inDisclosureFlow();
+    } else if (_wallet.isEmpty) {
+      state = const WalletState.empty();
+    }
+    // Wrap in Locked state when wallet is locked
+    final locked = await _wallet.lockedStream.first;
+    if (locked) return WalletState.locked(subState: state);
+    return state;
+  }
 
   @override
   Future<void> crateApiFullReceiveWalletTransfer() => Future.delayed(const Duration(seconds: 2));
+
+  @override
+  Future<void> crateApiFullClearScheduledNotificationsStream() async {}
+
+  @override
+  Stream<List<AppNotification>> crateApiFullSetScheduledNotificationsStream() => PublishSubject();
+
+  @override
+  Future<void> crateApiFullSetDirectNotificationsCallback({
+    required FutureOr<void> Function(List<(int, NotificationType)>) callback,
+  }) async {}
+
+  @override
+  Future<void> crateApiFullClearDirectNotificationsCallback() async {}
+
+  @override
+  Future<void> crateApiFullClearSentryBreadcrumbCallback() async {}
+
+  @override
+  Future<void> crateApiFullSetSentryBreadcrumbCallback({
+    required FutureOr<void> Function(String) callback,
+  }) async {}
+
+  @override
+  Future<String> crateApiFullGetRegistrationRevocationCode() async => 'AB12CD34EF56GH78IJ';
+
+  @override
+  Future<RevocationCodeResult> crateApiFullGetRevocationCode({required String pin}) async {
+    final result = _pinManager.checkPin(pin);
+    switch (result) {
+      case WalletInstructionResult_Ok():
+        return const RevocationCodeResult.ok(revocationCode: 'AB12CD34EF56GH78IJ');
+      case WalletInstructionResult_InstructionError():
+        return RevocationCodeResult.instructionError(error: result.error);
+    }
+  }
+
+  @override
+  Future<WalletInstructionResult> crateApiFullDeleteAttestation({
+    required String pin,
+    required String attestationId,
+  }) async {
+    final result = _pinManager.checkPin(pin);
+    switch (result) {
+      case WalletInstructionResult_Ok():
+        final attestation = _wallet.remove(attestationId);
+        if (attestation != null) _eventLog.logDeletion(attestation);
+        return result;
+      case WalletInstructionResult_InstructionError():
+        return result;
+    }
+  }
+
+  @override
+  Future<void> crateApiFullPerformBackgroundSync() => Future.delayed(const Duration(seconds: 2));
+
+  @override
+  Future<String> crateApiFullStartCloseProximityDisclosure({
+    required bool wrprcStrictMode,
+    required FutureOr<void> Function(CloseProximityDisclosureFlutterUpdate) callback,
+  }) async => 'mdoc:example.org';
+
+  @override
+  String crateModelsImageSanitizedSvgXml({required SanitizedSvg that}) => '<svg></svg>';
+
+  @override
+  // ignore: non_constant_identifier_names
+  RustArcIncrementStrongCountFnType get rust_arc_increment_strong_count_SanitizedSvg => throw UnimplementedError();
+
+  @override
+  // ignore: non_constant_identifier_names
+  RustArcDecrementStrongCountFnType get rust_arc_decrement_strong_count_SanitizedSvg => throw UnimplementedError();
+
+  @override
+  // ignore: non_constant_identifier_names
+  CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_SanitizedSvgPtr => throw UnimplementedError();
 }

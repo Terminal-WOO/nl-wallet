@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[package.metadata.sbom]
+# Certificate-generation tool for local development.
+production-root = false
+
 [lints]
 workspace = true
 
@@ -12,24 +16,38 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
-chrono.workspace = true
+base64.workspace = true
+chrono = { workspace = true, features = ["now"] }
 clap = { workspace = true, features = ["derive", "string"] }
 clio = { workspace = true, features = ["clap-parse"] }
+hex.workspace = true
 itertools.workspace = true
-p256 = { workspace = true, features = ["ecdsa", "pem"] }
+p256 = { workspace = true, features = ["pem"] }
 pem.workspace = true
+rcgen = { workspace = true, features = ["pem"] }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+url.workspace = true
 x509-parser.workspace = true
 
 crypto = { path = "../lib/crypto", features = ["generate"] }
-attestation_data = { path = "../lib/attestation_data", features = ["generate"] }
+attestation_data.path = "../lib/attestation_data"
+cose.path = "../lib/cose"
+jwt.path = "../lib/jwt"
+token_status_list.path = "../lib/token_status_list"
 utils.path = "../lib/utils"
+http_utils.path = "../lib/http_utils"
 
 [dev-dependencies]
 assert_cmd.workspace = true
 assert_fs.workspace = true
 predicates = { workspace = true, features = ["regex"] }
+rand_core.workspace = true
+rstest.workspace = true
 time.workspace = true
 
-crypto = { path = "../lib/crypto", features = ["mock"] }
 attestation_data = { path = "../lib/attestation_data", features = ["mock"] }
+crypto = { path = "../lib/crypto", features = ["generate", "mock"] }
+token_status_list = { path = "../lib/token_status_list", features = ["verification"] }

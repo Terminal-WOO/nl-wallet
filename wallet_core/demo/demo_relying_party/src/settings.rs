@@ -1,16 +1,16 @@
+use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::Path;
 
 use config::Config;
 use config::ConfigError;
 use config::Environment;
 use config::File;
-use indexmap::IndexMap;
-use serde::Deserialize;
-
 use dcql::Query;
 use http_utils::urls::BaseUrl;
 use http_utils::urls::ConnectSource;
 use http_utils::urls::CorsOrigin;
+use serde::Deserialize;
 use utils::path::prefix_local_path;
 
 #[derive(Deserialize, Clone)]
@@ -27,7 +27,7 @@ pub struct Settings {
     pub connect_src: Option<ConnectSource>,
 
     #[serde(default)]
-    pub usecases: IndexMap<String, Usecase>,
+    pub usecases: HashMap<String, Usecase>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -59,7 +59,7 @@ impl Settings {
             .set_default("public_url", "http://localhost:8001/")?
             .set_default("structured_logging", false)?
             .set_default("log_requests", false)?
-            .add_source(File::from(prefix_local_path("demo_relying_party.toml".as_ref()).as_ref()).required(false))
+            .add_source(File::from(prefix_local_path(Path::new("demo_relying_party.toml")).as_ref()).required(false))
             .add_source(
                 Environment::with_prefix("demo_relying_party")
                     .separator("__")

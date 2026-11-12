@@ -1,0 +1,37 @@
+[package]
+name = "health_checkers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+
+[[test]]
+name = "database_checker"
+path = "tests/database_checker.rs"
+required-features = ["db_test"]
+
+[features]
+db_test = [
+    "dep:db_test",
+    "dep:rstest",
+    "sea-orm/runtime-tokio-rustls",
+    "tokio/rt-multi-thread",
+    "tokio/macros",
+]
+
+[dependencies]
+async-trait.workspace = true
+sea-orm = { workspace = true, features = ["runtime-tokio-rustls", "sqlx-postgres"] }
+
+rstest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+hsm.path = "../hsm"
+http_utils.path = "../http_utils"
+
+db_test = { path = "../db_test", optional = true }

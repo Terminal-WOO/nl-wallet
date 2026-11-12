@@ -12,10 +12,18 @@ class RelyingPartyAmsterdamWebPage : MobileActions() {
 
     private val loggedInHeaderTextLocator = By.xpath("//div[contains(@class, 'notification ')]")
 
-    fun loggedInMessageVisible() = isWebElementVisible(findWebElement(loggedInHeaderTextLocator))
+    fun loggedInMessageVisible(): Boolean {
+        switchToWebViewWindowContaining(loggedInHeaderTextLocator)
+        return isWebElementVisible(findWebElement(loggedInHeaderTextLocator))
+    }
 
     fun openSameDeviceWalletFlow() {
         body.clickStartButton()
         popup.clickSameDeviceButton()
+    }
+
+    fun openCrossDeviceWalletFlow() {
+        body.clickStartButton()
+        popup.clickCrossDeviceButton()
     }
 }

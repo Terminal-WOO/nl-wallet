@@ -1,4 +1,5 @@
 import '../../../domain/model/card/wallet_card.dart';
+import '../../../domain/model/issuance/continue_issuance_result.dart';
 import '../../../domain/model/issuance/start_issuance_result.dart';
 
 export '../../../domain/model/disclosure/start_disclosure_result.dart';
@@ -6,9 +7,11 @@ export '../../../domain/model/disclosure/start_disclosure_result.dart';
 abstract class IssuanceRepository {
   Future<StartIssuanceResult> startIssuance(String disclosureUri, {required bool isQrCode});
 
+  Future<StartIssuanceResult> startIssuanceFromOffer(String disclosureUri, {required bool isQrCode});
+
   Future<List<WalletCard>> discloseForIssuance(String pin, List<int> selectedIndices);
 
-  Future<void> acceptIssuance(String pin, Iterable<WalletCard> cards);
+  Future<ContinueIssuanceResult> continueIssuance(String uri);
 
-  Future<String?> cancelIssuance();
+  Future<void> acceptIssuance(String pin, Iterable<WalletCard> cards);
 }

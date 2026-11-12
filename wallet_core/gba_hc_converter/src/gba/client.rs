@@ -4,15 +4,15 @@ use std::str;
 
 use aes_gcm::Aes256Gcm;
 use base64::prelude::*;
+use crypto::keys::SymmetricKey;
 use http::header;
+use http_utils::reqwest::tls_pinned_client_builder;
+use http_utils::urls::BaseUrl;
 use itertools::Itertools;
 use pem::Pem;
 use reqwest::Certificate;
 use reqwest::Identity;
 use tracing::info;
-
-use http_utils::reqwest::tls_pinned_client_builder;
-use http_utils::urls::BaseUrl;
 use utils::path::prefix_local_path;
 
 use crate::gba::encryption::HmacSha256;
@@ -20,7 +20,6 @@ use crate::gba::encryption::decrypt_bytes_from_dir;
 use crate::gba::error::Error;
 use crate::haal_centraal::Bsn;
 use crate::settings::ClientAuthentication;
-use crate::settings::SymmetricKey;
 
 #[trait_variant::make(Send)]
 pub trait GbavClient {
@@ -61,12 +60,12 @@ impl HttpGbavClient {
         .map(|pem| pem::encode(&pem))
         .join("");
 
-        let http_client = tls_pinned_client_builder(std::iter::once(trust_anchor))
+        let http_client = tls_pinned_client_builder([trust_anchor])
             .identity(Identity::from_pem(client_pems.as_bytes())?)
             .build()
             .expect("Could not build reqwest HTTP client");
 
-        let vraag_request_template_path = prefix_local_path("resources/remote/bsn_zoeken_template.xml".as_ref());
+        let vraag_request_template_path = prefix_local_path(Path::new("resources/remote/bsn_zoeken_template.xml"));
         let vraag_request_template = tokio::fs::read_to_string(vraag_request_template_path).await?;
 
         let client = Self {
@@ -84,7 +83,7 @@ impl HttpGbavClient {
 
 impl GbavClient for HttpGbavClient {
     async fn vraag(&self, bsn: &Bsn) -> Result<Option<String>, Error> {
-        info!("Sending GBA-V request to: {}", &self.base_url.clone().into_inner());
+        info!("Sending GBA-V request to: {}", self.base_url);
 
         let mut request_builder = self.http_client.post(self.base_url.clone().into_inner());
 
@@ -124,7 +123,7 @@ pub struct FileGbavClient<T> {
 }
 
 impl<T> FileGbavClient<T> {
-    pub fn new(path: &Path, decryption_key: SymmetricKey, hmac_key: SymmetricKey, client: T) -> Self {
+    pub fn new(path: PathBuf, decryption_key: SymmetricKey, hmac_key: SymmetricKey, client: T) -> Self {
         let base_path = prefix_local_path(path).into_owned();
 
         Self {
@@ -142,8 +141,8 @@ where
 {
     async fn vraag(&self, bsn: &Bsn) -> Result<Option<String>, Error> {
         let decrypted = decrypt_bytes_from_dir(
-            self.decryption_key.key::<Aes256Gcm>(),
-            self.hmac_key.key::<HmacSha256>(),
+            self.decryption_key.key::<Aes256Gcm>().map_err(Error::InvalidKey)?,
+            self.hmac_key.key::<HmacSha256>().map_err(Error::InvalidKey)?,
             &self.base_path,
             bsn.as_ref(),
         )

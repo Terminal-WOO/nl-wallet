@@ -2,15 +2,17 @@ import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../wallet_constants.dart';
-import '../tour/widget/tour_banner.dart';
-import '../update/widget/update_banner.dart';
+import '../../domain/model/animated_list_model.dart';
 import 'cubit/banner_cubit.dart';
 import 'wallet_banner.dart';
+import 'widget/card_expiry_banner.dart';
+import 'widget/card_revocation_banner.dart';
+import 'widget/tour_banner.dart';
+import 'widget/update_banner.dart';
 
 /// A widget that displays a list of [WalletBanner]s with animations.
 ///
-/// This widget listens to a [BannerCubit] for updates to the list of banners
+/// This widget listens to a [BannerCubit] for updates to the list of banners.
 class BannerList extends StatefulWidget {
   const BannerList({super.key});
 
@@ -19,18 +21,18 @@ class BannerList extends StatefulWidget {
 }
 
 class _BannerListState extends State<BannerList> {
-  /// A global key used to control the [AnimatedListState].
-  final GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
-
   /// The current list of banners being displayed.
-  final List<WalletBanner> _banners = [];
+  late AnimatedListModel<WalletBanner> _banners;
 
   @override
   void initState() {
     super.initState();
     // Cubits only emit new states, so make sure initial state is in sync as [BannerCubit] outlives this widget.
-    final banners = context.read<BannerCubit>().state;
-    if (banners.isNotEmpty) _updateAnimatedList(banners);
+    _banners = AnimatedListModel<WalletBanner>(
+      listKey: GlobalKey(),
+      initialItems: context.read<BannerCubit>().state,
+      removedItemBuilder: (banner, context, animation) => _buildBannerItem(banner, animation),
+    );
   }
 
   @override
@@ -38,65 +40,58 @@ class _BannerListState extends State<BannerList> {
     return BlocConsumer<BannerCubit, List<WalletBanner>>(
       listener: (context, newBanners) => _updateAnimatedList(newBanners),
       builder: (context, banners) {
-        return AnimatedList.separated(
-          key: _listKey,
-          padding: EdgeInsets.only(left: 16, top: banners.isEmpty ? 0 : 16, right: 16),
-          shrinkWrap: true,
-          initialItemCount: _banners.length,
-          itemBuilder: (context, index, animation) {
-            return _buildBannerItem(_banners[index], animation);
-          },
-          separatorBuilder: (BuildContext context, int index, Animation<double> animation) {
-            return SizeTransition(sizeFactor: animation, child: const SizedBox(height: 8));
-          },
-          removedSeparatorBuilder: (BuildContext context, int index, Animation<double> animation) {
-            return SizeTransition(sizeFactor: animation, child: const SizedBox(height: 8));
-          },
+        // FocusTraversalGroup ensures keyboard tab exits cleanly from the
+        // banner list to the next focusable widget in the parent ListView,
+        // preventing the nested AnimatedList scroll view from trapping focus.
+        return FocusTraversalGroup(
+          child: AnimatedList.separated(
+            key: _banners.listKey,
+            padding: EdgeInsets.only(left: 16, top: banners.isEmpty ? 0 : 16, right: 16),
+            shrinkWrap: true,
+            initialItemCount: _banners.length,
+            itemBuilder: (context, index, animation) {
+              return _buildBannerItem(_banners[index], animation);
+            },
+            separatorBuilder: (BuildContext context, int index, Animation<double> animation) {
+              return SizeTransition(sizeFactor: animation, child: const SizedBox(height: 8));
+            },
+            removedSeparatorBuilder: (BuildContext context, int index, Animation<double> animation) {
+              return SizeTransition(sizeFactor: animation, child: const SizedBox(height: 8));
+            },
+          ),
         );
       },
     );
   }
 
   void _updateAnimatedList(List<WalletBanner> newBanners) {
-    // Remove banners not in newBanners
+    final noChanges = const ListEquality().equals(_banners.items, newBanners);
+    if (noChanges) return;
+
+    final diff = newBanners.length - _banners.length;
+    if (diff.abs() > 1) {
+      // Multiple items updated at once, skip to full rebuild
+      setState(() {
+        _banners = AnimatedListModel<WalletBanner>(
+          listKey: GlobalKey(),
+          initialItems: newBanners,
+          removedItemBuilder: (banner, context, animation) => _buildBannerItem(banner, animation),
+        );
+      });
+      return;
+    }
+
+    // Remove deleted banner
     for (int i = _banners.length - 1; i >= 0; i--) {
       if (!newBanners.contains(_banners[i])) {
-        final removedBanner = _banners.removeAt(i);
-        _listKey.currentState?.removeItem(
-          i,
-          (context, animation) => _buildBannerItem(removedBanner, animation),
-          duration: kDefaultAnimationDuration,
-        );
+        _banners.removeAt(i);
       }
     }
 
-    // Insert banners that are new
+    // Insert new banner
     for (int i = 0; i < newBanners.length; i++) {
       if (i >= _banners.length || _banners[i] != newBanners[i]) {
         _banners.insert(i, newBanners[i]);
-        _listKey.currentState?.insertItem(
-          i,
-          duration: kDefaultAnimationDuration,
-        );
-      }
-    }
-
-    // If order changed or lists are somehow still not equal, reset the list.
-    if (!const ListEquality().equals(_banners, newBanners)) {
-      // Remove all
-      _listKey.currentState?.removeAllItems(
-        (context, animation) => const SizedBox.shrink(),
-        duration: Duration.zero,
-      );
-      _banners.clear();
-
-      // Add all [newBanners]
-      for (int i = 0; i < newBanners.length; i++) {
-        _banners.insert(i, newBanners[i]);
-        _listKey.currentState?.insertItem(
-          i,
-          duration: kDefaultAnimationDuration,
-        );
       }
     }
   }
@@ -108,6 +103,15 @@ class _BannerListState extends State<BannerList> {
         bannerWidget = UpdateBanner(versionState: banner.state);
       case TourSuggestionBanner():
         bannerWidget = const TourBanner();
+      case CardExpiresSoonBanner():
+        bannerWidget = CardExpiryBanner(
+          card: banner.card,
+          expiresIn: banner.expiresAt.difference(DateTime.now()),
+        );
+      case CardExpiredBanner():
+        bannerWidget = CardExpiryBanner(card: banner.card);
+      case CardRevokedBanner():
+        bannerWidget = CardRevocationBanner(card: banner.card);
     }
 
     return FadeTransition(

@@ -5,7 +5,6 @@ import '../../util/extension/build_context_extension.dart';
 import '../../util/launch_util.dart';
 import '../common/widget/bullet_list.dart';
 import '../common/widget/button/confirm/confirm_buttons.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
 import '../common/widget/button/primary_button.dart';
 import '../common/widget/button/tertiary_button.dart';
 import '../common/widget/text/body_text.dart';
@@ -25,7 +24,6 @@ class DemoScreen extends StatelessWidget {
       child: Scaffold(
         appBar: WalletAppBar(
           title: TitleText(context.l10n.demoScreenTitle),
-          actions: const [HelpIconButton()],
         ),
         body: SafeArea(
           child: LayoutBuilder(
@@ -52,17 +50,23 @@ class DemoScreen extends StatelessWidget {
   }
 
   Widget _buildBottomSection(BuildContext context) {
-    return ConfirmButtons(
-      flipVertical: true,
-      primaryButton: PrimaryButton(
-        text: Text(context.l10n.demoScreenContinueCta),
-        onPressed: () => Navigator.restorablePushReplacementNamed(context, WalletRoutes.introductionRoute),
-      ),
-      secondaryButton: TertiaryButton(
-        text: Text(context.l10n.demoScreenMoreInfoCta),
-        icon: const Icon(Icons.north_east_outlined),
-        onPressed: () => launchUrlStringCatching(_kMoreInfoUrl),
-      ),
+    return Column(
+      mainAxisSize: .min,
+      children: [
+        const Divider(),
+        ConfirmButtons(
+          flipVertical: true,
+          primaryButton: PrimaryButton(
+            text: Text(context.l10n.demoScreenContinueCta),
+            onPressed: () => Navigator.restorablePushReplacementNamed(context, WalletRoutes.introductionRoute),
+          ),
+          secondaryButton: TertiaryButton(
+            text: Text(context.l10n.demoScreenMoreInfoCta),
+            icon: const Icon(Icons.north_east_outlined),
+            onPressed: () => launchUrlStringCatching(_kMoreInfoUrl),
+          ),
+        ),
+      ],
     );
   }
 

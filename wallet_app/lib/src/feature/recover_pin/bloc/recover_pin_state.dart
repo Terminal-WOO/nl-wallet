@@ -30,7 +30,8 @@ class RecoverPinLoadingDigidUrl extends RecoverPinState {
 }
 
 class RecoverPinAwaitingDigidAuthentication extends RecoverPinState {
-  final String authUrl;
+  // The authUrl to trigger the digid login. Can be null in case of session recovery (i.e. awaiting the callback).
+  final String? authUrl;
 
   @override
   List<Object?> get props => [...super.props, authUrl];
@@ -177,37 +178,11 @@ class RecoverPinDigidLoginCancelled extends RecoverPinState {
   const RecoverPinDigidLoginCancelled();
 }
 
-class RecoverPinNetworkError extends RecoverPinState implements NetworkErrorState {
+class RecoverPinError extends RecoverPinState implements ErrorState {
   @override
   final ApplicationError error;
 
-  @override
-  final bool hasInternet;
-
-  @override
-  final int? statusCode;
-
-  const RecoverPinNetworkError({required this.error, required this.hasInternet, this.statusCode});
-
-  @override
-  List<Object?> get props => [error, hasInternet, statusCode, ...super.props];
-}
-
-class RecoverPinGenericError extends RecoverPinState implements ErrorState {
-  @override
-  final ApplicationError error;
-
-  const RecoverPinGenericError({required this.error});
-
-  @override
-  List<Object?> get props => [error, ...super.props];
-}
-
-class RecoverPinSessionExpired extends RecoverPinState implements ErrorState {
-  @override
-  final ApplicationError error;
-
-  const RecoverPinSessionExpired({required this.error});
+  const RecoverPinError({required this.error});
 
   @override
   List<Object?> get props => [error, ...super.props];

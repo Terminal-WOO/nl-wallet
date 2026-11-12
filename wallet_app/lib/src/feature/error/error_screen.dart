@@ -1,29 +1,34 @@
 import 'package:flutter/material.dart';
 
-import '../../domain/model/bloc/network_error_state.dart';
+import '../../domain/model/result/application_error.dart';
 import '../../navigation/secured_page_route.dart';
-import '../../navigation/wallet_routes.dart';
-import '../../util/extension/build_context_extension.dart';
-import '../../wallet_assets.dart';
-import '../../wallet_constants.dart';
 import '../common/widget/button/confirm/confirm_buttons.dart';
 import '../common/widget/button/icon/close_icon_button.dart';
-import '../common/widget/button/tertiary_button.dart';
-import '../common/widget/page_illustration.dart';
-import '../common/widget/text/body_text.dart';
 import '../common/widget/text/title_text.dart';
 import '../common/widget/wallet_app_bar.dart';
-import '../common/widget/wallet_scrollbar.dart';
-import 'error_button_builder.dart';
+import 'error_page.dart';
 
 export 'error_cta_style.dart';
 
+const _kDefaultActions = [CloseIconButton()];
+
 class ErrorScreen extends StatelessWidget {
+  /// The title shown at the top of the page.
   final String title;
+
+  /// The description text providing more details about the error.
   final String description;
+
+  /// The main action button shown at the bottom of the page.
   final FitsWidthWidget primaryButton;
+
+  /// An optional secondary action button shown below the [primaryButton].
   final FitsWidthWidget? secondaryButton;
+
+  /// An optional SVG illustration asset path to display in the center of the page.
   final String? illustration;
+
+  /// A list of actions shown at the top of the screen.
   final List<Widget> actions;
 
   const ErrorScreen({
@@ -32,9 +37,35 @@ class ErrorScreen extends StatelessWidget {
     required this.primaryButton,
     this.secondaryButton,
     this.illustration,
-    this.actions = const [CloseIconButton()],
+    this.actions = _kDefaultActions,
     super.key,
   });
+
+  /// Creates an [ErrorScreen] from an existing [ErrorPage].
+  ///
+  /// Optionally, [actions] can be provided to customize the app bar actions.
+  /// Defaults to a close button.
+  factory ErrorScreen.fromPage(ErrorPage page, {List<Widget>? actions}) {
+    return ErrorScreen(
+      title: page.title,
+      description: page.description,
+      primaryButton: page.primaryButton,
+      secondaryButton: page.secondaryButton,
+      illustration: page.illustration,
+      actions: actions ?? _kDefaultActions,
+    );
+  }
+
+  /// Creates an [ErrorScreen] from an [ApplicationError].
+  factory ErrorScreen.fromError(
+    BuildContext context,
+    ApplicationError error, {
+    ErrorCtaStyle style = ErrorCtaStyle.retry,
+  }) {
+    Future<bool> maybePop() => Navigator.maybePop(context);
+    final page = ErrorPage.fromError(context, error, onPrimaryActionPressed: maybePop, style: style);
+    return ErrorScreen.fromPage(page, actions: style.associatedActions);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,237 +75,48 @@ class ErrorScreen extends StatelessWidget {
         automaticallyImplyLeading: false,
         actions: actions,
       ),
-      body: SafeArea(
-        child: WalletScrollbar(
-          child: Column(
-            children: [
-              Expanded(
-                child: CustomScrollView(
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: kDefaultTitlePadding,
-                        child: TitleText(title),
-                      ),
-                    ),
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: BodyText(description),
-                      ),
-                    ),
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 24),
-                        child: PageIllustration(
-                          asset: illustration ?? WalletAssets.svg_error_general,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              _buildBottomSection(context),
-            ],
-          ),
-        ),
+      body: ErrorPage(
+        title: title,
+        description: description,
+        primaryButton: primaryButton,
+        secondaryButton: secondaryButton,
+        illustration: illustration,
       ),
     );
   }
 
-  Widget _buildBottomSection(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Column(
-        children: [
-          const Divider(),
-          ConfirmButtons(
-            forceVertical: !context.isLandscape,
-            flipVertical: true,
-            hideSecondaryButton: secondaryButton == null,
-            secondaryButton: secondaryButton ?? const TertiaryButton(text: Text('' /* invisible placeholder */)),
-            primaryButton: primaryButton,
-          ),
-        ],
-      ),
-    );
-  }
-
+  /// Navigates to the appropriate [ErrorScreen] for the given [ApplicationError].
+  ///
+  /// This method maps various [ApplicationError] types to their corresponding
+  /// specialized screens. If no specialized screen is available for an error
+  /// type, it defaults to a generic error screen and logs a warning.
+  ///
+  /// [style] determines the primary call-to-action button behavior (e.g., retry vs. close).
+  /// [secured] specifies whether the screen should be pushed as a [SecuredPageRoute].
   static void show(
-    BuildContext context, {
-    required ErrorScreen errorScreen,
-    bool secured = true,
-  }) {
-    Navigator.push(
-      context,
-      secured
-          ? SecuredPageRoute(
-              builder: (c) => errorScreen,
-            )
-          : MaterialPageRoute(
-              builder: (c) => errorScreen,
-            ),
-    );
-  }
-
-  /// Shows the [ErrorScreen] with the most generic error message
-  /// i.e. 'something went wrong' and a close button. Useful when
-  /// we only want to communicate something went wrong without going
-  /// into any specifics.
-  static void showGeneric(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-    bool secured = true,
-  }) {
-    show(
-      context,
-      secured: secured,
-      errorScreen: ErrorScreen.generic(context, style: style),
-    );
-  }
-
-  factory ErrorScreen.generic(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-  }) {
-    return ErrorScreen(
-      title: context.l10n.errorScreenGenericHeadline,
-      description: style == ErrorCtaStyle.close
-          ? context.l10n.errorScreenGenericDescriptionCloseVariant
-          : context.l10n.errorScreenGenericDescription,
-      illustration: WalletAssets.svg_error_general,
-      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
-      actions: style == ErrorCtaStyle.close ? const [CloseIconButton()] : [],
-    );
-  }
-
-  /// Shows the [ErrorScreen] focussed on communicating
-  /// a network related error. The error displayed to the user is
-  /// based on the provided [NetworkErrorState], and defaults to
-  /// 'something went wrong, check the internet and try again'
-  /// when no [NetworkErrorState] is provided.
-  static void showNetwork(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-    NetworkErrorState? networkError,
-    bool secured = true,
-  }) {
-    show(
-      context,
-      secured: secured,
-      errorScreen: ErrorScreen.network(
-        context,
-        style: style,
-        networkError: networkError,
-      ),
-    );
-  }
-
-  factory ErrorScreen.network(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-    NetworkErrorState? networkError,
-  }) {
-    if (networkError?.hasInternet == false) {
-      return ErrorScreen.noInternet(context, style: style);
-    } else {
-      return ErrorScreen.serverOutage(context, style: style);
-    }
-  }
-
-  factory ErrorScreen.serverOutage(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-  }) {
-    return ErrorScreen(
-      title: context.l10n.errorScreenServerHeadline,
-      description: style == ErrorCtaStyle.close
-          ? context.l10n.errorScreenServerDescriptionCloseVariant
-          : context.l10n.errorScreenServerDescription,
-      illustration: WalletAssets.svg_error_server_outage,
-      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
-      actions: style == ErrorCtaStyle.close ? const [CloseIconButton()] : [],
-    );
-  }
-
-  factory ErrorScreen.noInternet(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-  }) {
-    return ErrorScreen(
-      title: context.l10n.errorScreenNoInternetHeadline,
-      description: style == ErrorCtaStyle.close
-          ? context.l10n.errorScreenNoInternetDescriptionCloseVariant
-          : context.l10n.errorScreenNoInternetDescription,
-      illustration: WalletAssets.svg_error_no_internet,
-      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
-      actions: style == ErrorCtaStyle.close ? const [CloseIconButton()] : [],
-    );
-  }
-
-  static void showDeviceIncompatible(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-    bool secured = true,
-  }) {
-    show(
-      context,
-      secured: secured,
-      errorScreen: ErrorScreen.deviceIncompatible(context),
-    );
-  }
-
-  factory ErrorScreen.deviceIncompatible(
     BuildContext context,
-  ) {
-    return ErrorScreen(
-      title: context.l10n.errorScreenDeviceIncompatibleHeadline,
-      description: context.l10n.errorScreenDeviceIncompatibleDescription,
-      illustration: WalletAssets.svg_error_config_update,
-      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(
-        context,
-        ErrorCtaStyle.close,
-        onPressed: () {
-          Navigator.pushNamedAndRemoveUntil(
-            context,
-            WalletRoutes.splashRoute,
-            ModalRoute.withName(WalletRoutes.splashRoute),
-          );
-        },
-      ),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
-      actions: const [],
-    );
-  }
-
-  static void showSessionExpired(
-    BuildContext context, {
+    ApplicationError error, {
     ErrorCtaStyle style = ErrorCtaStyle.retry,
     bool secured = true,
   }) {
-    show(
-      context,
-      secured: secured,
-      errorScreen: ErrorScreen.sessionExpired(context, style: style),
-    );
+    final errorScreen = ErrorScreen.fromError(context, error, style: style);
+    _showErrorScreen(context, secured: secured, errorScreen: errorScreen);
   }
 
-  factory ErrorScreen.sessionExpired(
-    BuildContext context, {
-    ErrorCtaStyle style = ErrorCtaStyle.retry,
-  }) {
-    return ErrorScreen(
-      title: context.l10n.errorScreenSessionExpiredHeadline,
-      description: style == ErrorCtaStyle.close
-          ? context.l10n.errorScreenSessionExpiredDescriptionCloseVariant
-          : context.l10n.errorScreenSessionExpiredDescription,
-      illustration: WalletAssets.svg_error_session_expired,
-      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
-      actions: style == ErrorCtaStyle.close ? const [CloseIconButton()] : [],
-    );
+  /// Internal helper to push the [ErrorScreen] onto the [Navigator] stack.
+  static void _showErrorScreen(BuildContext context, {required ErrorScreen errorScreen, bool secured = true}) {
+    final route = secured
+        ? SecuredPageRoute(builder: (c) => errorScreen)
+        : MaterialPageRoute(builder: (c) => errorScreen);
+    Navigator.push(context, route);
+  }
+}
+
+extension _ErrorScreenCtaStyleExtensions on ErrorCtaStyle {
+  List<Widget> get associatedActions {
+    return switch (this) {
+      ErrorCtaStyle.retry => [],
+      ErrorCtaStyle.close => [const CloseIconButton()],
+    };
   }
 }

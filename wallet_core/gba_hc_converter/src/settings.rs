@@ -1,20 +1,17 @@
 use std::net::IpAddr;
 use std::path::Path;
+use std::path::PathBuf;
 
 use config::Config;
 use config::ConfigError;
 use config::Environment;
 use config::File;
-use crypto_common::Key;
-use crypto_common::KeySizeUser;
-use derive_more::From;
-use serde::Deserialize;
-use serde::de;
-use serde_with::base64::Base64;
-use serde_with::serde_as;
-
+use crypto::keys::SymmetricKey;
 use http_utils::reqwest::ReqwestTrustAnchor;
 use http_utils::urls::BaseUrl;
+use serde::Deserialize;
+use serde_with::base64::Base64;
+use serde_with::serde_as;
 use utils::path::prefix_local_path;
 
 use crate::gba;
@@ -74,29 +71,6 @@ impl HttpGbavClient {
     }
 }
 
-#[derive(From)]
-pub struct SymmetricKey {
-    bytes: Vec<u8>,
-}
-
-impl SymmetricKey {
-    pub fn key<B>(&self) -> &Key<B>
-    where
-        B: KeySizeUser,
-    {
-        Key::<B>::from_slice(self.bytes.as_slice())
-    }
-}
-
-impl<'de> Deserialize<'de> for SymmetricKey {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer)
-            .map(hex::decode)?
-            .map(Into::into)
-            .map_err(de::Error::custom)
-    }
-}
-
 #[derive(Deserialize)]
 pub struct PreloadedSettings {
     pub encryption_key: SymmetricKey,
@@ -107,7 +81,7 @@ pub struct PreloadedSettings {
 impl<T> FileGbavClient<T> {
     pub fn try_from_settings(settings: PreloadedSettings, client: T) -> Result<Self, ConfigError> {
         Ok(Self::new(
-            Path::new(&settings.xml_path),
+            PathBuf::from(settings.xml_path),
             settings.encryption_key,
             settings.hmac_key,
             client,
@@ -132,7 +106,7 @@ impl Settings {
         Config::builder()
             .set_default("ip", "0.0.0.0")?
             .set_default("port", 8001)?
-            .add_source(File::from(prefix_local_path("gba_hc_converter.toml".as_ref()).as_ref()).required(false))
+            .add_source(File::from(prefix_local_path(Path::new("gba_hc_converter.toml")).as_ref()).required(false))
             .add_source(
                 Environment::with_prefix("gba_hc_converter")
                     .separator("__")

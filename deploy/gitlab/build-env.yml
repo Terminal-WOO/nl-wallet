@@ -1,16 +1,17 @@
 .clone-variables:
   before_script:
-    - git clone --depth 1 https://repo-variables-deploy-token:${REPO_VARIABLES_DEPLOY_TOKEN}@${CI_SERVER_HOST}/wallet/deploy-variables.git
+    - git clone --depth 1 https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/wallet/deploy-variables.git
 
 .build-env:
   extends: .clone-variables
+  stage: init
   script:
     - NAME=${CI_JOB_NAME#build-env-}
     - deploy-variables/create-env.sh $NAME | tee build-${NAME}.env
-    - . build-${NAME}.env
-    - export NAME
   artifacts:
-    name: build-env-${NAME}
+    name: build-env
+    paths:
+      - build-*.env
     reports:
       dotenv: build-*.env
 
@@ -18,26 +19,27 @@ build-env-ont:
   extends: .build-env
   rules:
     - !reference [.on-schedule-scan, rules]
-    - !reference [.default-or-release, rules]
+    - !reference [.on-schedule-automation, rules]
+    - !reference [.on-schedule-trigger-scan, rules]
+    - !reference [.on-schedule-nightly-performance-test, rules]
+    - !reference [.default-or-merge-request, rules]
 
+# Keep in sync with wallet-config-*, scripts/run-*-env.sh read both from the same pipeline
 build-env-demo:
   extends: .build-env
+  artifacts:
+    expire_in: 3 month
   rules: !reference [.on-demo-build, rules]
 
-build-env-acceptance:
+build-env-pub:
   extends: .build-env
-  rules: !reference [.release-tag, rules]
-
-build-env-preproduction:
-  extends: .build-env
-  rules: !reference [.release-tag, rules]
-
-build-env-production:
-  extends: .build-env
-  rules: !reference [.release-tag, rules]
+  artifacts:
+    expire_in: 3 month
+  rules: !reference [.on-pub-build, rules]
 
 .sentry-env:
   before_script:
     - if [[ -z ${SENTRY_ENVIRONMENT:-} ]]; then export SENTRY_ENVIRONMENT="$CONFIG_ENV"; fi
-    - SENTRY_VARS=$(kubectl get secret nl-wallet-sentry-${SENTRY_ENVIRONMENT} -o json | jq -r '.data | to_entries | map("export SENTRY_\(.key | ascii_upcase)=\(.value | @base64d)") | .[]')
+    - SENTRY_VARS=$(kubectl get secret nl-wallet-sentry -o json | jq -r '.data | to_entries |
+      map("export SENTRY_\(.key | ascii_upcase)=\(.value | @base64d)") | .[]')
     - eval $SENTRY_VARS

@@ -1,33 +1,33 @@
 use std::error::Error;
+use std::num::NonZeroUsize;
 
+use attestation_types::credential_format::Format;
 use derive_more::Constructor;
 use derive_more::Display;
-
-use attestation_data::auth::reader_auth::ValidationError;
-use attestation_data::x509::CertificateTypeError;
 use error_category::ErrorCategory;
-
-use crate::openid4vp::AuthRequestValidationError;
-use crate::openid4vp::AuthResponseError;
-use crate::verifier::SessionType;
+use jwe::error::JweJsonEncryptionError;
 
 use super::VpMessageClientError;
 use super::uri_source::DisclosureUriSource;
+use crate::openid4vp::AuthRequestValidationError;
+use crate::verifier::SessionType;
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]
 pub enum VpSessionError {
     #[error("{0}")]
-    Client(#[from] VpClientError),
+    Client(#[source] VpClientError),
 
     #[error("{0}")]
-    Verifier(#[from] VpVerifierError),
+    Verifier(#[source] VpVerifierError),
 }
 
 impl From<VpMessageClientError> for VpSessionError {
     fn from(source: VpMessageClientError) -> Self {
         match &source {
-            VpMessageClientError::Json(_) => VpSessionError::Verifier(VpVerifierError::Request(source)),
+            VpMessageClientError::Json(_) | VpMessageClientError::InvalidJwt(_) => {
+                VpSessionError::Verifier(VpVerifierError::Request(source))
+            }
             _ => VpSessionError::Client(VpClientError::Request(source)),
         }
     }
@@ -45,7 +45,11 @@ pub enum VpClientError {
     #[error("error deserializing request_uri object: {0}")]
     // we cannot be sure that the URL is not included in the error.
     #[category(pd)]
-    RequestUri(#[source] serde_urlencoded::de::Error),
+    RequestUri(#[source] serde_qs::Error),
+
+    #[error("unsupported OpenID4VP authorization request URI variant: {0}")]
+    #[category(critical)]
+    UnsupportedRequestUriVariant(UnsupportedRequestUriVariant),
 
     #[error("mismatch between session type and disclosure URI source: {0} not allowed from {1}")]
     #[category(critical)]
@@ -54,9 +58,20 @@ pub enum VpClientError {
     #[error("error sending OpenID4VP message: {0}")]
     Request(#[source] VpMessageClientError),
 
-    #[error("received credential request with mix of formats from verifier, this is unsupported")]
-    #[category(critical)]
-    MixedFormatCredentialRequest,
+    #[error("attestations provided for unknown credential query")]
+    #[category(impossible)]
+    UnknownCredentialQuery,
+
+    #[error("attestation format mismatch for credential query: requested {requested}, provided {provided}")]
+    #[category(impossible)]
+    AttestationFormatMismatch { requested: Format, provided: Format },
+
+    #[error("signing returned {received} signed attestations, expected {expected}")]
+    #[category(impossible)]
+    SignedAttestationCountMismatch {
+        expected: NonZeroUsize,
+        received: NonZeroUsize,
+    },
 
     #[error("error creating mdoc device response: {0}")]
     DeviceResponse(#[source] mdoc::Error),
@@ -66,21 +81,13 @@ pub enum VpClientError {
     SdJwtSigning(#[source] sd_jwt::error::SigningError),
 
     #[error("error encrypting Authorization Response: {0}")]
-    AuthResponseEncryption(#[source] AuthResponseError),
+    #[category(pd)]
+    AuthResponseEncryption(#[source] JweJsonEncryptionError),
 }
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]
 pub enum VpVerifierError {
-    #[error("missing session_type query parameter in request URI")]
-    #[category(critical)]
-    MissingSessionType,
-
-    #[error("malformed session_type query parameter in request URI: {0}")]
-    // we cannot be sure that the URL is not included in the error
-    #[category(pd)]
-    MalformedSessionType(#[source] serde_urlencoded::de::Error),
-
     #[error("error sending OpenID4VP message: {0}")]
     Request(#[source] VpMessageClientError),
 
@@ -91,15 +98,17 @@ pub enum VpVerifierError {
     #[category(critical)]
     IncorrectClientId { expected: String, found: String },
 
-    #[error("error parsing RP certificate: {0}")]
-    RpCertificate(#[source] CertificateTypeError),
-
-    #[error("RP certificate is not a reader certificate")]
+    #[error("verifier vp_formats_supported does not include required algorithm for format {0}")]
     #[category(critical)]
-    NoReaderCertificate,
+    VpFormatsNotSupported(Format),
+}
 
-    #[error("error validating requested attributes: {0}")]
-    RequestedAttributesValidation(#[source] ValidationError),
+#[derive(Debug, thiserror::Error)]
+pub enum UnsupportedRequestUriVariant {
+    #[error("request object as value is not supported")]
+    RequestObjectAsValue,
+    #[error("request object as query parameters is not supported")]
+    RequestObjectAsQueryParameters,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]

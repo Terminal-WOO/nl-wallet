@@ -1,15 +1,13 @@
 use std::error::Error;
 use std::fs::OpenOptions;
 
-use cfg_if::cfg_if;
+use android_attest::android_crl::GoogleRevocationListClient;
+use hsm::service::Pkcs11Hsm;
+use http_utils::reqwest::default_tls_reqwest_client_builder;
 use rustls::crypto::CryptoProvider;
 use rustls::crypto::ring;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
-
-use android_attest::android_crl::GoogleRevocationListClient;
-use hsm::service::Pkcs11Hsm;
-use http_utils::reqwest::default_reqwest_client_builder;
 use wallet_provider::logging::redirect_stdout_stderr_to_log;
 use wallet_provider::server;
 use wallet_provider::settings::Settings;
@@ -45,20 +43,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let hsm = Pkcs11Hsm::from_settings(settings.hsm.clone())?;
 
-    let reqwest_client = default_reqwest_client_builder().build()?;
+    let reqwest_client = default_tls_reqwest_client_builder().build()?;
     let google_crl_client = GoogleRevocationListClient::new(reqwest_client.clone());
 
-    cfg_if! {
-        if #[cfg(feature = "mock_android_integrity_verdict")] {
+    cfg_select! {
+        feature = "mock_android_integrity_verdict" => {
             use wallet_provider_service::account_server::mock_play_integrity::MockPlayIntegrityClient;
 
             tracing::warn!("DANGEROUS - Android integrity verdicts are mocked. This should NOT be used in production!");
 
             let play_integrity_client = MockPlayIntegrityClient::new(
                 settings.android.package_name.clone(),
-                settings.android.play_store_certificate_hashes.clone()
+                settings.android.play_store_certificate_hashes.clone(),
             );
-        } else {
+        }
+        _ => {
             use android_attest::play_integrity::client::PlayIntegrityClient;
             use android_attest::play_integrity::client::ServiceAccountAuthenticator;
             use utils::path::prefix_local_path;

@@ -64,28 +64,12 @@ class ChangePinUpdating extends ChangePinState {}
 
 class ChangePinCompleted extends ChangePinState {}
 
-class ChangePinGenericError extends ChangePinState implements ErrorState {
+class ChangePinError extends ChangePinState implements ErrorState {
   @override
   final ApplicationError error;
 
-  const ChangePinGenericError({required this.error});
+  const ChangePinError({required this.error});
 
   @override
   List<Object?> get props => [error, ...super.props];
-}
-
-class ChangePinNetworkError extends ChangePinState implements NetworkErrorState {
-  @override
-  final ApplicationError error;
-
-  @override
-  final bool hasInternet;
-
-  @override
-  final int? statusCode;
-
-  const ChangePinNetworkError({required this.error, required this.hasInternet, this.statusCode});
-
-  @override
-  List<Object?> get props => [error, hasInternet, statusCode, ...super.props];
 }

@@ -1,110 +1,332 @@
+use std::assert_matches;
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 
-use assert_matches::assert_matches;
-
-use attestation_data::auth::reader_auth::ReaderRegistration;
-use attestation_data::x509::CertificateTypeError;
-use attestation_data::x509::generate::mock::generate_reader_mock_with_registration;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use attestation_data::registration_certificate::mock::ANNEX_C_EXAMPLE;
+use attestation_data::registration_certificate::mock::RegistrationCertificateFixture;
+use attestation_data::registration_certificate::mock::STATUS_LIST_URI;
+use attestation_data::x509::RelyingParty;
+use chrono::Duration;
+use chrono::Utc;
+use cose::wrprc_cwt::SignedWrprcCwt;
 use crypto::server_keys::KeyPair;
 use crypto::server_keys::generate::Ca;
-use crypto::x509::CertificateError;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::CertificateVerifyError;
+use dcql::Query;
+use jwt::SignedJwt;
+use jwt::jades_b_b::JadesbbHeader;
 use openid4vc::verifier::SessionTypeReturnUrl;
+use rstest::rstest;
+use serde_json::Value;
+use serde_json::json;
 use server_utils::settings::CertificateVerificationError;
+use server_utils::settings::Server;
+use server_utils::settings::ServerAuth;
 use server_utils::settings::ServerSettings;
+use server_utils::settings::Settings;
+use server_utils::settings::Storage;
+use server_utils::settings::VerifierUseCasesValidationError;
+use server_utils::status_list_token_cache_settings::StatusListTokenCacheSettings;
+use utils::generator::TimeGenerator;
+use verification_server::settings::EphemeralIdSecret;
 use verification_server::settings::UseCaseSettings;
 use verification_server::settings::VerifierSettings;
 
-fn to_use_case(key_pair: KeyPair) -> UseCaseSettings {
+#[derive(Clone, Copy)]
+enum RegistrationCertificateFormat {
+    Jwt,
+    Cwt,
+}
+
+fn registration_certificate(
+    access_key_pair: &KeyPair,
+    wrprc_ca: &Ca,
+    format: RegistrationCertificateFormat,
+    subject_override: Option<&str>,
+) -> Vec<u8> {
+    let access_subject =
+        RelyingParty::try_from(access_key_pair.certificate().to_distinguished_name().unwrap()).unwrap();
+    let RelyingParty::LegalPerson {
+        country_name,
+        organization_name,
+        organization_identifier,
+        ..
+    } = access_subject
+    else {
+        panic!("test WRPAC should represent a legal person")
+    };
+
+    let now = Utc::now();
+    let mut payload: Value = serde_json::from_str(ANNEX_C_EXAMPLE).unwrap();
+    payload["id"] = json!("wrprc-settings-test");
+    payload["sub"] = json!(subject_override.unwrap_or(&organization_identifier));
+    payload["sub_ln"] = json!(organization_name);
+    payload["country"] = json!(country_name);
+    payload["iat"] = json!(now.timestamp());
+    payload["exp"] = json!((now + Duration::days(30)).timestamp());
+    payload["status"] = json!({
+        "idx": "0",
+        "uri": STATUS_LIST_URI,
+    });
+
+    let signer = wrprc_ca.generate_wrpac_verifier_mock().unwrap();
+    let payload = RegistrationCertificateFixture(payload);
+    match format {
+        RegistrationCertificateFormat::Jwt => futures::executor::block_on(
+            SignedJwt::<_, JadesbbHeader>::sign_with_iat(&payload, &signer, &TimeGenerator),
+        )
+        .unwrap()
+        .to_string()
+        .into_bytes(),
+        RegistrationCertificateFormat::Cwt => {
+            futures::executor::block_on(SignedWrprcCwt::sign_with_certificate(&payload, &signer, &TimeGenerator))
+                .unwrap()
+                .to_vec()
+                .unwrap()
+        }
+    }
+}
+
+fn to_use_case(key_pair: KeyPair, registration_certificate: &[u8]) -> UseCaseSettings {
+    let registration_certificate =
+        RegistrationCertificateEnvelope::from_slice(registration_certificate).expect("valid registration certificate");
+
     UseCaseSettings {
         session_type_return_url: SessionTypeReturnUrl::Both,
         key_pair: key_pair.into(),
+        registration_certificate,
         dcql_query: None,
         return_url_template: None,
+        disclosure_base_deep_link: None,
+        accept_undetermined_revocation_status: false,
+    }
+}
+
+fn unauthorized_query() -> Query {
+    serde_json::from_value(json!({
+        "credentials": [{
+            "id": "unauthorized",
+            "format": "mso_mdoc",
+            "meta": { "doctype_value": "com.example.unauthorized" },
+            "claims": [{ "path": ["com.example.unauthorized", "claim"] }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn default_settings() -> VerifierSettings {
+    let server_settings = Settings {
+        wallet_server: Server {
+            ip: "127.0.0.1".parse().unwrap(),
+            port: 8001,
+        },
+        internal_server: ServerAuth::InternalEndpoint(Server {
+            ip: "127.0.0.1".parse().unwrap(),
+            port: 8002,
+        }),
+        log_requests: false,
+        structured_logging: false,
+        storage: Storage {
+            url: "memory://".parse().unwrap(),
+            expiration_minutes: NonZeroU64::new(10).unwrap(),
+            successful_deletion_minutes: NonZeroU64::new(10).unwrap(),
+            failed_deletion_minutes: NonZeroU64::new(10).unwrap(),
+        },
+        issuer_trust_anchors: TrustAnchors::empty(),
+        wrpac_trust_anchors: TrustAnchors::empty(),
+        wrprc_trust_anchors: TrustAnchors::empty(),
+        hsm: None,
+    };
+
+    VerifierSettings {
+        usecases: HashMap::new().into(),
+        ephemeral_id_secret: EphemeralIdSecret::try_from(vec![0; 32]).unwrap(),
+        allow_origins: None,
+        public_url: "https://verification.example.com/".parse().unwrap(),
+        universal_link_base_url: "walletdebuginteraction://wallet.example.com/".parse().unwrap(),
+        extending_vct_values: None,
+        status_list_token_cache_settings: StatusListTokenCacheSettings::default(),
+        server_settings,
     }
 }
 
 #[test]
 fn test_settings_success() {
-    let mut settings =
-        VerifierSettings::new("verification_server.toml", "verification_server").expect("default settings");
+    let mut settings = default_settings();
 
-    let reader_ca = Ca::generate_reader_mock_ca().expect("generate reader CA");
-    let reader_cert_valid = generate_reader_mock_with_registration(&reader_ca, ReaderRegistration::new_mock())
-        .expect("generate valid reader cert");
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().expect("generate WRPAC CA");
+    let wrpac_cert_valid = wrpac_ca
+        .generate_wrpac_verifier_mock()
+        .expect("generate valid wrpac cert");
+    let wrprc_ca = Ca::generate_mock();
+    let registration_certificate =
+        registration_certificate(&wrpac_cert_valid, &wrprc_ca, RegistrationCertificateFormat::Jwt, None);
 
     let mut usecases: HashMap<String, UseCaseSettings> = HashMap::new();
-    usecases.insert("valid".to_string(), to_use_case(reader_cert_valid));
+    usecases.insert(
+        "valid".to_string(),
+        to_use_case(wrpac_cert_valid, &registration_certificate),
+    );
 
     settings.usecases = usecases.into();
-    settings.reader_trust_anchors = vec![reader_ca.as_borrowing_trust_anchor().clone()];
+    settings.server_settings.wrpac_trust_anchors = wrpac_ca.to_trust_anchors();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca.to_trust_anchors();
 
     settings.validate().expect("should succeed");
 }
 
 #[test]
-fn test_settings_no_reader_trust_anchors() {
-    let mut settings =
-        VerifierSettings::new("verification_server.toml", "verification_server").expect("default settings");
+fn test_settings_no_wrpac_trust_anchors() {
+    let mut settings = default_settings();
 
-    let reader_ca = Ca::generate_reader_mock_ca().expect("generate reader CA");
-    let reader_cert_valid = generate_reader_mock_with_registration(&reader_ca, ReaderRegistration::new_mock())
-        .expect("generate valid reader cert");
-
-    let mut usecases: HashMap<String, UseCaseSettings> = HashMap::new();
-    usecases.insert("valid".to_string(), to_use_case(reader_cert_valid));
-
-    settings.usecases = usecases.into();
-    settings.reader_trust_anchors = vec![];
-
-    let error = settings.validate().expect_err("should fail");
-    assert_matches!(error, CertificateVerificationError::MissingTrustAnchors);
-}
-
-#[test]
-fn test_settings_no_reader_registration() {
-    let mut settings =
-        VerifierSettings::new("verification_server.toml", "verification_server").expect("default settings");
-
-    let reader_ca = Ca::generate_reader_mock_ca().expect("generate reader CA");
-    let reader_cert_valid = generate_reader_mock_with_registration(&reader_ca, ReaderRegistration::new_mock())
-        .expect("generate valid reader cert");
-    let reader_cert_no_registration = reader_ca
-        .generate_reader_mock()
-        .expect("generate reader cert without reader registration");
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().expect("generate WRPAC CA");
+    let wrpac_cert_valid = wrpac_ca
+        .generate_wrpac_verifier_mock()
+        .expect("generate valid wrpac cert");
+    let wrprc_ca = Ca::generate_mock();
+    let registration_certificate =
+        registration_certificate(&wrpac_cert_valid, &wrprc_ca, RegistrationCertificateFormat::Jwt, None);
 
     let mut usecases: HashMap<String, UseCaseSettings> = HashMap::new();
-    usecases.insert("valid".to_string(), to_use_case(reader_cert_valid));
-    usecases.insert("no_registration".to_string(), to_use_case(reader_cert_no_registration));
+    usecases.insert(
+        "valid".to_string(),
+        to_use_case(wrpac_cert_valid, &registration_certificate),
+    );
 
     settings.usecases = usecases.into();
-    settings.reader_trust_anchors = vec![reader_ca.as_borrowing_trust_anchor().clone()];
-
-    let error = settings.validate().expect_err("should fail");
-    assert_matches!(error, CertificateVerificationError::NoCertificateType(CertificateTypeError::ReaderRegistrationNotFound, key) if key == "no_registration");
-}
-
-#[test]
-fn test_settings_wrong_reader_ca() {
-    let mut settings =
-        VerifierSettings::new("verification_server.toml", "verification_server").expect("default settings");
-
-    let reader_ca = Ca::generate_reader_mock_ca().expect("generate reader CA");
-    let reader_cert_valid = generate_reader_mock_with_registration(&reader_ca, ReaderRegistration::new_mock())
-        .expect("generate valid reader cert");
-    let reader_wrong_ca = Ca::generate_reader_mock_ca().expect("generate wrong reader CA");
-    let reader_cert_wrong_ca = generate_reader_mock_with_registration(&reader_wrong_ca, ReaderRegistration::new_mock())
-        .expect("generate reader cert on wrong CA");
-
-    let mut usecases: HashMap<String, UseCaseSettings> = HashMap::new();
-    usecases.insert("valid".to_string(), to_use_case(reader_cert_valid));
-    usecases.insert("wrong_ca".to_string(), to_use_case(reader_cert_wrong_ca));
-
-    settings.usecases = usecases.into();
-    settings.reader_trust_anchors = vec![reader_ca.as_borrowing_trust_anchor().clone()];
+    settings.server_settings.wrpac_trust_anchors = TrustAnchors::empty();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca.to_trust_anchors();
 
     let error = settings.validate().expect_err("should fail");
     assert_matches!(
         error,
-        CertificateVerificationError::InvalidCertificate(CertificateError::Verification(_), key) if key == "wrong_ca"
+        VerifierUseCasesValidationError::Certificate(CertificateVerificationError::MissingTrustAnchors)
+    );
+}
+
+#[test]
+fn test_settings_wrong_wrpac_ca() {
+    let mut settings = default_settings();
+
+    let wrpac_ca_trusted = Ca::generate_wrpac_mock_ca().expect("generate trusted WRPAC CA");
+    let wrpac_ca_wrong = Ca::generate_wrpac_mock_ca().expect("generate wrong WRPAC CA");
+    let wrpac_cert_wrong = wrpac_ca_wrong
+        .generate_wrpac_verifier_mock()
+        .expect("generate wrong WRPAC cert");
+    let wrprc_ca = Ca::generate_mock();
+    let registration_certificate =
+        registration_certificate(&wrpac_cert_wrong, &wrprc_ca, RegistrationCertificateFormat::Jwt, None);
+
+    let mut usecases: HashMap<String, UseCaseSettings> = HashMap::new();
+    usecases.insert(
+        "wrong_ca".to_string(),
+        to_use_case(wrpac_cert_wrong, &registration_certificate),
+    );
+
+    settings.usecases = usecases.into();
+    settings.server_settings.wrpac_trust_anchors = wrpac_ca_trusted.to_trust_anchors();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca.to_trust_anchors();
+
+    let error = settings.validate().expect_err("should fail");
+    assert_matches!(
+        error,
+        VerifierUseCasesValidationError::Certificate(CertificateVerificationError::InvalidCertificate(
+            CertificateVerifyError::Verification(_), key
+        )) if key == "wrong_ca"
+    );
+}
+
+#[rstest]
+#[case::jwt(RegistrationCertificateFormat::Jwt)]
+#[case::cwt(RegistrationCertificateFormat::Cwt)]
+fn test_settings_wrong_wrprc_ca(#[case] format: RegistrationCertificateFormat) {
+    let mut settings = default_settings();
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().unwrap();
+    let wrpac = wrpac_ca.generate_wrpac_verifier_mock().unwrap();
+    let wrprc_ca_trusted = Ca::generate_mock();
+    let wrprc_ca_wrong = Ca::generate_mock();
+    let registration_certificate = registration_certificate(&wrpac, &wrprc_ca_wrong, format, None);
+
+    settings.usecases = HashMap::from([("wrong_ca".to_string(), to_use_case(wrpac, &registration_certificate))]).into();
+    settings.server_settings.wrpac_trust_anchors = wrpac_ca.to_trust_anchors();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca_trusted.to_trust_anchors();
+
+    assert_matches!(
+        settings.validate(),
+        Err(VerifierUseCasesValidationError::InvalidRegistrationCertificate { use_case_id, source })
+            if use_case_id == "wrong_ca"
+                && source.chain().any(|error| matches!(
+                    error.downcast_ref::<CertificateVerifyError>(),
+                    Some(CertificateVerifyError::Verification(_))
+                ))
+    );
+
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca_wrong.to_trust_anchors();
+    settings
+        .validate()
+        .expect("should succeed when the WRPRC signing CA is trusted");
+}
+
+#[test]
+fn test_settings_accepts_cwt_registration_certificate() {
+    let mut settings = default_settings();
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().unwrap();
+    let wrpac = wrpac_ca.generate_wrpac_verifier_mock().unwrap();
+    let wrprc_ca = Ca::generate_mock();
+    let registration_certificate =
+        registration_certificate(&wrpac, &wrprc_ca, RegistrationCertificateFormat::Cwt, None);
+
+    settings.usecases = HashMap::from([("valid".to_string(), to_use_case(wrpac, &registration_certificate))]).into();
+    settings.server_settings.wrpac_trust_anchors = wrpac_ca.to_trust_anchors();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca.to_trust_anchors();
+
+    settings.validate().expect("should succeed");
+}
+
+#[test]
+fn test_settings_rejects_registration_certificate_for_other_access_certificate() {
+    let mut settings = default_settings();
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().unwrap();
+    let wrpac = wrpac_ca.generate_wrpac_verifier_mock().unwrap();
+    let wrprc_ca = Ca::generate_mock();
+    let registration_certificate = registration_certificate(
+        &wrpac,
+        &wrprc_ca,
+        RegistrationCertificateFormat::Jwt,
+        Some("NTRNL-00000000"),
+    );
+
+    settings.usecases = HashMap::from([("mismatch".to_string(), to_use_case(wrpac, &registration_certificate))]).into();
+    settings.server_settings.wrpac_trust_anchors = wrpac_ca.to_trust_anchors();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca.to_trust_anchors();
+
+    assert_matches!(
+        settings.validate(),
+        Err(VerifierUseCasesValidationError::InvalidRegistrationCertificate { use_case_id, .. })
+            if use_case_id == "mismatch"
+    );
+}
+
+#[test]
+fn test_settings_rejects_dcql_query_not_authorized_by_registration_certificate() {
+    let mut settings = default_settings();
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().unwrap();
+    let wrpac = wrpac_ca.generate_wrpac_verifier_mock().unwrap();
+    let wrprc_ca = Ca::generate_mock();
+    let registration_certificate =
+        registration_certificate(&wrpac, &wrprc_ca, RegistrationCertificateFormat::Jwt, None);
+    let mut use_case = to_use_case(wrpac, &registration_certificate);
+    use_case.dcql_query = Some(unauthorized_query());
+
+    settings.usecases = HashMap::from([("unauthorized".to_string(), use_case)]).into();
+    settings.server_settings.wrpac_trust_anchors = wrpac_ca.to_trust_anchors();
+    settings.server_settings.wrprc_trust_anchors = wrprc_ca.to_trust_anchors();
+
+    assert_matches!(
+        settings.validate(),
+        Err(VerifierUseCasesValidationError::UnauthorizedDcqlQuery { use_case_id, .. })
+            if use_case_id == "unauthorized"
     );
 }

@@ -1,48 +1,61 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
-  <!-- Start group: [CRITICAL] https://ossindex.sonatype.org/component/pkg:cocoapods/Flutter@1.0.0 -->
   <suppress>
-    <!--
-      # Suppressing Flutter 1.0.0 because 1.0.0 doesn't present any particular Flutter release
-      # https://github.com/flutter/flutter/issues/154023#issuecomment-2310710611
-      # https://github.com/flutter/flutter/issues/85820#issuecomment-874103549
-    -->
-    <notes><![CDATA[file name: Flutter:1.0.0]]></notes>
+    <notes><![CDATA[
+      Suppressing Flutter 1.0.0 because 1.0.0 doesn't present any particular Flutter release
+      https://github.com/flutter/flutter/issues/154023#issuecomment-2310710611
+      https://github.com/flutter/flutter/issues/85820#issuecomment-874103549
+    ]]></notes>
     <packageUrl>pkg:cocoapods/Flutter@1.0.0</packageUrl>
     <vulnerabilityName regex="true">.*</vulnerabilityName>
   </suppress>
+
   <suppress>
-    <notes><![CDATA[file name: flutter_native_splash:2.4.3]]></notes>
-    <packageUrl regex="true">^pkg:cocoapods/flutter_native_splash@.*$</packageUrl>
+    <notes><![CDATA[
+    Reports issue in Dart 2.18 and Flutter 3.30, but we use Dart ^3.11.0 and Flutter ^3.41.2
+    ]]></notes>
+    <packageUrl regex="true">^pkg:cocoapods/bluetooth@.*$</packageUrl>
     <cve>CVE-2022-3095</cve>
+    <cve>CVE-2026-27704</cve>
   </suppress>
   <suppress>
-    <notes><![CDATA[file name: python-gitlab:6.1.0]]></notes>
+    <notes><![CDATA[
+    Reports issue in Dart 2.18 and Flutter 3.30, but we use Dart ^3.11.0 and Flutter ^3.41.2
+    ]]></notes>
+    <packageUrl regex="true">^pkg:cocoapods/flutter_local_notifications@.*$</packageUrl>
+    <cve>CVE-2022-3095</cve>
+    <cve>CVE-2026-27704</cve>
+  </suppress>
+  <suppress>
+    <notes><![CDATA[
+    Reports issue in Dart 2.18 and Flutter 3.30, but we use Dart ^3.11.0 and Flutter ^3.41.2
+    ]]></notes>
+    <packageUrl regex="true">^pkg:cocoapods/flutter_native_splash@.*$</packageUrl>
+    <cve>CVE-2022-3095</cve>
+    <cve>CVE-2026-27704</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+    False positive on GitLab project (not Python library).
+    ]]></notes>
     <packageUrl regex="true">^pkg:pypi/python-gitlab@.*$</packageUrl>
     <cpe>cpe:/a:gitlab:gitlab</cpe>
   </suppress>
-  <!-- End group: [CRITICAL] https://ossindex.sonatype.org/component/pkg:cocoapods/Flutter@1.0.0 -->
 
-  <!-- Start group: [MEDIUM] -->
   <suppress>
     <notes><![CDATA[
-    See the discussion in https://github.com/prettier/prettier/issues/17737.
-    Suppressing here because it is a dev dependency and we only input our own source files, therefore lowering the
-    exploitability.
+    False positive on [root](https://github.com/root-project/root/) project.
     ]]></notes>
-    <packageUrl regex="true">^pkg:npm/prettier@.*$</packageUrl>
-    <vulnerabilityName>CVE-2025-8263</vulnerabilityName>
+    <packageUrl regex="true">^pkg:cocoapods/root_jailbreak_sniffer@.*$</packageUrl>
+    <cve>CVE-2026-24811</cve>
   </suppress>
-  <!-- End group: [MEDIUM] -->
 
-  <!-- Start group: [LOW] -->
   <suppress>
     <notes><![CDATA[
-      file name: video_player_avfoundation:0.0.1
-      False positive (Drupal)
+    False positive (Drupal)
     ]]></notes>
     <packageUrl regex="true">^pkg:cocoapods/video_player_avfoundation@.*$</packageUrl>
     <cve>CVE-2015-3362</cve>
   </suppress>
-  <!-- End group: [LOW] -->
 </suppressions>

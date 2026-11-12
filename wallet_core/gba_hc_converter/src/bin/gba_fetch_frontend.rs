@@ -24,19 +24,6 @@ use axum_csrf::CsrfLayer;
 use axum_csrf::CsrfToken;
 use derive_more::AsRef;
 use derive_more::From;
-use http::StatusCode;
-use http::request::Parts;
-use nutype::nutype;
-use serde::Deserialize;
-use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
-use tracing::info;
-use tracing::level_filters::LevelFilter;
-use tracing::warn;
-use tracing_subscriber::EnvFilter;
-
-use utils::built_info::version_string;
-
 use gba_hc_converter::gba::client::GbavClient;
 use gba_hc_converter::gba::client::HttpGbavClient;
 use gba_hc_converter::gba::encryption::HmacSha256;
@@ -47,6 +34,18 @@ use gba_hc_converter::haal_centraal::Bsn;
 use gba_hc_converter::settings::PreloadedSettings;
 use gba_hc_converter::settings::RunMode;
 use gba_hc_converter::settings::Settings;
+use http::StatusCode;
+use http::request::Parts;
+use http_utils::health::create_health_router;
+use nutype::nutype;
+use serde::Deserialize;
+use tokio::net::TcpListener;
+use tower_http::trace::TraceLayer;
+use tracing::info;
+use tracing::level_filters::LevelFilter;
+use tracing::warn;
+use tracing_subscriber::EnvFilter;
+use utils::built_info::version_string;
 
 const CERT_SERIAL_HEADER: &str = "Cert-Serial";
 
@@ -123,7 +122,7 @@ async fn serve(settings: Settings) -> anyhow::Result<()> {
         .layer(CsrfLayer::new(csrf_config))
         .layer(middleware::from_fn(check_auth))
         .layer(TraceLayer::new_for_http())
-        .route("/health", get(|| async {}));
+        .merge(create_health_router([]));
 
     axum::serve(listener, app).await?;
 
@@ -218,7 +217,7 @@ async fn fetch(
     token.verify(&payload.authenticity_token).map_err(|err| anyhow!(err))?;
 
     if payload.bsn != payload.repeat_bsn {
-        return Err(anyhow!("BSNs do not match"))?;
+        return Err(anyhow!("BSNs do not match").into());
     }
 
     let bsn = Bsn::try_new(payload.bsn).map_err(|err| anyhow!(err))?;
@@ -235,8 +234,16 @@ async fn fetch(
         .ok_or(anyhow!("No GBA-V results found for the supplied BSN"))?;
 
     encrypt_bytes_to_dir(
-        state.preloaded_settings.encryption_key.key::<Aes256Gcm>(),
-        state.preloaded_settings.hmac_key.key::<HmacSha256>(),
+        state
+            .preloaded_settings
+            .encryption_key
+            .key::<Aes256Gcm>()
+            .map_err(|err| anyhow!(err))?,
+        state
+            .preloaded_settings
+            .hmac_key
+            .key::<HmacSha256>()
+            .map_err(|err| anyhow!(err))?,
         xml.as_bytes(),
         path,
         bsn.as_ref(),
@@ -265,7 +272,7 @@ async fn clear(
     token.verify(&payload.authenticity_token).map_err(|err| anyhow!(err))?;
 
     if payload.confirmation_text != "clear all data" {
-        return Err(anyhow!("Confirmation text is not correct"))?;
+        return Err(anyhow!("Confirmation text is not correct").into());
     }
 
     let serial = cert_serial.unwrap_or_default();

@@ -1,67 +1,86 @@
+use http_utils::reqwest::tls_reqwest_client_builder;
+use pid_issuer::pid::digid_mock::drive_mock_digid_login;
+use reqwest::Certificate;
 use reqwest::Response;
-use reqwest::header::LOCATION;
+use reqwest::header;
 use reqwest::redirect::Policy;
+use tracing::debug;
 use url::Url;
 
-use http_utils::reqwest::IntoPinnedReqwestClient;
-use http_utils::reqwest::PinnedReqwestClient;
-use http_utils::reqwest::ReqwestClientUrl;
-use http_utils::tls::pinning::TlsPinningConfig;
-
-// Use the mock flow of the DigiD bridge to simulate a DigiD login,
-// invoking the same URLs at the DigiD bridge that would normally be invoked by the app and browser in the mock
-// flow of the DigiD bridge.
+// Use the mock flow of the DigiD bridge to simulate a DigiD login, invoking the same URLs at the DigiD bridge that
+// would normally be invoked by the app and browser in the mock flow of the DigiD bridge.
 // Note that this depends of part of the internal API of the DigiD bridge, so it may break when the bridge
 // is updated.
-pub async fn fake_digid_auth(mut authorization_url: Url, digid_http_config: TlsPinningConfig, bsn: &str) -> Url {
-    let client = digid_http_config
-        .try_into_custom_client(|client_builder| client_builder.redirect(Policy::none()))
+//
+// The core of driving the bridge's mock login (scraping `RelayState`, hitting `/acs`) is shared with
+// the pid_issuer-hosted mock login page via [`drive_mock_digid_login`]; this function wraps it with the
+// PAR hop in front and the callback hop after, both of which are specific to driving the flow headlessly.
+pub async fn fake_digid_auth(authorization_url: Url, digid_trust_anchors: Vec<Certificate>, bsn: &str) -> Url {
+    // TODO (PVW-5612): remove https_only(false) once the PID issuer runs on HTTPS.
+    let http_client = tls_reqwest_client_builder(digid_trust_anchors)
+        .https_only(false)
+        .redirect(Policy::none())
+        .build()
         .unwrap();
 
-    // Avoid the DigiD/mock DigiD landing page of the DigiD bridge by preselecting the latter
-    authorization_url
-        .query_pairs_mut()
-        .append_pair("login_hint", "digid_mock");
+    // Follow the PAR redirect to the DigiD authorization endpoint.
+    let redirect_auth_url = http_client.get(authorization_url.clone()).send().await.unwrap();
+    let digid_auth_url = redirect_auth_url
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse::<Url>()
+        .unwrap();
 
-    // Start authentication by GETting the authorization URL.
-    // In the resulting HTML page, find the "RelayState" parameter which we need for the following URL.
-    let relay_state_page = do_get_as_text(&client, ReqwestClientUrl::Absolute(authorization_url)).await;
+    // When the pid_issuer is configured to serve its own mock login page, it redirects here instead
+    // of straight to nl-rdo-max, carrying the real nl-rdo-max authorize URL as the `authorize_url`
+    // query parameter. Unwrap that so this headless driver behaves the same whether or not the mock
+    // login page is enabled.
+    let digid_auth_url = digid_auth_url
+        .query_pairs()
+        .find(|(key, _)| key == "authorize_url")
+        .map(|(_, value)| {
+            value
+                .parse::<Url>()
+                .expect("mock login authorize_url should be a valid URL")
+        })
+        .unwrap_or(digid_auth_url);
 
-    let relay_state_line = relay_state_page
-        .lines()
-        .find(|l| l.contains("RelayState"))
-        .expect("failed to find RelayState");
-    let relay_state = find_in_text(relay_state_line, "value=\"", "\"");
+    debug!("authorization_url: {}", authorization_url);
+    debug!("digid authorization_url: {}", digid_auth_url);
 
-    // Note: the above HTTP response contains a HTML form that is normally automatically submitted
-    // by the browser, leading to a page that contains the link that we invoke below.
-    // To actually simulate autosubmitting that form and running some related JavaScript would be a bit of a hassle,
-    // so here we skip autosubmitting that form. Turns out the DigiD bridge is fine with this.
+    // Drive the DigiD bridge's mock login (shared with the pid_issuer mock login page): scrape the
+    // `RelayState` from the mock SAML page and hit the mock `/acs` endpoint. The result is the issuer's
+    // `/digid/callback` URL that nl-rdo-max redirects to.
+    let mut issuer_callback_url = drive_mock_digid_login(&http_client, digid_auth_url, bsn).await.unwrap();
 
-    // Get the HTML page containing the redirect_uri back to our own app
-    let finish_digid_path = format!("acs?SAMLart={bsn}&RelayState={relay_state}&mocking=1");
+    // nl-rdo-max validated and echoed back the issuer's fixed, pre-registered callback URL.
+    // Substitute the host and port in that callback url with those of the actual running pid_issuer.
+    issuer_callback_url
+        .set_host(authorization_url.host_str())
+        .expect("authorization_url should have a host");
+    issuer_callback_url
+        .set_port(authorization_url.port())
+        .expect("should be able to set port on issuer callback url");
 
-    let response = do_get_request(&client, ReqwestClientUrl::Relative(&finish_digid_path)).await;
-    let redirect_url = response.headers().get(LOCATION).unwrap().to_str().unwrap();
-
-    Url::parse(redirect_url).expect("failed to parse redirect url")
+    // Follow that one extra hop: the issuer's `/digid/callback` exchanges the upstream code for
+    // the BSN, queries the BRP, generates its own authorization code, writes the `AuthCodeIssued`
+    // session, and 302s back to the wallet's redirect_uri. The resulting Location is the
+    // wallet-facing URL (carrying the issuer-minted code + the wallet's state) that
+    // `start_issuance` expects.
+    let callback_response = do_get_request(&http_client, issuer_callback_url).await;
+    callback_response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("failed to parse redirect url")
 }
 
-async fn do_get_request(client: &PinnedReqwestClient, url: ReqwestClientUrl<'_>) -> Response {
-    client.send_get(url).await.expect("failed to GET URL")
-}
-
-async fn do_get_as_text(client: &PinnedReqwestClient, url: ReqwestClientUrl<'_>) -> String {
-    do_get_request(client, url)
-        .await
-        .text()
-        .await
-        .expect("failed to get body text")
-}
-
-fn find_in_text<'a>(text: &'a str, start: &str, end: &str) -> &'a str {
-    let start_index = text.find(start).expect("start not found");
-    let remaining = &text[start_index + start.len()..];
-    let end_index = remaining.find(end).expect("end not found");
-    &remaining[..end_index]
+async fn do_get_request(client: &reqwest::Client, url: Url) -> Response {
+    client.get(url).send().await.expect("failed to GET URL")
 }

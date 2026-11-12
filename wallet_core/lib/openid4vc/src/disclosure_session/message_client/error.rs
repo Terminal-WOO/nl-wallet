@@ -1,10 +1,10 @@
 use error_category::ErrorCategory;
-use http_utils::urls::BaseUrl;
+use oauth::errors::RemoteErrorCode;
+use url::Url;
 
-use crate::errors::DisclosureErrorResponse;
-use crate::errors::GetRequestErrorCode;
+use crate::errors::GetAuthRequestErrorCode;
 use crate::errors::PostAuthResponseErrorCode;
-
+use crate::errors::RemoteDisclosureErrorResponse;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VpMessageClientErrorType {
     Expired { can_retry: bool },
@@ -18,30 +18,44 @@ pub enum VpMessageClientError {
     #[error("HTTP request error: {0}")]
     #[category(expected)]
     Http(#[from] reqwest::Error),
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
     #[error("auth request server error response: {0:?}")]
-    AuthGetResponse(Box<DisclosureErrorResponse<GetRequestErrorCode>>),
+    AuthGetResponse(RemoteDisclosureErrorResponse<GetAuthRequestErrorCode>),
+
     #[error("auth request server error response: {0:?}")]
-    AuthPostResponse(Box<DisclosureErrorResponse<PostAuthResponseErrorCode>>),
+    AuthPostResponse(RemoteDisclosureErrorResponse<PostAuthResponseErrorCode>),
+
     #[error("JWT error: {0}")]
-    InvalidJwt(#[from] jwt::error::JwtError),
+    InvalidJwt(#[from] jwt::error::JwtParseError),
 }
 
 impl VpMessageClientError {
     pub fn error_type(&self) -> VpMessageClientErrorType {
         match self {
             // Consider the different error codes when getting the disclosure request.
-            Self::AuthGetResponse(error) => match error.response_error() {
-                GetRequestErrorCode::ExpiredEphemeralId => VpMessageClientErrorType::Expired { can_retry: true },
-                GetRequestErrorCode::ExpiredSession => VpMessageClientErrorType::Expired { can_retry: false },
-                GetRequestErrorCode::CancelledSession => VpMessageClientErrorType::Cancelled,
+            Self::AuthGetResponse(response) => match response.error() {
+                RemoteErrorCode::Known(GetAuthRequestErrorCode::ExpiredEphemeralId) => {
+                    VpMessageClientErrorType::Expired { can_retry: true }
+                }
+                RemoteErrorCode::Known(GetAuthRequestErrorCode::ExpiredSession) => {
+                    VpMessageClientErrorType::Expired { can_retry: false }
+                }
+                RemoteErrorCode::Known(GetAuthRequestErrorCode::CancelledSession) => {
+                    VpMessageClientErrorType::Cancelled
+                }
                 _ => VpMessageClientErrorType::Other,
             },
             // Consider the different error codes when posting the disclosure response.
-            Self::AuthPostResponse(error) => match error.response_error() {
-                PostAuthResponseErrorCode::ExpiredSession => VpMessageClientErrorType::Expired { can_retry: false },
-                PostAuthResponseErrorCode::CancelledSession => VpMessageClientErrorType::Cancelled,
+            Self::AuthPostResponse(response) => match response.error() {
+                RemoteErrorCode::Known(PostAuthResponseErrorCode::ExpiredSession) => {
+                    VpMessageClientErrorType::Expired { can_retry: false }
+                }
+                RemoteErrorCode::Known(PostAuthResponseErrorCode::CancelledSession) => {
+                    VpMessageClientErrorType::Cancelled
+                }
                 _ => VpMessageClientErrorType::Other,
             },
             // Any other reported error is classified under `VpMessageClientErrorType::Other`.
@@ -49,23 +63,23 @@ impl VpMessageClientError {
         }
     }
 
-    pub fn redirect_uri(&self) -> Option<&BaseUrl> {
+    pub fn redirect_uri(&self) -> Option<&Url> {
         match self {
-            Self::AuthGetResponse(response) => response.redirect_uri.as_ref(),
-            Self::AuthPostResponse(response) => response.redirect_uri.as_ref(),
+            Self::AuthGetResponse(response) => response.redirect_uri.as_deref(),
+            Self::AuthPostResponse(response) => response.redirect_uri.as_deref(),
             _ => None,
         }
     }
 }
 
-impl From<DisclosureErrorResponse<GetRequestErrorCode>> for VpMessageClientError {
-    fn from(value: DisclosureErrorResponse<GetRequestErrorCode>) -> Self {
-        Self::AuthGetResponse(value.into())
+impl From<RemoteDisclosureErrorResponse<GetAuthRequestErrorCode>> for VpMessageClientError {
+    fn from(value: RemoteDisclosureErrorResponse<GetAuthRequestErrorCode>) -> Self {
+        Self::AuthGetResponse(value)
     }
 }
 
-impl From<DisclosureErrorResponse<PostAuthResponseErrorCode>> for VpMessageClientError {
-    fn from(value: DisclosureErrorResponse<PostAuthResponseErrorCode>) -> Self {
-        Self::AuthPostResponse(value.into())
+impl From<RemoteDisclosureErrorResponse<PostAuthResponseErrorCode>> for VpMessageClientError {
+    fn from(value: RemoteDisclosureErrorResponse<PostAuthResponseErrorCode>) -> Self {
+        Self::AuthPostResponse(value)
     }
 }

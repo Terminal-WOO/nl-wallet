@@ -12,8 +12,7 @@ between the two screens, the issuer receives the disclosed attributes, and can
 use those to determine the contents of the attestation(s) to be issued.
 
 The issuer side of this functionality is implemented by the `issuance_server`
-binary, which is a part of the `wallet_server` crate (see also
-[issuance with openid4vci][1]).
+binary, which is a part of the `wallet_server` crate.
 
 Technically, disclosure-based issuance works like this:
 
@@ -23,8 +22,8 @@ Technically, disclosure-based issuance works like this:
      issued. This server is called the *attestation server*.
 
   2. The `issuance_server` starts an OpenID4VCI session in the [Pre-Authorized
-     Code Flow][2], puts the Pre-Authorized Code into an [OpenID4VCI Credential
-     Offer][3], and URL-encodes that into the `redirect_uri` that gets sent to
+     Code Flow][1], puts the Pre-Authorized Code into an [OpenID4VCI Credential
+     Offer][2], and URL-encodes that into the `redirect_uri` that gets sent to
      the wallet.
 
   3. Using the Credential Offer with the Pre-Authorized Code within it, the
@@ -63,10 +62,8 @@ Content-Length: 267
             "bsn": "999991772"
           }
         },
-        "issuer_uri": "https://cert.issuer.example.com/",
-        "attestation_qualification": "QEAA",
         "ca": "ca.pid.example.com",
-        "validity_info": {
+        "issuance_validity": {
           "signed": "2025-04-15T07:02:26Z",
           "valid_from": "2025-04-15T07:02:26Z",
           "valid_until": "2026-04-15T07:02:26Z"
@@ -88,6 +85,7 @@ Content-Type: application/json
   {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "attestation_type": "com.example.degree",
+    "format": "dc+sd-jwt",
     "attributes": {
       "university": "Example university",
       "education": "Example education",
@@ -130,16 +128,6 @@ indexed by BSNs.
 Finally, the issuer issues the attestations using OpenID4VCI in a pre-authorized
 code flow.
 
-During OpenID4VCI, the issuer requires the wallet to include the keys of the
-attestations that it disclosed earlier in its Proof of Association (PoA) when
-it sends its Proofs of Possession (PoPs) for the keys of the attestation
-(copies).
-
-This enforces that the newly issued attestations are bound to the same Wallet
-Secure Cryptographic Device (WSCD, see [section 4.3.2, Components of a Wallet
-Unit][4]) as the one that disclosed the attestations in the first part of the
-protocol.
-
 ```{mermaid}
 sequenceDiagram
     autonumber
@@ -156,7 +144,7 @@ sequenceDiagram
     App ->>-User: Request approval for disclosure
     User->>+ App: Approve disclosure with PIN
 
-    App->>+Issuer: Authorization Response [OpenID4VP] (including PoA) *
+    App->>+Issuer: Authorization Response [OpenID4VP]
     Issuer->>Issuer: Verify disclosed attributes
     Issuer->>+IssuerDataProvider: Disclosed attributes
     IssuerDataProvider->>-Issuer: Respond with attestations to issue
@@ -172,18 +160,11 @@ sequenceDiagram
     User->>+App: Approve attestation issuance with PIN
 
     App->>+Issuer: Access token [OpenID4VCI]
-    Issuer->>Issuer: Enforce disclosed attestation keys in PoA (from Step 7 *)
     Issuer->>-App: Attestations [OpenID4VCI]
     deactivate App
 ```
 
-## References
+<!-- References -->
 
-Below you'll find a collection of links which we reference to through the
-entire text. Note that they don't display when rendered within a website, you
-need to read the text in a regular text editor or pager to see them.
-
-[1]: issuance-with-openid4vci.md#generic-issuance
-[2]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-final.html#name-pre-authorized-code-flow
-[3]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-final.html#name-credential-offer
-[4]: https://eu-digital-identity-wallet.github.io/eudi-doc-architecture-and-reference-framework/latest/architecture-and-reference-framework-main/#43-reference-architecture
+[1]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#name-pre-authorized-code-flow
+[2]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#name-credential-offer

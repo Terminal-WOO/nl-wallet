@@ -1,0 +1,96 @@
+/* Colours follow the page's `color-scheme`: pages that don't opt into dark mode keep the light values. */
+.lang-selector {
+  position: relative;
+  margin: 8px 0;
+}
+
+.lang-selector label[for="lang_toggle"] {
+  display: flex;
+  align-items: center;
+
+  padding: 4px 8px;
+  gap: 4px;
+  border-radius: 2px;
+
+  background: light-dark(#fcfcfc, #1c1e25);
+  color: light-dark(#383ede, #a2b7ff);
+  font-weight: 700;
+  text-transform: uppercase;
+  line-height: 1.25;
+
+  user-select: none;
+}
+
+.lang-selector label[for="lang_toggle"]:hover {
+  background-color: light-dark(#f1f1f1, #2f3444);
+  cursor: pointer;
+}
+
+.lang-selector label[for="lang_toggle"]::after {
+  content: " ";
+  background-color: currentColor;
+  -webkit-mask: url("../images/down.svg") no-repeat center center / contain;
+  mask: url("../images/down.svg") no-repeat center center / contain;
+
+  width: 16px;
+  height: 16px;
+}
+
+#lang_toggle {
+  display: none;
+}
+
+#lang_toggle:checked + .lang-modal {
+  display: block;
+}
+
+.lang-selector .lang-modal {
+  position: absolute;
+  right: 0;
+  z-index: 1;
+
+  margin-top: 2px;
+
+  background: light-dark(#fcfcfc, #1c1e25);
+  /* The drop shadow is invisible on a dark background, so dark mode adds an outline that takes no space. */
+  box-shadow:
+    0 4px 40px 0 #00000029,
+    0 0 0 1px light-dark(transparent, #656d87);
+  border-radius: 2px;
+
+  display: none;
+}
+
+.lang-selector .lang-modal button {
+  display: flex;
+  padding: 12px 24px 12px 12px;
+  gap: 12px;
+  color: light-dark(#152a62, #ffffff);
+  width: 100%;
+}
+
+.lang-selector .lang-modal button:not(:disabled):hover {
+  background-color: light-dark(#f1f1f1, #2f3444);
+  cursor: pointer;
+}
+
+.lang-selector .lang-modal button:not(:disabled):focus {
+  outline: revert;
+}
+
+.lang-selector .lang-modal button::before {
+  content: " ";
+  width: 24px;
+  height: 24px;
+}
+
+.lang-selector .lang-modal button:disabled::before {
+  content: " ";
+  background-color: currentColor;
+  -webkit-mask: url("../images/checkmark.svg") no-repeat center center / contain;
+  mask: url("../images/checkmark.svg") no-repeat center center / contain;
+  -webkit-mask-size: 24px;
+  mask-size: 24px;
+  width: 24px;
+  height: 24px;
+}

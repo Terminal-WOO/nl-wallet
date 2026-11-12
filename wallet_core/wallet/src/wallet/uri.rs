@@ -1,32 +1,52 @@
 use std::sync::Arc;
 
-use tracing::info;
-use tracing::instrument;
-use url::Url;
-
 use error_category::ErrorCategory;
 use error_category::sentry_capture_error;
 use http_utils::urls;
 use openid4vc::disclosure_session::DisclosureClient;
+use openid4vc::wallet_issuance::IssuanceDiscovery;
 use platform_support::attested_key::AttestedKeyHolder;
+use tracing::info;
+use tracing::instrument;
+use url::Url;
 use wallet_configuration::wallet_config::WalletConfiguration;
 
-use crate::config::UNIVERSAL_LINK_BASE_URL;
-use crate::digid::DigidClient;
-use crate::repository::Repository;
-use crate::wallet::PinRecoverySession;
-use crate::wallet::Session;
-
 use super::Wallet;
+use crate::PidIssuancePurpose;
+use crate::config::UNIVERSAL_LINK_BASE_URL;
+use crate::repository::Repository;
+use crate::wallet::Session;
+use crate::wallet::issuance::SessionState;
+use crate::wallet::issuance::WalletIssuanceSession;
+use crate::wallet::pin_recovery::PinRecoverySession;
 
+/// Uri type for redirect_uri to return back to the Wallet from external parties.
 #[derive(Debug)]
-pub enum UriType {
+pub enum RedirectUri {
     PidIssuance,
+    GenericIssuance,
     PidRenewal,
     PinRecovery,
+}
+
+/// Uri type for external parties to start a new flow inside the Wallet.
+#[derive(Debug)]
+pub enum InvocationUri {
+    CredentialOffer, // Generic Issuance
     Disclosure,
     DisclosureBasedIssuance,
     Transfer,
+}
+
+#[derive(Debug)]
+pub enum FlowType {
+    Issuance,
+}
+
+#[derive(Debug)]
+pub enum UriType<R = RedirectUri> {
+    Invocation(InvocationUri),
+    Redirect(R),
 }
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
@@ -38,37 +58,59 @@ pub enum UriIdentificationError {
     Unknown(Url),
 }
 
-pub(super) fn identify_uri(uri: &Url) -> Option<UriType> {
-    let uri = uri.as_str();
+/// Custom URL schemes for disclosure flows.
+const DISCLOSURE_URL_SCHEMES: &[&str] = &["eu-eaap", "openid4vp", "haip-vp"];
 
-    if uri.starts_with(urls::issuance_base_uri(&UNIVERSAL_LINK_BASE_URL).as_ref().as_str()) {
-        return Some(UriType::PidIssuance);
+/// Custom URL schemes for credential offer issuance flows.
+const CREDENTIAL_OFFER_URI_SCHEMES: &[&str] = &["eu-eaa-offer", "haip-vci", "openid-credential-offer"];
+
+pub(super) fn identify_uri(uri: &Url) -> Option<UriType<FlowType>> {
+    let uri_str = uri.as_str();
+
+    if uri_str.starts_with(urls::issuance_base_uri(&UNIVERSAL_LINK_BASE_URL).as_ref().as_str()) {
+        return Some(UriType::Redirect(FlowType::Issuance));
     }
 
-    if uri.starts_with(
+    if uri_str.starts_with(
         urls::disclosure_based_issuance_base_uri(&UNIVERSAL_LINK_BASE_URL)
             .as_ref()
             .as_str(),
     ) {
-        return Some(UriType::DisclosureBasedIssuance);
+        return Some(UriType::Invocation(InvocationUri::DisclosureBasedIssuance));
     }
 
-    if uri.starts_with(urls::disclosure_base_uri(&UNIVERSAL_LINK_BASE_URL).as_ref().as_str()) {
-        return Some(UriType::Disclosure);
+    if uri_str.starts_with(urls::disclosure_base_uri(&UNIVERSAL_LINK_BASE_URL).as_ref().as_str()) {
+        return Some(UriType::Invocation(InvocationUri::Disclosure));
     }
 
-    if uri.starts_with(urls::transfer_base_uri(&UNIVERSAL_LINK_BASE_URL).as_ref().as_str()) {
-        return Some(UriType::Transfer);
+    if uri_str.starts_with(
+        urls::credential_offer_base_uri(&UNIVERSAL_LINK_BASE_URL)
+            .as_ref()
+            .as_str(),
+    ) {
+        return Some(UriType::Invocation(InvocationUri::CredentialOffer));
+    }
+
+    if uri_str.starts_with(urls::transfer_base_uri(&UNIVERSAL_LINK_BASE_URL).as_ref().as_str()) {
+        return Some(UriType::Invocation(InvocationUri::Transfer));
+    }
+
+    if DISCLOSURE_URL_SCHEMES.contains(&uri.scheme()) {
+        return Some(UriType::Invocation(InvocationUri::Disclosure));
+    }
+
+    if CREDENTIAL_OFFER_URI_SCHEMES.contains(&uri.scheme()) {
+        return Some(UriType::Invocation(InvocationUri::CredentialOffer));
     }
 
     None
 }
 
-impl<CR, UR, S, AKH, APC, DC, IS, DCC> Wallet<CR, UR, S, AKH, APC, DC, IS, DCC>
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
 where
     CR: Repository<Arc<WalletConfiguration>>,
     AKH: AttestedKeyHolder,
-    DC: DigidClient,
+    CID: IssuanceDiscovery,
     DCC: DisclosureClient,
 {
     #[instrument(skip_all)]
@@ -78,26 +120,56 @@ where
 
         let uri = Url::parse(uri_str)?;
         let uri_type = match identify_uri(&uri) {
-            // The DigiD return URL should only be handled if we're doing either PID issuance or PIN recovery.
-            Some(UriType::PidIssuance) if matches!(self.session, Some(Session::Digid(_))) => UriType::PidIssuance,
-            Some(UriType::PidIssuance)
+            // The authorization return URL should only be handled if we're doing either PID issuance or PIN recovery.
+            Some(UriType::Redirect(FlowType::Issuance))
                 if matches!(
                     self.session,
-                    Some(Session::PinRecovery {
-                        session: PinRecoverySession::Digid(_),
-                        ..
-                    })
+                    Some(Session::Issuance(WalletIssuanceSession::Pid {
+                        purpose: PidIssuancePurpose::Enrollment,
+                        session_state: SessionState::Authorization { .. },
+                    })),
                 ) =>
             {
-                UriType::PinRecovery
+                UriType::Redirect(RedirectUri::PidIssuance)
+            }
+            Some(UriType::Redirect(FlowType::Issuance))
+                if matches!(
+                    self.session,
+                    Some(Session::Issuance(WalletIssuanceSession::Pid {
+                        purpose: PidIssuancePurpose::Renewal,
+                        session_state: SessionState::Authorization { .. },
+                    })),
+                ) =>
+            {
+                UriType::Redirect(RedirectUri::PidRenewal)
+            }
+            Some(UriType::Redirect(FlowType::Issuance))
+                if matches!(
+                    self.session,
+                    Some(Session::PinRecovery(PinRecoverySession::OAuth { .. }))
+                ) =>
+            {
+                UriType::Redirect(RedirectUri::PinRecovery)
+            }
+            Some(UriType::Redirect(FlowType::Issuance))
+                if matches!(
+                    self.session,
+                    Some(Session::Issuance(WalletIssuanceSession::Generic {
+                        session_state: SessionState::Authorization { .. },
+                    })),
+                ) =>
+            {
+                UriType::Redirect(RedirectUri::GenericIssuance)
             }
 
-            // If we're not doing PID issuance or PIN recovery then the DigiD return URL is unexpected,
+            // If we're not doing PID issuance or PIN recovery then the authorization return URL is unexpected,
             // so return an error in that case (and of course also when the URI was not recognized).
-            Some(UriType::PidIssuance) | None => return Err(UriIdentificationError::Unknown(uri)),
+            Some(UriType::Redirect(FlowType::Issuance)) | None => {
+                return Err(UriIdentificationError::Unknown(uri));
+            }
 
             // Just pass through any other URI types.
-            Some(uri_type) => uri_type,
+            Some(UriType::Invocation(invocation_type)) => UriType::Invocation(invocation_type),
         };
 
         Ok(uri_type)
@@ -106,14 +178,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
+    use std::assert_matches;
 
-    use crate::config::UNIVERSAL_LINK_BASE_URL;
-    use crate::digid::MockDigidSession;
+    use openid4vc::wallet_issuance::mock::MockAuthorizationSession;
+    use rstest::rstest;
 
     use super::super::test::TestWalletMockStorage;
     use super::super::test::WalletDeviceVendor;
     use super::*;
+    use crate::config::UNIVERSAL_LINK_BASE_URL;
+    use crate::wallet::issuance::SessionState;
+    use crate::wallet::issuance::WalletIssuanceSession;
 
     #[tokio::test]
     async fn test_wallet_identify_redirect_uri() {
@@ -126,8 +201,8 @@ mod tests {
         let disclosure_uri_base = urls::disclosure_base_uri(&UNIVERSAL_LINK_BASE_URL);
         let disclosure_based_issuance_uri_base = urls::disclosure_based_issuance_base_uri(&UNIVERSAL_LINK_BASE_URL);
 
-        let digid_uri = urls::issuance_base_uri(&UNIVERSAL_LINK_BASE_URL);
-        let digid_uri = digid_uri.as_ref().as_str();
+        let authorization_uri = urls::issuance_base_uri(&UNIVERSAL_LINK_BASE_URL);
+        let authorization_uri = authorization_uri.as_ref().as_str();
 
         let disclosure_uri = disclosure_uri_base.join("abcd");
         let disclosure_based_issuance_uri = disclosure_based_issuance_uri_base.join("abcd");
@@ -140,39 +215,108 @@ mod tests {
             UriIdentificationError::Unknown(uri) if uri.as_str() == example_uri
         );
 
-        // The wallet should not recognise the DigiD URI, as there is no `DigidSession`.
+        // The wallet should not recognise the authorization URI, as there is no authorization session.
         assert_matches!(
-            wallet.identify_uri(digid_uri).unwrap_err(),
-            UriIdentificationError::Unknown(uri) if uri.as_str() == digid_uri
+            wallet.identify_uri(authorization_uri).unwrap_err(),
+            UriIdentificationError::Unknown(uri) if uri.as_str() == authorization_uri
         );
 
-        // Set up a `DigidSession` that will match the URI.
-        wallet.session = Some(Session::Digid(MockDigidSession::new()));
+        // Set up an enrollment session that will match the URI.
+        wallet.session = Some(Session::Issuance(WalletIssuanceSession::Pid {
+            purpose: PidIssuancePurpose::Enrollment,
+            session_state: SessionState::Authorization {
+                authorization_session: MockAuthorizationSession::new(),
+            },
+        }));
 
-        // The wallet should now recognise the DigiD URI.
-        assert_matches!(wallet.identify_uri(digid_uri).unwrap(), UriType::PidIssuance);
+        // The wallet should now recognise the authorization URI.
+        assert_matches!(
+            wallet.identify_uri(authorization_uri).unwrap(),
+            UriType::Redirect(RedirectUri::PidIssuance)
+        );
 
-        // After clearing the `DigidSession`, the URI should not be recognised again.
+        // Set up a PID renewal session that will match the URI.
+        wallet.session = Some(Session::Issuance(WalletIssuanceSession::Pid {
+            purpose: PidIssuancePurpose::Renewal,
+            session_state: SessionState::Authorization {
+                authorization_session: MockAuthorizationSession::new(),
+            },
+        }));
+
+        // The wallet should now recognise the authorization URI.
+        assert_matches!(
+            wallet.identify_uri(authorization_uri).unwrap(),
+            UriType::Redirect(RedirectUri::PidRenewal)
+        );
+
+        // Set up a general issuance session that will match the URI.
+        wallet.session = Some(Session::Issuance(WalletIssuanceSession::Generic {
+            session_state: SessionState::Authorization {
+                authorization_session: MockAuthorizationSession::new(),
+            },
+        }));
+
+        // The wallet should now recognise the authorization URI.
+        assert_matches!(
+            wallet.identify_uri(authorization_uri).unwrap(),
+            UriType::Redirect(RedirectUri::GenericIssuance)
+        );
+
+        // After clearing the session, the URI should not be recognised again.
         wallet.session = None;
 
         assert_matches!(
-            wallet.identify_uri(digid_uri).unwrap_err(),
-            UriIdentificationError::Unknown(uri) if uri.as_str() == digid_uri
+            wallet.identify_uri(authorization_uri).unwrap_err(),
+            UriIdentificationError::Unknown(uri) if uri.as_str() == authorization_uri
         );
 
         // The disclosure URI should be recognised.
         assert_matches!(
             wallet.identify_uri(disclosure_uri.as_str()).unwrap(),
-            UriType::Disclosure
+            UriType::Invocation(InvocationUri::Disclosure)
         );
 
         // The disclosure based issuance URI should be recognised.
         assert_matches!(
             wallet.identify_uri(disclosure_based_issuance_uri.as_str()).unwrap(),
-            UriType::DisclosureBasedIssuance
+            UriType::Invocation(InvocationUri::DisclosureBasedIssuance)
         );
 
         // The transfer URI should be recognised.
-        assert_matches!(wallet.identify_uri(transfer_uri.as_str()).unwrap(), UriType::Transfer);
+        assert_matches!(
+            wallet.identify_uri(transfer_uri.as_str()).unwrap(),
+            UriType::Invocation(InvocationUri::Transfer)
+        );
+
+        // The credential offer URI should be recognised.
+        let credential_offer_uri = urls::credential_offer_base_uri(&UNIVERSAL_LINK_BASE_URL).join("offer123");
+        assert_matches!(
+            wallet.identify_uri(credential_offer_uri.as_str()).unwrap(),
+            UriType::Invocation(InvocationUri::CredentialOffer)
+        );
+    }
+
+    #[rstest]
+    #[case("eu-eaap://")]
+    #[case("openid4vp://")]
+    #[case("haip-vp://")]
+    #[case("haip-vp://request?client_id=verifier&request_uri=https%3A%2F%2Fexample.com")]
+    #[tokio::test]
+    async fn test_wallet_identify_disclosure_scheme(#[case] uri: &str) {
+        let wallet = TestWalletMockStorage::new_unregistered(WalletDeviceVendor::Apple).await;
+        let actual = wallet.identify_uri(uri).expect("uri is identifiable");
+        assert_matches!(actual, UriType::Invocation(InvocationUri::Disclosure));
+    }
+
+    #[rstest]
+    #[case("eu-eaa-offer://")]
+    #[case("haip-vci://")]
+    #[case("openid-credential-offer://")]
+    #[case("openid-credential-offer://request?credential_offer=%7B%22issuer%22%3A%22https%3A%2F%2Fexample.com%22%7D")] // credential_offer={"issuer":"https://example.com"}
+    #[tokio::test]
+    async fn test_wallet_identify_credential_offer_scheme(#[case] uri: &str) {
+        let wallet = TestWalletMockStorage::new_unregistered(WalletDeviceVendor::Apple).await;
+        let actual = wallet.identify_uri(uri).expect("uri is identifiable");
+        assert_matches!(actual, UriType::Invocation(InvocationUri::CredentialOffer));
     }
 }

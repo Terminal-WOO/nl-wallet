@@ -4,42 +4,40 @@ mod database;
 mod database_storage;
 mod event_log;
 mod key_file;
+mod revocation_info;
 mod sql_cipher_key;
-
-#[cfg(any(test, feature = "test"))]
-pub use database_storage::test_storage::MockHardwareDatabaseStorage;
 
 use std::array::TryFromSliceError;
 use std::collections::HashSet;
 use std::io;
 
+use attestation_data::disclosure_type::DisclosureType;
+use attestation_data::organization::Organization;
+use attestation_types::credential_kind::CredentialKind;
 use chrono::DateTime;
 use chrono::Utc;
-use sea_orm::DbErr;
-
+#[cfg(any(test, feature = "test"))]
+pub use database_storage::test_storage::MockHardwareDatabaseStorage;
 use derive_more::Constructor;
-use serde::Deserialize;
-use serde::Serialize;
-use tempfile::NamedTempFile;
-use uuid::Uuid;
-
-use attestation_data::disclosure_type::DisclosureType;
-use crypto::x509::BorrowingCertificate;
-use dcql::CredentialFormat;
 use error_category::ErrorCategory;
 use mdoc::utils::cose::CoseError;
 use mdoc::utils::serialization::CborError;
-use openid4vc::issuance_session::CredentialWithMetadata;
-use openid4vc::issuance_session::IssuedCredentialCopies;
+use openid4vc::wallet_issuance::credential::CredentialWithMetadata;
 use sd_jwt_vc_metadata::TypeMetadataChainError;
-
-use crate::AttestationPresentation;
-use crate::storage::sql_cipher_key::SqlCipherKey;
+use sea_orm::DbErr;
+use serde::Deserialize;
+use serde::Serialize;
+use tempfile::NamedTempFile;
+use token_status_list::verification::verifier::RevocationStatus;
+use utils::generator::Generator;
+use uuid::Uuid;
 
 pub use self::attestation_copy::DisclosableAttestation;
 pub use self::attestation_copy::PartialAttestation;
 pub use self::attestation_copy::StoredAttestation;
 pub use self::attestation_copy::StoredAttestationCopy;
+pub use self::attestation_copy::StoredAttestationMetadata;
+pub use self::attestation_copy::WithKeyIdentifier;
 pub use self::data::ChangePinData;
 pub use self::data::InstructionData;
 pub use self::data::KeyData;
@@ -54,6 +52,9 @@ pub use self::database_storage::DatabaseStorage;
 pub use self::event_log::DisclosureStatus;
 pub use self::event_log::WalletEvent;
 pub use self::key_file::KeyFileError;
+pub use self::revocation_info::RevocationInfo;
+use crate::AttestationPresentation;
+use crate::storage::sql_cipher_key::SqlCipherKey;
 
 #[cfg(test)]
 pub mod test {
@@ -145,7 +146,8 @@ pub struct DatabaseExport {
 
 /// This trait abstracts the persistent storage for the wallet.
 #[cfg_attr(test, mockall::automock)]
-pub trait Storage {
+#[async_trait::async_trait]
+pub trait Storage: Send {
     async fn state(&self) -> StorageResult<StorageState>;
 
     async fn open(&mut self) -> StorageResult<()>;
@@ -162,10 +164,10 @@ pub trait Storage {
         Ok(())
     }
 
-    async fn fetch_data<D: KeyedData + 'static>(&self) -> StorageResult<Option<D>>;
-    async fn insert_data<D: KeyedData + 'static>(&mut self, data: &D) -> StorageResult<()>;
-    async fn upsert_data<D: KeyedData + 'static>(&mut self, data: &D) -> StorageResult<()>;
-    async fn delete_data<D: KeyedData + 'static>(&mut self) -> StorageResult<()>;
+    async fn fetch_data<D: KeyedData + Sync + 'static>(&self) -> StorageResult<Option<D>>;
+    async fn insert_data<D: KeyedData + Sync + 'static>(&mut self, data: &D) -> StorageResult<()>;
+    async fn upsert_data<D: KeyedData + Sync + 'static>(&mut self, data: &D) -> StorageResult<()>;
+    async fn delete_data<D: KeyedData + Sync + 'static>(&mut self) -> StorageResult<()>;
 
     async fn insert_credentials(
         &mut self,
@@ -176,39 +178,48 @@ pub trait Storage {
     async fn update_credentials(
         &mut self,
         timestamp: DateTime<Utc>,
-        credentials: Vec<(IssuedCredentialCopies, AttestationPresentation)>,
+        credentials: Vec<(CredentialWithMetadata, AttestationPresentation)>,
     ) -> StorageResult<()>;
 
     async fn increment_attestation_copies_usage_count(&mut self, attestation_copy_ids: Vec<Uuid>) -> StorageResult<()>;
 
-    async fn has_any_attestations_with_types(&self, attestation_types: &[String]) -> StorageResult<bool>;
+    async fn has_any_attestations(&self) -> StorageResult<bool>;
+    async fn has_any_attestations_with_credential_kinds(
+        &self,
+        credential_kinds: &HashSet<CredentialKind>,
+    ) -> StorageResult<bool>;
 
     async fn fetch_unique_attestations(&self) -> StorageResult<Vec<StoredAttestationCopy>>;
 
-    /// Returns a single attestation copy of each stored attestation for which the attestation type is equal to one of
-    /// types requested. The format of the copy returned is undetermined.
-    async fn fetch_unique_attestations_by_types<'a>(
-        &'a self,
-        attestation_types: &HashSet<&'a str>,
+    /// Returns a single attestation copy for each stored attestation whose attestation type and format match one of the
+    /// requested [`CredentialKind`] instances. Attestations that merely extend one of the requested attestation types
+    /// are not returned.
+    async fn fetch_unique_attestations_by_credential_kinds(
+        &self,
+        credential_kinds: &HashSet<CredentialKind>,
     ) -> StorageResult<Vec<StoredAttestationCopy>>;
 
-    /// Returns a single attestation copy of each stored attestation for which the attestation type is equal to one of
-    /// types requested and for which at least one copy of the requested format exists. The returned copy will be of the
-    /// requested format.
+    /// Returns a single valid attestation copy for each stored attestation whose attestation type and format match one
+    /// of the requested [`CredentialKind`] instances. Valid in this context describes the revocation status and the
+    /// validity window of the attestation.
     ///
-    /// Additionally, if `CredentialFormat::SdJwt` is requested, the returned attestation copies will also include those
-    /// that extend at least one of the requested attestation types.
-    async fn fetch_unique_attestations_by_types_and_format<'a>(
-        &'a self,
-        attestation_types: &HashSet<&'a str>,
-        format: CredentialFormat,
-    ) -> StorageResult<Vec<StoredAttestationCopy>>;
+    /// In addition to the attestations of the requested attestation types themselves, the returned attestation copies
+    /// include those of which the type metadata extends one of the requested attestation types. Note that this can only
+    /// apply to attestations in the SD-JWT format, as mdoc doc types have no extension mechanism.
+    #[cfg_attr(test, mockall::concretize)]
+    async fn fetch_valid_unique_attestations_by_credential_kinds<T>(
+        &self,
+        credential_kinds: &HashSet<CredentialKind>,
+        time_generator: T,
+    ) -> StorageResult<Vec<StoredAttestationCopy>>
+    where
+        T: Generator<DateTime<Utc>> + Send + Send + Sync + 'static;
 
     async fn log_disclosure_event(
         &mut self,
         timestamp: DateTime<Utc>,
         proposed_attestation_presentations: Vec<AttestationPresentation>,
-        reader_certificate: BorrowingCertificate,
+        organization: &Organization,
         status: DisclosureStatus,
         r#type: DisclosureType,
     ) -> StorageResult<()>;
@@ -216,5 +227,22 @@ pub trait Storage {
     async fn fetch_wallet_events(&self) -> StorageResult<Vec<WalletEvent>>;
     async fn fetch_recent_wallet_events(&self) -> StorageResult<Vec<WalletEvent>>;
     async fn fetch_wallet_events_by_attestation_id(&self, attestation_id: Uuid) -> StorageResult<Vec<WalletEvent>>;
-    async fn did_share_data_with_relying_party(&self, certificate: &BorrowingCertificate) -> StorageResult<bool>;
+    async fn did_share_data_with_relying_party(&self, organization: &Organization) -> StorageResult<bool>;
+
+    async fn fetch_all_revocation_info<T>(&self, time_generator: &T) -> StorageResult<Vec<RevocationInfo>>
+    where
+        T: Generator<DateTime<Utc>> + Send + Send + Sync + 'static;
+    async fn update_revocation_statuses(&self, updates: Vec<(Uuid, RevocationStatus)>) -> StorageResult<()>;
+
+    /// Returns the attestation kind and the key identifiers of all copies of the attestation with the given id.
+    /// Returns `None` if no attestation with that id exists.
+    async fn fetch_credential_kind_and_key_identifiers_by_attestation_id(
+        &self,
+        attestation_id: Uuid,
+    ) -> StorageResult<Option<(CredentialKind, Vec<String>)>>;
+
+    /// Deletes all copies of the attestation with the given id, severs the links from history events
+    /// to the attestation, and deletes the attestation itself. Does nothing if no attestation with
+    /// that id exists.
+    async fn delete_attestation(&mut self, timestamp: DateTime<Utc>, attestation_id: Uuid) -> StorageResult<()>;
 }

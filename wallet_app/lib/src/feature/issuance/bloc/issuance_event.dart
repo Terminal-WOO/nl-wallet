@@ -11,14 +11,33 @@ class IssuanceOrganizationApproved extends IssuanceEvent {
   const IssuanceOrganizationApproved();
 }
 
+/// The user agrees to receive cards from an issuer that does not provide previews.
+class IssuanceIssuerApproved extends IssuanceEvent {
+  const IssuanceIssuerApproved();
+}
+
 class IssuanceSessionStarted extends IssuanceEvent {
   final String issuanceUri;
   final bool isQrCode;
+  final IssuanceType type;
 
-  const IssuanceSessionStarted(this.issuanceUri, {this.isQrCode = false});
+  const IssuanceSessionStarted(
+    this.issuanceUri, {
+    this.isQrCode = false,
+    this.type = IssuanceType.disclosureBasedIssuance,
+  });
 
   @override
   List<Object?> get props => [issuanceUri, isQrCode];
+}
+
+class IssuanceSessionContinued extends IssuanceEvent {
+  final String authorizationUri;
+
+  const IssuanceSessionContinued(this.authorizationUri);
+
+  @override
+  List<Object?> get props => [authorizationUri];
 }
 
 class IssuanceBackPressed extends IssuanceEvent {

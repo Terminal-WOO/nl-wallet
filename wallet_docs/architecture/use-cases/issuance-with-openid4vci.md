@@ -1,191 +1,477 @@
 # Issuance with OpenID4VCI
 
-We currently (2025-10-25) have two issuance implementations: The `pid_issuer`,
-a specialized issuer specifically for [PID][1]s, and `issuance_server` a
-reference generic issuer that can issue all kinds of things. We'll cover both
-in this document.
+We've implemented issuance with [OpenID4VCI 1.0][2] following the [High
+Assurance Interoperability Profile (HAIP)][9], with attestation preview as a
+custom addition. OpenID4VCI defines two grant flows and we use both across our
+two issuance implementations.
+
+We currently have two issuance implementations: the `pid_issuer`, a specialized
+issuer specifically for Dutch [PID][1]s, which this page is about, and
+`issuance_server`, a disclosure-based-issuance service that can issue all kinds
+of things (which you can [read about here][8]). The `pid_issuer` uses the
+authorization code flow described below; the `issuance_server` uses the
+pre-authorized code flow.
+
+## Pre-authorized code flow
+
+In the [Pre-Authorized Code Flow][3] the issuer has already determined the
+attributes to be issued out of band, binds them to a freshly generated
+pre-authorized code in an issuance session, and hands that code to the wallet
+inside an [OpenID4VCI Credential Offer][2]. The wallet sends the code to the
+issuer's `/token` endpoint with
+`grant_type=urn:ietf:params:oauth:grant-type:pre-authorized_code`,
+authenticating itself with a Wallet Instance Attestation (WIA) sent in HTTP
+headers ([OAuth 2.0 Attestation-Based Client Authentication][12]); the issuer
+verifies the WIA and loads the session keyed by the code to find the attributes
+to issue (this grant carries no PKCE). The wallet then obtains a `c_nonce` from
+the issuer's [nonce endpoint][14] and exchanges proofs of possession for
+attestations at the `/credential` endpoint.
+
+In our codebase, this flow is implemented by the `issuance_server` (the
+disclosure-based-issuance service); see [Disclosure-based Issuance][8] for the
+end-to-end picture, including how the disclosed attributes are turned into
+attestations via the _attestation server_. The `pid_issuer` does not accept the
+pre-authorized code grant — it only accepts the authorization code flow
+described below.
+
+```{mermaid}
+sequenceDiagram
+    autonumber
+
+    participant OS
+    participant Wallet
+    participant CI as Credential Issuer
+    participant AS as Authorization Server
+
+    Note over OS,AS: Credential Offer (out of band)
+
+    CI-->>OS: openid-credential-offer://?credential_offer_uri=<url><br/>(e.g. via QR code or universal link)
+    OS->>Wallet: open with offer URL
+    Wallet->>CI: GET <credential_offer_uri>
+    CI->>Wallet: Credential Offer<br/>{ credential_issuer, credential_configuration_ids,<br/>  grants: { pre-authorized_code:<br/>    { pre-authorized_code, ... } } }
+
+    Note over OS,AS: Discovery
+
+    Wallet-->>CI: discover OpenID4VCI metadata
+    CI-->>Wallet: issuer metadata
+    Wallet->>Wallet: discover Authorization Server
+    Wallet-->>AS: discover OAuth metadata
+    AS-->>Wallet: oauth metadata
+
+    Note over OS,AS: Token exchange
+
+    Wallet->>AS: POST Token Request<br/>(grant_type=...:pre-authorized_code,<br/>pre-authorized_code, WIA)
+    AS->>Wallet: Token Response (access_token)
+
+    Note over OS,AS: Issuance phase
+
+    Wallet->>CI: POST /previews(access_token)
+    CI->>Wallet: previews
+
+    loop for every credential
+        Wallet->>CI: POST Nonce Request
+        CI->>Wallet: c_nonce
+        Wallet-->>CI: GET metadata
+        CI-->>Wallet: metadata
+        Wallet->>CI: POST Credential Request<br/>(access_token) to /credential
+        CI->>Wallet: Credential Response (attestation copies)
+    end
+```
+
+## Authorization code flow (HAIP)
+
+The [HAIP profile][9] mandates the regular Authorization Code Flow with a number
+of additional requirements:
+
+- A [Pushed Authorization Request (PAR)][10] is required; all authorization
+  parameters are sent server-to-server and the browser only carries a
+  `request_uri`;
+
+- [PKCE][11] with `S256` is required;
+
+- The wallet authenticates itself at both `/par` and `/token` with a Wallet
+  Instance Attestation (WIA), carried in `OAuth-Client-Attestation` and
+  `OAuth-Client-Attestation-PoP` headers ([OAuth 2.0 Attestation-Based Client
+  Authentication][12]);
+
+- Access tokens are sender-constrained with [DPoP][13]. The `/token` response
+  has `token_type=DPoP`, and every subsequent request at the credential issuer
+  carries both an `Authorization: DPoP <access_token>` header and a fresh DPoP
+  proof JWT (which includes `ath`, the hash of the access token);
+
+- Issuance uses a single `/credential` endpoint that accepts a `proofs` array,
+  carrying one Proof of Possession per attestation private key.
+
+```{mermaid}
+sequenceDiagram
+    autonumber
+
+    participant OS
+    participant Wallet
+    participant CI as Credential Issuer
+    participant AS as Authorization Server
+
+    CI-->>OS: openid-credential-offer://?credential_offer_uri=<url><br/>(e.g. via QR code or universal link)
+    OS->>Wallet: open with offer URL
+    Wallet->>CI: GET <credential_offer_uri>
+    CI->>Wallet: Credential Offer<br/>{ credential_issuer, credential_configuration_ids,<br/>  grants: { authorization_code:<br/>    { ... } } }
+
+    Note over OS,AS: Discovery phase
+
+    Wallet-->>CI: discover OpenID4VCI metadata
+    CI-->>Wallet: { credential_issuer,<br/>  credential_configurations_supported,<br/>  authorization_servers, nonce_endpoint,<br/>  credential_endpoint, ... }
+
+    Wallet->>Wallet: discover Authorization Server
+
+    Wallet-->>AS: discover OAuth metadata
+    AS-->>Wallet: { pushed_authorization_request_endpoint,<br/>  authorization_endpoint, token_endpoint, ... }
+
+    Note over OS,AS: Authentication phase
+
+    Wallet->>AS: POST PAR (WIA)
+    AS->>Wallet: request_uri
+    Wallet->>OS: open browser (URL)
+    OS->>AS: (browser) GET Authorization Request (request_uri)
+    AS->>OS: Authorization Response (code)
+    OS->>Wallet: openWallet(code)
+    Wallet->>AS: POST Token Request (code, WIA)
+    AS->>Wallet: Token Response (access_token)
+
+    Note over OS,AS: Issuance phase
+
+    Wallet->>CI: POST /previews(access_token)
+    CI->>Wallet: previews
+
+    loop for every credential
+        Wallet->>CI: POST Nonce Request
+        CI->>Wallet: c_nonce
+        Wallet-->>CI: GET /metadata
+        CI-->>Wallet: metadata
+        Wallet->>CI: POST Credential Request<br/>(access_token) to /credential
+        CI->>Wallet: Credential Response (attestation copies)
+    end
+```
 
 ## PID issuance
 
-PID issuance is done by the `pid_issuer` which is a part of the
-`wallet_server` crate. It is created to issue [PID][1]s specifically.
-
-This diagram below shows how the `pid_issuer` uses [OpenID4VCI][2] in a
-[Pre-Authorized Code Flow][3] to issue a [PID] to the wallet.
-
-Using this protocol, the wallet starts a normal OpenID Connect session at an
-`AuthServer` (which is a so-called [OpenID Provider][4]; in the case of the NL
-Wallet, this usually means [DigiD][5] through [nl-rdo-max][6]), from which it
-obtains an authorization code.
-
-Next, the wallet uses this code to start the OpenID4VCI issuance protocol in the
-pre-authorized code flow with a `wallet_server` component called `pid_issuer`.
-The `pid_issuer` finishes the OpenID Connect session with the `AuthServer` to
-discover the identity of the wallet user, allowing it to finish issuance.
-
-In the diagram below we introduce an actor called the `PidAttributeService`,
-whose responsibility it is to produce the attributes to be issued when given a
-valid pre-authorized code.
-
-In the case of PID issuance, the `pid_issuer` can do this by finishing the
-OpenID Connect session that the wallet started. (The `PidAttributeService` is
-a part of the `pid_issuer` in the `wallet_server` crate, as opposed to a
-separate HTTP server; we include it here as separate actor to clearly visualize
-separate responsibilities.)
-
-The protocol works as follows:
-
-  * The wallet starts an OpenID Connect session at the `AuthServer` by sending
-    it an Authorization Request, receiving an authorization code from the
-    `AuthServer` in response;
-
-  * Using the received authorization code, the wallet starts OpenID4VCI issuance
-    in a so-called pre-authorized code flow by sending a `POST` request with the
-    previously obtained code as a pre-authorized code in a Token Request to the
-    `pid_issuer`;
-
-  * The `pid_issuer` feeds the Token Request with the pre-authorized code to its
-    `PidAttributeService` component. The `PidAttributeService` `POST`'s the
-    Token Request to the `AuthServer`, transforming only the pre-authorized code
-    in it to a normal authorization code but keeping the other parameters (such
-    as the `state` and the PKCE `code_verifier`) in the Token Request as-is,
-    thereby continuing the OpenID Connect session that the wallet previously
-    started, and obtaining an `access_token`;
-
-  * Using the resulting `access_token`, the `PidAttributeService` invokes the
-    `/userinfo` endpoint of the `AuthServer` to retrieve the BSN, with which it
-    does a query to the [BRP][7], resulting in the attributes to be issued;
-
-  * The `pid_issuer` then generates the `c_nonce` and an `access_token` of its
-    own, and a preview of the attestations as a custom addition to the
-    OpenID4VCI protocol, all of which it returns to the wallet;
-
-  * With the `access_token` and a valid set of proofs of possession (signatures
-    over the `c_nonce` validating against the public keys that the wallet wants
-    to have in its PID), the wallet can access the `batch_credential` endpoint
-    of the `pid_issuer` to obtain the attestations.
-
-Notice that from the perspective of the `AuthServer`, the mobile operating
-system (abreviated as "OS" in the diagram) acts as the User Agent in an OpenID
-Connect session, and the `pid_issuer`'s `PidAttributeService` acts as the OpenID
-Client. The former starts the session by navigating to the `AuthServer` with an
-Authorization Request, and the latter resumes the session with Token and User
-Info Requests.
-
 The NL Wallet requires at least the SD JWT format for PID attestations. The MSO
-mDoc can be issued as well. The attestation type and paths to the `login` claim
-and the `recovery_code` are dynamically configured. See the `pid_attributes`
-field in the `wallet-config.json` for details.
+mDoc format can be issued as well. The attestation type and paths to the `login`
+claim and the `recovery_code` are dynamically configured. See the
+`pid_attributes` field in the `wallet-config.json` for details.
+
+In the `pid_issuer`, the Authorization Server and Credential Issuer roles are
+combined: the wallet talks to a single `PID Issuer`, which hosts its own `/par`,
+`/authorize`, `/token`, `/nonce` and `/credential` endpoints. Behind the scenes,
+the `PID Issuer` delegates the actual user authentication to an upstream OpenID
+Connect provider — in practice [RDO Max][6] acting as a DigiD broker.
+
+For the internal structure of the `PID Issuer`, see
+[PID Issuer architecture](../../development/pid-issuer-architecture.md).
+
+### PID issuance OAuth flow overview
+
+The `PID Issuer` runs two independent OAuth 2.0 authorization-code exchanges
+that share no parameters:
+
+1. **Wallet ↔ PID Issuer** — the HAIP exchange described above. The wallet
+   pushes a PAR, calls `PID Issuer`'s `/authorize`, eventually receives an
+   authorization code at its own `redirect_uri`, and exchanges it at the
+   `PID Issuer`'s `/token`. The wallet's `client_id`, `redirect_uri`, `state`,
+   PKCE pair, WIA and DPoP all terminate at the `PID Issuer`.
+
+2. **PID Issuer ↔ RDO Max** — a second, freshly minted exchange the `PID Issuer`
+   starts while handling the wallet's `/authorize`. Every parameter here is the
+   `PID Issuer`'s own: its DigiD `client_id`, its own `redirect_uri` (the
+   `PID Issuer`'s `/digid/callback`), a random `state` (the `issuer_state`), its
+   own PKCE pair, `scope=openid` and a fresh OIDC `nonce`. RDO Max redirects
+   back to the `PID Issuer`'s callback — **never to the wallet**.
+
+The `PID Issuer` terminates the upstream round-trip at its own callback,
+generates its **own** authorization code, and only then redirects the browser
+back to the wallet. RDO Max never redirects the browser to the wallet directly.
+The two exchanges are linked solely by a server-side **state-bridge** entry,
+keyed by the `issuer_state`, that remembers the wallet's original
+`redirect_uri`, `state` and PKCE challenge (and the upstream PKCE verifier)
+while the user is away at DigiD.
+
+Because the upstream round-trip is terminated at the `PID Issuer`, the upstream
+`/token` + `/userinfo` exchange (which yields the BSN) and the BRP attribute
+lookup happen **in the `/digid/callback` handler**, before the wallet ever calls
+`/token`. By the time the wallet exchanges its code at `/token`, the attributes
+are already determined and stored in the issuance session, so `/token` only
+verifies the wallet's PKCE `code_verifier` and WIA, and issues the access token
+— there is no upstream interaction at `/token`. If anything fails in the
+callback (BSN, BRP, document build), the `PID Issuer` redirects the browser back
+to the wallet's `redirect_uri` with an OAuth `error` response.
+
+Parameter handling, **wallet ↔ PID Issuer** (everything terminates at the PID
+Issuer):
+
+| Parameter                  | Handling                                                                 |
+| -------------------------- | ------------------------------------------------------------------------ |
+| `client_id`                | validated against accepted wallet client ids; never forwarded            |
+| `redirect_uri`             | wallet's universal link; the PID Issuer redirects here with its own code |
+| `state`                    | remembered in the state bridge, echoed on the final wallet redirect      |
+| `code_challenge`/`_method` | wallet's PKCE (`c1`, `S256`); verified at the PID Issuer's `/token`      |
+| `scope`                    | the requested PID credential configuration                               |
+| WIA headers                | wallet <-> PID Issuer only                                               |
+| `DPoP` header              | wallet <-> PID Issuer only                                               |
+
+Parameter handling, **PID Issuer → RDO Max** (all freshly generated by the PID
+Issuer, on both upstream `/authorize` and `/token`):
+
+| Parameter                  | Value                                                              |
+| -------------------------- | ------------------------------------------------------------------ |
+| `client_id`                | the PID Issuer's DigiD client id                                   |
+| `redirect_uri`             | the PID Issuer's own `/digid/callback`                             |
+| `state`                    | random `issuer_state`; keys the state-bridge entry                 |
+| `code_challenge`/`_method` | the PID Issuer's own PKCE pair (`c2`, `S256`)                      |
+| `scope`                    | `openid`                                                           |
+| `nonce` (OIDC)             | fresh random, required by nl-rdo-max                               |
+| `code_verifier` (`/token`) | the PID Issuer's own verifier (`v2`); upstream client auth applied |
+
+To keep the diagram focused on the OpenID4VCI / RDO Max delegation, the
+wallet-side DPoP layer and the Wallet Instance Attestation (WIA) are omitted
+below — both sit strictly between the wallet and the `PID Issuer` and do not
+affect the delegation to RDO Max.
+
+PKCE tracer values: the wallet uses `(v1, c1)` toward the `PID Issuer`; the
+`PID Issuer` uses `(v2, c2)` toward RDO Max. Each verifier is checked only by
+the party that issued the challenge.
 
 ```{mermaid}
 sequenceDiagram
     autonumber
 
-    actor User
     participant OS
     participant Wallet
-    participant WP as Wallet Backend
-    participant WalletServer as PidIssuer
-    participant PidAttributeService
-    participant AuthServer
+    participant PI as PID Issuer
+    participant RDO as RDO Max
 
-    User->>+Wallet: click "issue PID"
-    Wallet->>-OS: navigate to AuthServer/authorize?redirect_uri=...
-    OS->>+AuthServer: GET /authorize?redirect_uri=...
-    note over User, AuthServer: authenticate user with DigiD app
-    AuthServer->>AuthServer: generate & store code
-    AuthServer->>-OS: GET universal_link?code=...
-    OS->>Wallet: openWallet(code)
-    activate Wallet
-        Wallet->>+WalletServer: POST /token(pre-authorized_code)
-        WalletServer->>+PidAttributeService: getAttributes(pre-authorized_code)
-        PidAttributeService->>+AuthServer: POST /token(code)
-        AuthServer->>AuthServer: lookup(code)
-        AuthServer->>-PidAttributeService: access_token
-        PidAttributeService->>+AuthServer: GET /userinfo(access_token)
-        AuthServer->>-PidAttributeService: claims(BSN)
-        PidAttributeService->>PidAttributeService: obtain attributes from BRP
-        PidAttributeService->>-WalletServer: attributes
-        WalletServer->>WalletServer: generate c_nonce, access_token
-        WalletServer->>-Wallet: access_token, c_nonce, attestation_previews
-        Wallet->>+User: Show attributes, ask consent
-    deactivate Wallet
-    User->>-Wallet: approve with PIN
-    activate Wallet
-        Wallet ->> WP: request PoPs with nonce<br/>(PerformIssuanceWithWua instruction)
-        WP ->> Wallet: Return WUA and Signed PoP and PoA
-        Wallet->>+WalletServer: POST /batch_credential(access_token, PoPs)
-        note over Wallet: WUA and PoA are included here
-        WalletServer->>WalletServer: verify proofs,  WUA and PoA
-        WalletServer->>-Wallet: attestations
-    deactivate Wallet
+    %% ---- Optional issuer-initiated Credential Offer ----
+    Note over OS,RDO: Credential Offer (optional, issuer-initiated)
+
+    PI-->>OS: openid-credential-offer://?credential_offer_uri=<url><br/>(e.g. via QR code or same-device link)
+    OS->>Wallet: open with offer URL
+    Wallet->>PI: GET <credential_offer_uri>
+    PI->>Wallet: { credential_issuer, credential_configuration_ids:<br/>  ["eu.europa.ec.eudi.pid_vc_sd_jwt"],<br/>  grants: { authorization_code: { issuer_state: "s_iss" } } }
+
+    %% ---- Metadata discovery ----
+    Wallet-->>PI: GET /.well-known/openid-credential-issuer
+    PI-->>Wallet: { credential_issuer, credential_configurations_supported,<br/>  authorization_servers, nonce_endpoint,<br/>  credential_endpoint, ... }
+    Wallet->>Wallet: pick AS from authorization_servers[]
+
+    Note over OS,RDO: Authentication phase
+
+    Wallet-->>PI: GET /.well-known/oauth-authorization-server
+    PI-->>Wallet: { pushed_authorization_request_endpoint,<br/>  authorization_endpoint, token_endpoint,<br/>  require_pushed_authorization_requests: true }
+
+    Wallet->>Wallet: generate PKCE_W (v1, c1 = S256(v1)),<br/>state=s1
+
+    %% ---- PAR ----
+    Wallet->>PI: POST /par
+    note right of Wallet: response_type=code<br/>client_id=nl-wallet-app<br/>redirect_uri=<wallet_ul><br/>code_challenge=c1, code_challenge_method=S256<br/>state=s1<br/>scope=eu.europa.ec.eudi.pid_vc_sd_jwt<br/>issuer_state=s_iss   ← if from offer
+    PI->>PI: store PAR keyed by request_uri
+    PI->>Wallet: 201 { request_uri: "urn:...abc", expires_in: 60 }
+
+    %% ---- Front-channel authorization ----
+    Wallet->>OS: open browser → GET <PID_Issuer>/authorize?<br/>client_id=nl-wallet-app&request_uri=urn:...abc
+    OS->>PI: GET /authorize?client_id=nl-wallet-app&request_uri=urn:...abc
+    PI->>PI: consume PAR, validate client_id
+    PI-->>RDO: GET /.well-known/openid-configuration<br/>(first upstream use, cached thereafter)
+    RDO-->>PI: upstream OIDC metadata<br/>(authorization_endpoint, token_endpoint, userinfo_endpoint)
+    PI->>PI: generate PKCE_P (v2, c2) and random issuer_state=s2,<br/>store state_bridge[s2] = {<br/>  wallet_redirect_uri=<wallet_ul>, wallet_state=s1,<br/>  wallet_code_challenge=c1, upstream_code_verifier=v2 }
+    PI->>OS: 302 Location: <RDO>/authorize?<br/>response_type=code&client_id=pid-issuer-digid&<br/>redirect_uri=<PI>/digid/callback&<br/>code_challenge=c2&code_challenge_method=S256&<br/>state=s2&scope=openid&nonce=<random>
+    OS->>RDO: GET /authorize?...
+    note over OS,RDO: user authenticates via DigiD
+    RDO->>OS: 302 Location: <PI>/digid/callback?<br/>code=up_code&state=s2
+    OS->>PI: GET /digid/callback?code=up_code&state=s2
+
+    %% ---- Upstream token + userinfo, BRP, mint issuer code ----
+    PI->>PI: consume state_bridge[s2] → { wallet_*, v2 }
+    PI->>RDO: POST /token<br/>(grant_type=authorization_code, code=up_code,<br/>redirect_uri=<PI>/digid/callback, code_verifier=v2,<br/>client_id=pid-issuer-digid, upstream client auth)
+    RDO->>PI: { access_token: <upstream_at>, ... }
+    PI->>RDO: GET /userinfo (Authorization: Bearer <upstream_at>)
+    RDO->>PI: BSN (encrypted JWE)
+    PI->>PI: Lookup attributes in BRP,<br/>build PID documents (SD-JWT + mdoc),<br/>mint authorization code=code1,<br/>store AuthCodeIssued session[code1] = {<br/>  documents, wallet_code_challenge=c1 }
+    PI->>OS: 302 Location: <wallet_ul>?code=code1&state=s1
+    OS->>Wallet: openWallet(code=code1, state=s1)
+    Wallet->>Wallet: verify state == s1
+
+    %% ---- Token exchange ----
+    Wallet->>PI: POST /token
+    note right of Wallet: grant_type=authorization_code<br/>code=code1<br/>redirect_uri=<wallet_ul><br/>code_verifier=v1      ← wallet's PKCE<br/>client_id=nl-wallet-app
+    PI->>PI: load session[code1],<br/>verify S256(v1) == c1 (wallet PKCE),<br/>no upstream interaction
+    PI->>Wallet: { access_token: <at>, token_type: "Bearer",<br/>  expires_in: 3600,<br/>  authorization_details: [{..., credential_identifiers:[...]}] }
+
+    Note over OS,RDO: Issuance phase
+
+    Wallet->>PI: POST /previews<br/>Authorization: Bearer <at>
+    PI->>Wallet: previews
+
+    loop for every credential
+        Wallet->>PI: POST /nonce
+        PI->>Wallet: { c_nonce: "n1" }
+        Wallet-->>PI: GET /.well-known/openid-credential-issuer<br/>(usually cached)
+        PI-->>Wallet: issuer metadata
+        Wallet->>PI: POST /credential<br/>Authorization: Bearer <at>
+        note right of Wallet: credential_configuration_id:<br/>  "eu.europa.ec.eudi.pid_vc_sd_jwt"<br/>proofs: { jwt: [<PoP_1>, <PoP_2>, ...] }
+        PI->>Wallet: { credentials: [{ credential: "<sd-jwt-vc>" }, ...] }
+    end
 ```
 
-## Generic issuance
+## Timeouts and expiry
 
-Generic issuance is done by the `issuance_server` which is also a part of the
-`wallet_server` crate. It is created to issue all kinds of attestations.
+Issuance spans several hops — an out-of-band offer, one or two OAuth
+round-trips, and a multi-step issuance phase — and each hop is bounded by its
+own, independent clock. Where a timeout becomes visible, and whether it can be
+surfaced to the wallet at all, depends on _which_ clock expired and _which_ flow
+is in play.
 
-For generic issuance, we implement a `GenericAttributeService` as follows:
+### The clocks
 
-  * The issuer feeds it a bunch of to-be-issued attestations (e.g.
-    `Vec<IssuableDocument>`) and receives a fresh pre-authorized token
-    in return, which it sends to the wallet using a UL or QR;
+| Clock                       | Flow            | Default  | Where set                          | Bounds                                                                                         |
+| --------------------------- | --------------- | -------- | ---------------------------------- | ---------------------------------------------------------------------------------------------- |
+| PAR entry TTL               | auth-code       | 60 s     | `PAR_TTL`                          | time between `/par` and the front-channel `/authorize`                                         |
+| State-bridge entry TTL      | auth-code       | 30 min   | `STATE_BRIDGE_ENTRY_TTL`           | the whole user-agent round-trip through the upstream IdP (or consent page)                     |
+| State-bridge delete leeway  | auth-code       | 24 h     | `STATE_BRIDGE_DELETE_LEEWAY`       | extra grace after the TTL in which an _expired_ entry stays recoverable                        |
+| Issuance session inactivity | both            | 30 min   | `SessionStoreTimeouts::expiration` | inactivity between `/token`, previews and `/credential`; also a pre-authorized code's lifetime |
+| Upstream IdP session        | auth-code (PID) | external | nl-rdo-max                         | how long DigiD keeps the login state while the user authenticates                              |
 
-  * When the `issuance_server` calls `getAttributes(pre-authorized_code)`
-    on the `GenericAttributeService`, it looks up the attributes to be issued
-    using the pre-authorized code and returns them.
+The issuance session also has deletion timeouts (`successful_deletion`, 5 min;
+`failed_deletion`, 4 h) that govern _cleanup_ after the session is done or
+expired, mirroring the state bridge's split between expiration and deletion.
 
-This would look like the following diagram:
+### Where an expiry surfaces
+
+The decisive question is whether the expiry is hit on a **wallet→issuer API
+call** (which can carry a structured error back to the wallet) or **during a
+front-channel browser redirect** (where the only way back to the wallet is the
+`redirect_uri`, which may no longer be recoverable).
+
+| Failure mode                               | Hit on        | Wire signal                      | Wallet result                         |
+| ------------------------------------------ | ------------- | -------------------------------- | ------------------------------------- |
+| Pre-authorized code reused / session gone  | `/token` call | `invalid_grant` (RFC 6749 §5.2)  | "QR code no longer valid" screen      |
+| Issuance session expired mid-issuance      | `/credential` | `invalid_token` (RFC 6750, 401)  | "session expired" screen              |
+| State-bridge entry expired, within leeway  | browser       | OAuth `invalid_request` redirect | redirect-uri error                    |
+| State-bridge entry deleted (after leeway)  | browser       | plain-text 400                   | **dead-end** — nothing reaches wallet |
+| Upstream IdP (DigiD) abandoned / timed out | browser       | none (callback never runs)       | **dead-end** — nothing reaches wallet |
+
+- **Pre-authorized code, reused or expired** (`issuance_server`). The wallet
+  POSTs the code to `/token` but the session is gone or already `Done`. This
+  maps to the spec's `invalid_grant`; the wallet recognises a pre-authorized
+  `invalid_grant` and shows a "QR code no longer valid" screen. It is a plain
+  API call, so the error reaches the wallet cleanly.
+
+- **Issuance session expired mid-issuance** (both flows). The holder dwells on a
+  preview or the PIN screen past the inactivity timeout and the session is
+  cleaned up. The next `/credential` call presents an access token whose session
+  no longer exists, which maps to `invalid_token`; the wallet shows a "session
+  expired" screen. Also an API call, so it surfaces cleanly.
+
+- **Auth-code browser dead-end** (both `pid_issuer` and `acf_demo_issuer`).
+  During the front-channel round-trip — DigiD for the PID issuer, the local
+  consent page for the acf-demo issuer — the state-bridge entry expires. The
+  callback then arrives carrying only the opaque `state` (the bridge key); the
+  wallet's `redirect_uri` lived _solely_ inside that entry. Two sub-cases:
+    - **Within the delete leeway**, the entry is expired-but-still-present, so
+      the callback recovers the `redirect_uri` and redirects the browser back to
+      the wallet with an OAuth error (`invalid_request`). The wallet surfaces
+      this as a redirect-uri error rather than a dead-end. This is exactly what
+      the leeway buys.
+    - **After the leeway**, the entry has been deleted, nothing links back to
+      the wallet, and the callback dead-ends as a plain-text `400` in the
+      browser.
+
+- **Upstream/DigiD timeout** (PID only). If the user abandons or times out _at
+  DigiD_, RDO Max never redirects back to the issuer, so our `/digid/callback`
+  never runs and nothing server-side can observe it. The browser dead-ends at
+  RDO Max. Only wallet-side detection of the abandoned step-out can catch this.
+
+### Relating the clocks
+
+- The **state-bridge TTL must be at least the upstream IdP session TTL**.
+  Otherwise a login the user completed in time upstream could still find its
+  bridge entry expired on the way back, turning a success into the dead-end
+  above. The current 30 min is a placeholder; it should track the real DigiD
+  session lifetime.
+- The **delete leeway is deliberately far longer than the TTL** (24 h vs 30
+  min), so a user who steps away mid-flow and returns much later still gets a
+  graceful error redirect instead of a dead-end. The bridge entry holds no
+  personal data (only the wallet's `redirect_uri`, `state` and PKCE challenge),
+  so retaining it that long is cheap.
+
+The code-level mechanics of the state-bridge dead-end and its leeway live in the
+`PID Issuer` — see
+[PID Issuer architecture](../../development/pid-issuer-architecture.md#internal-flow-par-authorize-callback-and-token).
+
+## Key generation and usage during issuance
+
+### Wallet App
+
+The wallet uses the Wallet Backend to generate attestation private keys and sign
+the issuer's nonce with them. It does this by sending a `PerformIssuance`
+[instruction](./wallet-provider-instruction.md), which returns one Proof of
+Possession (PoP) per generated key by signing the `c_nonce` from the issuer.
+
+For PID issuance, a WIA is additionally required. The wallet sends an
+[`IssueWia`](./wallet-provider-instruction.md) instruction, which returns a
+fresh WIA (signed with the WB's certificate chain) together with a disclosure
+PoP that binds the WIA to the current request.
+
+The following sequence diagram depicts how this happens.
 
 ```{mermaid}
 sequenceDiagram
-    autonumber
+    %% Force ordering by explicitly setting up participants
+    participant wallet as Wallet Core (App)
+    participant wallet_provider as Wallet Backend
+    participant hsm as WB HSM
+    participant db as WB Database
 
-    actor User
-    participant OS
-    participant Wallet
-    participant WalletServer as IssuanceServer
-    participant GenericAttributeService
-    participant Issuer
+    wallet->>+wallet_provider: instruction: perform_issuance(c_nonce, key_count)
+    wallet_provider ->>+ hsm: generateECDSAPrivateKeys(key_count)
+    hsm ->> hsm: generate ECDSA private keys<br/>encrypt each private key with attestationWrappingKey
+    hsm -->>- wallet_provider: encryptedECDSAPrivateKeys, ECDSAPublicKeys
+    wallet_provider ->>+ db : storeAttestationKeys(encryptedAttestationPrivateKeys, attestationPublicKeys)
+    db -->>- wallet_provider: OK
+    loop for every encryptedAttestationPrivateKey
+        wallet_provider ->>+ hsm: sign(encryptedAttestationPrivateKey, c_nonce)
+        hsm ->> hsm: Decrypt encryptedAttestationPrivateKey with attestationWrappingKey<br/>sign c_nonce with decrypted key
+        hsm -->>- wallet_provider: PoP
+    end
+    wallet_provider-->>-wallet: instruction response: keyIdentifiers, PoPs
 
-    User->>+Issuer: start issuance flow
-    Issuer->>Issuer: determine attributes to be issued
-    Issuer->>+WalletServer: createSession(attributes)
-    WalletServer->>+GenericAttributeService: createSession(attributes)
-    GenericAttributeService->>GenericAttributeService: generate pre-authorized_code<br/>store attributes
-    GenericAttributeService->>-WalletServer: pre-authorized_code
-    WalletServer->>-Issuer: pre-authorized_code
-    Issuer->>-OS: GET universal_link?pre-authorized_code=...
-    OS->>Wallet: openWallet(pre-authorized_code)
-    activate Wallet
-        Wallet->>+WalletServer: POST /token(pre-authorized_code)
-        WalletServer->>+GenericAttributeService: getAttributes(pre-authorized_code)
-        GenericAttributeService->>GenericAttributeService: lookup attributes using pre-authorized code
-        GenericAttributeService->>-WalletServer: attributes
-        WalletServer->>WalletServer: generate c_nonce, access_token
-        WalletServer->>-Wallet: access_token, c_nonce, attestation_previews
-        Wallet->>+User: Show attributes, ask consent
-    deactivate Wallet
-    User->>-Wallet: approve with PIN
-    activate Wallet
-        Wallet->>Wallet: create PoPs by signing nonce using Wallet Provider
-        Wallet->>+WalletServer: POST /batch_credential(access_token, PoPs)
-        WalletServer->>-Wallet: attestations
-    deactivate Wallet
+    opt WIA required (PID issuance)
+        wallet->>+wallet_provider: instruction: issue_wia(nonce, aud)
+        wallet_provider ->>+ hsm: generateECDSAPrivateKey()
+        hsm ->> hsm: generate WIA signing key<br/>encrypt with attestationWrappingKey
+        hsm -->>- wallet_provider: encryptedWIAPrivateKey, WIAPublicKey
+        wallet_provider ->> wallet_provider: buildWIAContent(walletMetadata, statusClaim)
+        wallet_provider ->>+ hsm: sign WIA content with wiaSigningKey (x5c)
+        hsm -->>- wallet_provider: WIA JWT
+        wallet_provider ->>+ hsm: sign disclosure PoP with wiaSigningKey
+        hsm -->>- wallet_provider: disclosure PoP
+        wallet_provider ->>+ db: storeWIAKey(encryptedWIAPrivateKey)
+        db -->>- wallet_provider: OK
+        wallet_provider-->>-wallet: instruction response: WiaDisclosure (WIA JWT + disclosure PoP)
+    end
 ```
 
+<!-- References -->
 
-## References
-
-Below you'll find a collection of links which we reference to through the
-entire text. Note that they don't display when rendered within a website, you
-need to read the text in a regular text editor or pager to see them.
-
-[1]: https://eu-digital-identity-wallet.github.io/eudi-doc-architecture-and-reference-framework/latest/annexes/annex-3/annex-3.01-pid-rulebook
-[2]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-final.html
-[3]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-final.html#name-pre-authorized-code-flow
-[4]: https://openid.net/developers/how-connect-works
-[5]: https://www.logius.nl/onze-dienstverlening/toegang/digid
+[1]: https://eudi.dev/latest/annexes/annex-3/annex-3.01-pid-rulebook
+[2]: https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html
+[3]:
+    https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#name-pre-authorized-code-flow
 [6]: https://github.com/minvws/nl-rdo-max
-[7]: https://www.rvig.nl/basisregistratie-personen
+[8]: disclosure-based-issuance
+[9]:
+    https://openid.github.io/OpenID4VC-HAIP/openid4vc-high-assurance-interoperability-profile-1_0-wg-draft.html
+[10]: https://www.rfc-editor.org/rfc/rfc9126
+[11]: https://www.rfc-editor.org/rfc/rfc7636
+[12]:
+    https://datatracker.ietf.org/doc/html/draft-ietf-oauth-attestation-based-client-auth-09
+[13]: https://www.rfc-editor.org/rfc/rfc9449
+[14]:
+    https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#name-nonce-endpoint

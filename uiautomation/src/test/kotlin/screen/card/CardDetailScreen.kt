@@ -1,21 +1,29 @@
 package screen.card
 
-import helper.OrganizationAuthMetadataHelper.Organization.RVIG
+import helper.OrganizationMetadataHelper.Organization.PID
 import util.MobileActions
 
 class CardDetailScreen : MobileActions() {
 
     private val cardDetailScreenCardDataCta = l10n.getString("cardDetailScreenCardDataCta")
     private val pidIdTitleText = cardMetadata.getPidDisplayName()
-    private val cardIssuerStateText = organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", RVIG)
+    private val cardIssuerStateText = organizationAuthMetadata.getDisplayNameOfOrganization(PID)
     private val cardHistoryStateText = l10n.getString("cardDetailScreenLatestSuccessInteractionUnknown")
     private val cardDataButton = l10n.getString("cardDetailScreenCardDataCta")
     private val cardHistoryButton = l10n.getString("cardDetailScreenCardHistoryCta")
     private val bottomBackButton = l10n.getString("generalBottomBackCta")
+    private val renewPidCta = l10n.getString("cardDetailScreenRenewPidCta")
+    private val deleteCardButton = l10n.getString("cardDetailScreenCardDeleteCta")
+    private val deleteCardDialogDeleteButton = l10n.getString("deleteCardDialogConfirmCta")
 
-    fun visible() = elementContainingTextVisible(cardDetailScreenCardDataCta)
+    fun visible(): Boolean = try {
+        scrollToElementContainingText(cardDetailScreenCardDataCta)
+        elementContainingTextVisible(cardDetailScreenCardDataCta)
+    } catch (_: NoSuchElementException) {
+        false
+    }
 
-    fun cardFaceElements() = elementContainingTextVisible(pidIdTitleText)
+    fun pidCardVisible() = elementContainingTextVisible(pidIdTitleText)
 
     fun issuerAndHistoryStates() = elementContainingTextVisible(cardIssuerStateText) && elementContainingTextVisible(cardHistoryStateText)
 
@@ -24,4 +32,10 @@ class CardDetailScreen : MobileActions() {
     fun clickCardHistoryButton() = clickElementContainingText(cardHistoryButton)
 
     fun clickBottomBackButton() = clickElementWithText(bottomBackButton)
+
+    fun renewPidCard() = clickElementWithText(renewPidCta)
+
+    fun clickDeleteCardButton() = clickElementContainingText(deleteCardButton)
+
+    fun clickConfirmDeleteCard() = clickElementContainingText(deleteCardDialogDeleteButton)
 }

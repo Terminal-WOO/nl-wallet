@@ -1,23 +1,32 @@
 package screen.issuance
 
-import helper.LocalizationHelper
+import io.appium.java_client.AppiumBy
+import org.openqa.selenium.WebElement
 import util.MobileActions
 
 class CardIssuanceScreen : MobileActions() {
 
-    private val addCardButton = l10n.translate(LocalizationHelper.Translation.ADD_CARD)
-    private val add2CardsButton = l10n.translate(LocalizationHelper.Translation.ADD_2_CARDS)
+    private val portraitImageLocator = AppiumBy.accessibilityId(l10n.getString("cardValueImage"))
+    private val addCardButton = l10n.getPluralString("issuanceReviewCardsPageAcceptCta", 1, mapOf("cards" to "1"))
+    private val add2CardsButton = l10n.getPluralString("issuanceReviewCardsPageAcceptCta", 2, mapOf("cards" to "2"))
     private val stopButton = l10n.getString("generalBottomBackCta")
     private val viewDetailsButton = l10n.getString("issuanceReviewCardsPageShowDetailsCta")
     private val dashboardButton = l10n.getString("issuanceSuccessPageCloseCta")
-    private val renewCardSectionTitle = l10n.translate(LocalizationHelper.Translation.RENEW_CARD)
+    private val renewCardsSectionTitle = l10n.getPluralString("issuanceReviewCardsPageRenewSectionTitle", 2, mapOf("cards" to "2"))
+    private val continueButton = l10n.getString("issuanceConfirmIssuerPageAcceptCta")
+
+
+    fun portraitImageElement(): WebElement = findWebElement(portraitImageLocator)
 
     fun clickAddCardButton() {
         scrollToElementWithText(addCardButton)
         clickElementWithText(addCardButton)
     }
 
+    fun addCardButtonVisible(timeoutInSeconds: Long = 20) = elementWithTextVisible(addCardButton, timeoutInSeconds)
+
     fun clickAdd2CardsButton() {
+        elementWithTextVisible(add2CardsButton, 20)
         scrollToElementWithText(add2CardsButton)
         clickElementWithText(add2CardsButton)
     }
@@ -28,6 +37,7 @@ class CardIssuanceScreen : MobileActions() {
     }
 
     fun viewDetailsOfCard(cardIdentifier: String) {
+        elementContainingTextVisible(cardIdentifier, 20)
         scrollToEndOfScreen()
         findElementByPartialTextAndPartialSiblingText(viewDetailsButton, cardIdentifier).click()
     }
@@ -36,13 +46,9 @@ class CardIssuanceScreen : MobileActions() {
 
     fun dataVisible(data: String) = elementContainingTextVisible(data)
 
-    fun organizationInSubtitleVisible(organization: String): Boolean {
-        return elementWithTextVisible(l10n.getString("checkAttributesScreenSubtitle").replace("{issuer}",
-            "$organization."
-        ))
-    }
-
-    fun renewCardSectionTitleVisible() = elementWithTextVisible(renewCardSectionTitle)
+    fun renewCardsSectionTitleVisible() = elementWithTextVisible(renewCardsSectionTitle)
 
     fun clickToDashboardButton() = clickElementWithText(dashboardButton)
+
+    fun continueIssuance() = clickElementWithText(continueButton)
 }

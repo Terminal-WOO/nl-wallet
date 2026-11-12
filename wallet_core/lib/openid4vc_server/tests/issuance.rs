@@ -1,0 +1,1928 @@
+use std::assert_matches;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::num::NonZeroU8;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Duration;
+
+use attestation_data::credential_payload::CredentialPayload;
+use attestation_data::registration_certificate::mock::MockRegistrationCertificate;
+use attestation_types::credential_format::Format;
+use axum::body::Body;
+use axum::http::Request;
+use crypto::server_keys::generate::Ca;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::crl::mock::MockCertificateCrlVerifier;
+use http::HeaderValue;
+use http::header;
+use http::header::ACCEPT;
+use http::header::AUTHORIZATION;
+use http::header::CONTENT_TYPE;
+use http_utils::reqwest::APPLICATION_JWT;
+use http_utils::reqwest::HttpClient;
+use http_utils::reqwest::ReqwestTrustAnchor;
+use http_utils::reqwest::tls_reqwest_client_builder;
+use http_utils::server::TlsServerConfig;
+use itertools::Itertools;
+use jwe::algorithm::EncryptionAlgorithm;
+use jwe::encryption::JweEncrypter;
+use jwe::encryption::JwePublicKey;
+use jwt::VerifiedJwt;
+use oauth::authorization::PushedAuthorizationResponse;
+use oauth::dpop::DPOP_HEADER_NAME;
+use oauth::dpop::DPOP_NONCE_HEADER_NAME;
+use oauth::dpop::Dpop;
+use oauth::errors::AuthorizationErrorCode;
+use oauth::errors::RemoteErrorCode;
+use oauth::issuer_identifier::IssuerIdentifier;
+use oauth::pkce::PkcePair;
+use oauth::pkce::S256PkcePair;
+use oauth::token::AuthorizationCode;
+use oauth::token::TokenType;
+use openid4vc::authorization_details::EntryContainer;
+use openid4vc::client_auth::fetch_client_auth_challenge;
+use openid4vc::credential::CredentialRequest;
+use openid4vc::credential::CredentialRequestIdentifier;
+use openid4vc::credential::CredentialResponse;
+use openid4vc::credential::Credentials;
+use openid4vc::credential_configurations::CredentialConfigurationFormat;
+use openid4vc::credential_offer::CredentialOfferContainer;
+use openid4vc::errors::VciTokenErrorCode;
+use openid4vc::issuable_document::IssuableDocument;
+use openid4vc::issuer::AuthRequestValues;
+use openid4vc::issuer::CREDENTIAL_ENDPOINT_PATH;
+use openid4vc::metadata::issuer_metadata::CredentialMetadata;
+use openid4vc::metadata::issuer_metadata::IssuerInfo;
+use openid4vc::metadata::issuer_metadata::SignedIssuerMetadataPayload;
+use openid4vc::mock::MOCK_WALLET_CLIENT_ID;
+use openid4vc::nonce::response::NonceResponse;
+use openid4vc::server_state::MemorySessionStore;
+use openid4vc::test::MOCK_ATTESTATION_TYPES;
+use openid4vc::test::MOCK_ATTRS;
+use openid4vc::test::MockAuthorizingIssuer;
+use openid4vc::test::MockIssuer;
+use openid4vc::test::StaticAuthorizingFlow;
+use openid4vc::test::mock_issuable_document_with_attrs;
+use openid4vc::test::mock_issuable_documents;
+use openid4vc::test::mock_type_metadata;
+use openid4vc::test::mock_type_metadata_with_required_attr;
+use openid4vc::test::setup_mock_authorizing_issuer_from_sd_jwt_metadata;
+use openid4vc::test::setup_mock_issuer;
+use openid4vc::test::setup_mock_issuer_with_metadata;
+use openid4vc::token::TokenRequestGrantType;
+use openid4vc::token::VciTokenRequest;
+use openid4vc::token::VciTokenResponse;
+use openid4vc::wallet_issuance::AcceptIssuanceTrustAnchors;
+use openid4vc::wallet_issuance::AuthorizationSession;
+use openid4vc::wallet_issuance::CredentialSelection;
+use openid4vc::wallet_issuance::IssuanceDiscovery;
+use openid4vc::wallet_issuance::IssuanceDiscoveryParameters;
+use openid4vc::wallet_issuance::IssuanceFlow;
+use openid4vc::wallet_issuance::IssuanceSession;
+use openid4vc::wallet_issuance::OfferedCredentialPreview;
+use openid4vc::wallet_issuance::WalletIssuanceError;
+use openid4vc::wallet_issuance::credential::CredentialWithMetadata;
+use openid4vc::wallet_issuance::credential::IssuedCredentialCopies;
+use openid4vc::wallet_issuance::discovery::HttpIssuanceDiscovery;
+use openid4vc::wallet_issuance::issuance_session::HttpIssuanceSession;
+use openid4vc_server::issuer::create_authorization_router;
+use openid4vc_server::issuer::create_issuance_router;
+use p256::ecdsa::SigningKey;
+use p256::elliptic_curve::Generate;
+use p256::pkcs8::EncodePrivateKey;
+use reqwest::Method;
+use reqwest::RequestBuilder;
+use reqwest::StatusCode;
+use reqwest::redirect::Policy;
+use rstest::rstest;
+use sd_jwt_vc_metadata::TypeMetadata;
+use tokio::net::TcpListener;
+use tower::ServiceExt;
+use url::Url;
+use utils::generator::TimeGenerator;
+use utils::generator::mock::MockTimeGenerator;
+use utils::vec_at_least::NonEmptyIterator;
+use utils::vec_at_least::VecNonEmpty;
+use utils::vec_nonempty;
+use wscd::mock_remote::IssuanceMockRemoteWscd;
+use wscd::payload::wia::WIA_HEADER_NAME;
+use wscd::payload::wia::WIA_POP_HEADER_NAME;
+use wscd::wia::WiaClient;
+use wscd::wia::mock::MockWiaClient;
+
+const REDIRECT_URI: &str = "https://wallet.example.com/callback";
+
+fn generate_localhost_tls() -> (TlsServerConfig, ReqwestTrustAnchor) {
+    let ca = Ca::generate_mock();
+    let keypair = ca.generate_tls_mock("localhost").unwrap();
+
+    let tls_config = TlsServerConfig {
+        cert: keypair.certificate().as_ref().to_vec(),
+        key: keypair.private_key().to_pkcs8_der().unwrap().as_bytes().to_vec(),
+    };
+    let trust_anchor = ReqwestTrustAnchor::try_from(ca.certificate().as_ref().to_vec()).unwrap();
+
+    (tls_config, trust_anchor)
+}
+
+/// Bundle returned by `start_auth_code_flow_server`. The `authorizing_issuer` is exposed so tests
+/// can plant `AuthCodeIssued` sessions directly via [`MockAuthorizingIssuer::complete_authorization`].
+struct AuthCodeFlowServer {
+    authorizing_issuer: Arc<MockAuthorizingIssuer>,
+    issuer_trust_anchors: TrustAnchors,
+    issuer_identifier: IssuerIdentifier,
+    wptl_ca: Ca,
+    tls_trust_anchor: ReqwestTrustAnchor,
+    crl_verifier: MockCertificateCrlVerifier,
+    registration_certificate: MockRegistrationCertificate,
+}
+
+/// Bundle returned by `start_pre_authorized_code_flow_server`.
+struct PreAuthCodeFlowServer {
+    issuer: Arc<MockIssuer<TimeGenerator>>,
+    issuer_trust_anchors: TrustAnchors,
+    wptl_ca: Ca,
+    tls_trust_anchor: ReqwestTrustAnchor,
+    crl_verifier: MockCertificateCrlVerifier,
+    registration_certificate: MockRegistrationCertificate,
+}
+
+async fn start_auth_code_flow_server(attestation_count: NonZeroUsize) -> AuthCodeFlowServer {
+    let type_metadata = MOCK_ATTESTATION_TYPES[..attestation_count.get()]
+        .iter()
+        .map(|attestation_type| mock_type_metadata(attestation_type))
+        .collect();
+
+    start_auth_code_flow_server_with(type_metadata, Ok(mock_issuable_documents(attestation_count))).await
+}
+
+/// Like [`start_auth_code_flow_server`], but with custom type metadata and either custom documents to authorize or an
+/// error status code to return.
+async fn start_auth_code_flow_server_with(
+    type_metadata: Vec<TypeMetadata>,
+    documents_or_error_code: Result<VecNonEmpty<IssuableDocument>, AuthorizationErrorCode>,
+) -> AuthCodeFlowServer {
+    let (tls_server_config, tls_trust_anchor) = generate_localhost_tls();
+
+    let listener = TcpListener::bind("localhost:0").await.unwrap().into_std().unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let issuer_identifier: IssuerIdentifier = format!("https://localhost:{port}").parse().unwrap();
+
+    let sessions = Arc::new(MemorySessionStore::default());
+
+    let flow = StaticAuthorizingFlow::new(documents_or_error_code);
+    let (authorizing_issuer, issuer_trust_anchors, wptl_ca, crl_verifier, registration_certificate) =
+        setup_mock_authorizing_issuer_from_sd_jwt_metadata(
+            issuer_identifier.clone(),
+            type_metadata,
+            sessions,
+            flow,
+            vec_nonempty![REDIRECT_URI.parse().unwrap()],
+        );
+    let authorizing_issuer = Arc::new(authorizing_issuer);
+    let issuer = Arc::clone(authorizing_issuer.issuer());
+
+    // Authorization-code flow mounts the issuance endpoints (including `/token`) alongside the
+    // authorization router (PAR + `/authorize`).
+    let router = create_issuance_router(issuer).merge(create_authorization_router(Arc::clone(&authorizing_issuer)));
+
+    tokio::spawn(async move {
+        axum_server::from_tcp_rustls(listener, tls_server_config.into_rustls_config().unwrap())
+            .unwrap()
+            .serve(router.into_make_service())
+            .await
+            .unwrap()
+    });
+
+    AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_trust_anchors,
+        issuer_identifier,
+        wptl_ca,
+        tls_trust_anchor,
+        crl_verifier,
+        registration_certificate,
+    }
+}
+
+async fn start_pre_authorized_code_flow_server(attestation_count: NonZeroUsize) -> PreAuthCodeFlowServer {
+    let (tls_server_config, tls_trust_anchor) = generate_localhost_tls();
+
+    let listener = TcpListener::bind("localhost:0").await.unwrap().into_std().unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let issuer_identifier: IssuerIdentifier = format!("https://localhost:{port}").parse().unwrap();
+
+    let sessions = Arc::new(MemorySessionStore::default());
+
+    let (issuer, issuer_trust_anchors, wptl_ca, crl_verifier, registration_certificate) =
+        setup_mock_issuer(issuer_identifier, attestation_count, sessions);
+    let issuer = Arc::new(issuer);
+
+    // Pre-authorized-code flow mounts the issuance endpoints standalone.
+    let router = create_issuance_router(Arc::clone(&issuer));
+
+    tokio::spawn(async move {
+        axum_server::from_tcp_rustls(listener, tls_server_config.into_rustls_config().unwrap())
+            .unwrap()
+            .serve(router.into_make_service())
+            .await
+            .unwrap()
+    });
+
+    PreAuthCodeFlowServer {
+        issuer,
+        issuer_trust_anchors,
+        wptl_ca,
+        tls_trust_anchor,
+        crl_verifier,
+        registration_certificate,
+    }
+}
+
+fn verify_issued_credentials<'a>(
+    issued_creds: Vec<CredentialWithMetadata>,
+    credential_previews: impl NonEmptyIterator<Item = OfferedCredentialPreview<'a>>,
+    expected_attestations: usize,
+    expected_copies: usize,
+) {
+    assert_eq!(issued_creds.len(), expected_attestations);
+    assert_eq!(
+        match &issued_creds.first().unwrap().copies {
+            IssuedCredentialCopies::Mdoc(mdocs) => mdocs.len().get(),
+            IssuedCredentialCopies::SdJwt(sd_jwts) => sd_jwts.len().get(),
+        },
+        expected_copies
+    );
+
+    issued_creds
+        .into_iter()
+        .zip(credential_previews)
+        .for_each(|(credential, preview)| match credential.copies {
+            IssuedCredentialCopies::Mdoc(_) => {
+                panic!("mdoc should not be issued");
+            }
+            IssuedCredentialCopies::SdJwt(sd_jwts) => {
+                sd_jwts.into_iter().for_each(|sd_jwt_copy| {
+                    let payload = CredentialPayload::from_sd_jwt(sd_jwt_copy.sd_jwt).unwrap();
+                    assert_eq!(&payload.previewable_payload, preview.credential_payload);
+                });
+            }
+        });
+}
+
+/// Simulate wallet issuance, by going through discovery, the `/authorize` redirect (playing the user-agent)
+/// and the wallet redirect, returning the issuance session holding the credential previews.
+async fn start_issuance_session(server: &AuthCodeFlowServer) -> HttpIssuanceSession {
+    let credential_offer = server.authorizing_issuer.authorization_code_credential_offer();
+    let credential_offer_url = CredentialOfferContainer::new_offer(credential_offer).to_credential_offer_url();
+    let redirect_uri = Url::parse(REDIRECT_URI).unwrap();
+
+    let discovery = HttpIssuanceDiscovery::new(
+        HttpClient::try_new(tls_reqwest_client_builder([server
+            .tls_trust_anchor
+            .clone()
+            .into_certificate()]))
+        .unwrap(),
+        server.crl_verifier.clone(),
+        server.registration_certificate.status_list_client.clone(),
+    );
+
+    // Start authorization code flow — fetches metadata and creates an auth session.
+    let flow = discovery
+        .start(
+            IssuanceDiscoveryParameters::new(
+                &credential_offer_url,
+                &CredentialSelection::All,
+                &MockWiaClient::from_ca(&server.wptl_ca),
+                &server.issuer_trust_anchors,
+                &server.registration_certificate.trust_anchors,
+            ),
+            MOCK_WALLET_CLIENT_ID.to_string(),
+            redirect_uri.clone(),
+        )
+        .await
+        .unwrap();
+    let IssuanceFlow::AuthorizationCode {
+        authorization_session: auth_session,
+    } = flow
+    else {
+        panic!("should have received Authorization Code flow");
+    };
+
+    // Auth URL must point to the authorize endpoint and carry PAR params.
+    assert!(auth_session.auth_url().as_str().starts_with(&format!(
+        "{}issuance/authorize",
+        server.issuer_identifier.as_base_url().as_ref().as_str()
+    )));
+    let auth_params: HashMap<String, String> = auth_session
+        .auth_url()
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    assert!(auth_params.contains_key("request_uri"));
+    assert!(!auth_params.contains_key("state"));
+
+    // State is inside the PAR-stored request; read it from the session to check the redirect.
+    let state = auth_session.state().to_owned();
+
+    // Simulate the user agent following the auth_url. `StaticAuthorizingFlow` authorizes
+    // synchronously, so the /authorize handler writes the `AuthCodeIssued` session and 302s the
+    // user-agent straight back to the wallet's redirect_uri with the issuer-generated code and the
+    // echoed state.
+    let browser_client = tls_reqwest_client_builder([server.tls_trust_anchor.clone().into_certificate()])
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let authorize_response = browser_client
+        .get(auth_session.auth_url().clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authorize_response.status(), StatusCode::SEE_OTHER);
+
+    let received_redirect: Url = authorize_response
+        .headers()
+        .get(header::LOCATION)
+        .expect("authorize response should carry a Location header")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(received_redirect.as_str().starts_with(redirect_uri.as_str()));
+    let redirect_params: HashMap<_, _> = received_redirect.query_pairs().into_owned().collect();
+    assert_eq!(redirect_params.get("state"), Some(&state));
+
+    auth_session
+        .start_issuance(&received_redirect, &MockWiaClient::from_ca(&server.wptl_ca))
+        .await
+        .unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorization_code_flow(
+    #[values(NonZeroUsize::MIN, NonZeroUsize::new(2).unwrap())] attestation_count: NonZeroUsize,
+) {
+    let server = start_auth_code_flow_server(attestation_count).await;
+    let mut session = start_issuance_session(&server).await;
+
+    assert_eq!(session.credential_previews().unwrap().count(), attestation_count);
+
+    let wscd = IssuanceMockRemoteWscd::new(&server.wptl_ca);
+    let issued_creds = session
+        .accept_issuance(
+            NonZeroU8::MAX,
+            AcceptIssuanceTrustAnchors::new(&server.issuer_trust_anchors, &server.wptl_ca.to_trust_anchors()),
+            &wscd,
+            &MockTimeGenerator::default(),
+        )
+        .await
+        .unwrap();
+
+    let copy_count = 4;
+    verify_issued_credentials(
+        issued_creds,
+        session.credential_previews().unwrap(),
+        attestation_count.get(),
+        copy_count,
+    );
+}
+
+/// The issuer accepts documents omitting attributes the type-metadata schema does not require.
+#[tokio::test]
+async fn ltc1_issuance_allows_missing_optional_attribute() {
+    let (optional_attr, _) = MOCK_ATTRS[0];
+    let (required_attr, _) = MOCK_ATTRS[1];
+
+    let type_metadata = mock_type_metadata_with_required_attr(MOCK_ATTESTATION_TYPES[0], required_attr);
+    // The document carries only the required attribute; the optional one is absent.
+    let documents = vec_nonempty![mock_issuable_document_with_attrs(
+        Format::SdJwt,
+        MOCK_ATTESTATION_TYPES[0],
+        &[MOCK_ATTRS[1]]
+    )];
+    let server = start_auth_code_flow_server_with(vec![type_metadata], Ok(documents)).await;
+
+    let mut session = start_issuance_session(&server).await;
+
+    let Ok(preview) = session.credential_previews().unwrap().into_iter().exactly_one() else {
+        panic!("issuance session should contain exactly one preview");
+    };
+
+    let attributes = preview.credential_payload.attributes.as_ref();
+    assert!(attributes.get(required_attr).is_some());
+    assert!(attributes.get(optional_attr).is_none());
+
+    let wscd = IssuanceMockRemoteWscd::new(&server.wptl_ca);
+    let issued_creds = session
+        .accept_issuance(
+            NonZeroU8::MAX,
+            AcceptIssuanceTrustAnchors::new(&server.issuer_trust_anchors, &server.wptl_ca.to_trust_anchors()),
+            &wscd,
+            &MockTimeGenerator::default(),
+        )
+        .await
+        .expect("issuance of a document missing only an optional attribute should succeed");
+
+    verify_issued_credentials(issued_creds, session.credential_previews().unwrap(), 1, 4);
+}
+
+#[rstest]
+#[tokio::test]
+async fn pre_authorized_code_flow(
+    #[values(NonZeroUsize::MIN, NonZeroUsize::new(2).unwrap())] attestation_count: NonZeroUsize,
+) {
+    let PreAuthCodeFlowServer {
+        issuer,
+        issuer_trust_anchors,
+        wptl_ca,
+        tls_trust_anchor,
+        crl_verifier,
+        registration_certificate,
+        ..
+    } = start_pre_authorized_code_flow_server(attestation_count).await;
+
+    let documents = mock_issuable_documents(attestation_count);
+    let credential_offer = issuer.new_preauthorized_session(documents).await.unwrap();
+    let credential_offer_url = CredentialOfferContainer::new_offer(credential_offer).to_credential_offer_url();
+
+    let discovery = HttpIssuanceDiscovery::new(
+        HttpClient::try_new(tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])).unwrap(),
+        crl_verifier,
+        registration_certificate.status_list_client,
+    );
+
+    let flow = discovery
+        .start(
+            IssuanceDiscoveryParameters::new(
+                &credential_offer_url,
+                &CredentialSelection::All,
+                &MockWiaClient::from_ca(&wptl_ca),
+                &issuer_trust_anchors,
+                &registration_certificate.trust_anchors,
+            ),
+            MOCK_WALLET_CLIENT_ID.to_string(),
+            REDIRECT_URI.parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let IssuanceFlow::PreAuthorizedCode {
+        issuance_session: mut session,
+    } = flow
+    else {
+        panic!("should have received Pre-Authorized Code flow");
+    };
+
+    let copy_count = 4;
+    let wscd = IssuanceMockRemoteWscd::new(&wptl_ca);
+    let issued_creds = session
+        .accept_issuance(
+            NonZeroU8::MAX,
+            AcceptIssuanceTrustAnchors::new(&issuer_trust_anchors, &wptl_ca.to_trust_anchors()),
+            &wscd,
+            &MockTimeGenerator::default(),
+        )
+        .await
+        .unwrap();
+
+    verify_issued_credentials(
+        issued_creds,
+        session.credential_previews().unwrap(),
+        attestation_count.get(),
+        copy_count,
+    );
+}
+
+#[tokio::test]
+async fn pre_authorized_code_flow_rejects_unknown_client_id() {
+    let attestation_count = NonZeroUsize::MIN;
+    let PreAuthCodeFlowServer {
+        issuer,
+        issuer_trust_anchors,
+        tls_trust_anchor,
+        wptl_ca,
+        crl_verifier,
+        registration_certificate,
+        ..
+    } = start_pre_authorized_code_flow_server(attestation_count).await;
+
+    let documents = mock_issuable_documents(attestation_count);
+    let credential_offer = issuer.new_preauthorized_session(documents).await.unwrap();
+    let credential_offer_url = CredentialOfferContainer::new_offer(credential_offer).to_credential_offer_url();
+
+    let discovery = HttpIssuanceDiscovery::new(
+        HttpClient::try_new(tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])).unwrap(),
+        crl_verifier,
+        registration_certificate.status_list_client,
+    );
+
+    // The `client_id` that determines whether the issuer knows the wallet is the WIA's `sub`.
+    // A Token Request backed by a WIA with an unknown `sub` fails WIA verification, resulting in a 401 response
+    // with the `invalid_client_attestation` error code.
+    let error = discovery
+        .start(
+            IssuanceDiscoveryParameters::new(
+                &credential_offer_url,
+                &CredentialSelection::All,
+                &MockWiaClient::from_ca_with_client_id(&wptl_ca, "unknown_client_id".to_string()),
+                &issuer_trust_anchors,
+                &registration_certificate.trust_anchors,
+            ),
+            MOCK_WALLET_CLIENT_ID.to_string(),
+            REDIRECT_URI.parse().unwrap(),
+        )
+        .await
+        .expect_err("starting pre-authorized issuance should fail");
+
+    assert_matches!(
+        error,
+        WalletIssuanceError::VciTokenRequest(error_response)
+            if error_response.error == RemoteErrorCode::Known(VciTokenErrorCode::InvalidClientAttestation)
+    );
+}
+
+#[tokio::test]
+async fn par_rejects_unknown_client_id() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        tls_trust_anchor,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let par_url = format!(
+        "{}issuance/par",
+        authorizing_issuer
+            .issuer()
+            .issuer_identifier()
+            .as_base_url()
+            .as_ref()
+            .as_str()
+    );
+    let response = http_client
+        .post(&par_url)
+        .form(&[
+            ("response_type", "code"),
+            ("client_id", "unknown_client_id"),
+            ("redirect_uri", REDIRECT_URI),
+            ("scope", "com.example.pid_dc+sd-jwt"),
+            ("code_challenge", "some-challenge"),
+            ("code_challenge_method", "S256"),
+        ])
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_client"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn par_rejects_client_id_not_matching_wia_sub() {
+    let AuthCodeFlowServer {
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str().to_string();
+
+    // The WIA's `sub` is the known wallet client ID, but the PAR's `client_id` is something else. Even though
+    // `client_id` is itself a known wallet client ID, the mismatch with the WIA should be rejected.
+    let wia = MockWiaClient::from_ca_with_client_id(&wptl_ca, "some_other_known_client_id".to_string())
+        .issue_wia(issuer_identifier.to_string(), None)
+        .await
+        .unwrap();
+
+    let response = http_client
+        .post(format!("{base}issuance/par"))
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .form(&[
+            ("response_type", "code"),
+            ("client_id", MOCK_WALLET_CLIENT_ID),
+            ("redirect_uri", REDIRECT_URI),
+            ("scope", "com.example.pid_dc+sd-jwt"),
+            ("code_challenge", "some-challenge"),
+            ("code_challenge_method", "S256"),
+        ])
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_client_attestation"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn par_rejects_missing_code_challenge() {
+    let AuthCodeFlowServer {
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str().to_string();
+
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), None)
+        .await
+        .unwrap();
+
+    // `code_challenge` is mandatory on `VciAuthorizationRequest`; absence makes the form fail to
+    // deserialize at the /par boundary (HTTP 422), rather than slipping through to /authorize.
+    let response = http_client
+        .post(format!("{base}issuance/par"))
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .form(&[("response_type", "code"), ("client_id", MOCK_WALLET_CLIENT_ID)])
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn authorize_rejects_unknown_request_uri() {
+    let AuthCodeFlowServer {
+        issuer_identifier,
+        tls_trust_anchor,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let mut authorize_url: Url = format!(
+        "{}issuance/authorize",
+        issuer_identifier.as_base_url().as_ref().as_str()
+    )
+    .parse()
+    .unwrap();
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", MOCK_WALLET_CLIENT_ID)
+        .append_pair("request_uri", "urn:ietf:params:oauth:request_uri:not-stored");
+    let response = http_client.get(authorize_url).send().await.unwrap();
+
+    // This should result in an error HTTP status code and plain-text body describing the error.
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("urn:ietf:params:oauth:request_uri:not-stored"),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn authorize_rejects_unknown_client_id() {
+    let AuthCodeFlowServer {
+        issuer_identifier,
+        tls_trust_anchor,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let mut authorize_url: Url = format!(
+        "{}issuance/authorize",
+        issuer_identifier.as_base_url().as_ref().as_str()
+    )
+    .parse()
+    .unwrap();
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", "definitely-not-the-wallet")
+        .append_pair("request_uri", "urn:ietf:params:oauth:request_uri:doesnt-matter");
+    let response = http_client.get(authorize_url).send().await.unwrap();
+
+    // This should result in an error HTTP status code and plain-text body describing the error.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("definitely-not-the-wallet"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn authorize_rejects_unsupported_code_challenge_method() {
+    let AuthCodeFlowServer {
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str().to_string();
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    // PAR doesn't validate the code_challenge_method, so a `plain` request is stored and yields a
+    // request_uri; the rejection is the `openid4vc` layer's job at /authorize, uniformly for every flow.
+    let par_response = http_client
+        .post(format!("{base}issuance/par"))
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .form(&[
+            ("response_type", "code"),
+            ("client_id", MOCK_WALLET_CLIENT_ID),
+            ("redirect_uri", REDIRECT_URI),
+            ("scope", "com.example.pid_dc+sd-jwt"),
+            ("code_challenge", "plain-challenge"),
+            ("code_challenge_method", "plain"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(par_response.status(), StatusCode::CREATED);
+    let request_uri = par_response
+        .json::<PushedAuthorizationResponse>()
+        .await
+        .unwrap()
+        .request_uri;
+
+    let mut authorize_url: Url = format!("{base}issuance/authorize").parse().unwrap();
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", MOCK_WALLET_CLIENT_ID)
+        .append_pair("request_uri", &request_uri);
+    let response = http_client.get(authorize_url).send().await.unwrap();
+
+    // As the `redirect_uri` is known at the point the error occurred, it should result in a 303 redirect and the error
+    // details being transported as query parameters using said `redirect_uri`.
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+    let redirect_uri = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse::<Url>()
+        .unwrap();
+
+    assert!(
+        redirect_uri.as_str().starts_with(REDIRECT_URI),
+        "unexpected redirect URI: {redirect_uri}"
+    );
+
+    let query_pairs = redirect_uri.query_pairs().collect::<HashMap<_, _>>();
+
+    // The redirect URI returned does not contain "state" or "error_uri" parameters.
+    assert_eq!(query_pairs.len(), 2);
+    assert_eq!(query_pairs.get("error").map(AsRef::as_ref), Some("invalid_request"));
+    let error_description = query_pairs
+        .get("error_description")
+        .expect("redirect URI should contain error_description");
+    assert!(
+        error_description.contains("code_challenge_method"),
+        "unexpected error_description: {error_description}",
+    );
+}
+
+#[tokio::test]
+async fn authorize_forwards_auth_code_flow_error_codes() {
+    let AuthCodeFlowServer {
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server_with(
+        vec![mock_type_metadata(MOCK_ATTESTATION_TYPES[0])],
+        Err(AuthorizationErrorCode::TemporarilyUnavailable),
+    )
+    .await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str().to_string();
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let par_response = http_client
+        .post(format!("{base}issuance/par"))
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .form(&[
+            ("response_type", "code"),
+            ("client_id", MOCK_WALLET_CLIENT_ID),
+            ("redirect_uri", REDIRECT_URI),
+            ("scope", "com.example.pid_dc+sd-jwt"),
+            ("code_challenge", "some-challenge"),
+            ("code_challenge_method", "S256"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(par_response.status(), StatusCode::CREATED);
+    let request_uri = par_response
+        .json::<PushedAuthorizationResponse>()
+        .await
+        .unwrap()
+        .request_uri;
+
+    let mut authorize_url: Url = format!("{base}issuance/authorize").parse().unwrap();
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", MOCK_WALLET_CLIENT_ID)
+        .append_pair("request_uri", &request_uri);
+    let response = http_client.get(authorize_url).send().await.unwrap();
+
+    // As the `redirect_uri` is known at the point the error occurred, it should result in a 303 redirect and the error
+    // details being transported as query parameters using said `redirect_uri`.
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+    let redirect_uri = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse::<Url>()
+        .unwrap();
+
+    assert!(
+        redirect_uri.as_str().starts_with(REDIRECT_URI),
+        "unexpected redirect URI: {redirect_uri}"
+    );
+
+    let query_pairs = redirect_uri.query_pairs().collect::<HashMap<_, _>>();
+
+    // The redirect URI returned does not contain "state" or "error_uri" parameters.
+    assert_eq!(query_pairs.len(), 2);
+    assert_eq!(
+        query_pairs.get("error").map(AsRef::as_ref),
+        Some("temporarily_unavailable")
+    );
+    let error_description = query_pairs
+        .get("error_description")
+        .expect("redirect URI should contain error_description");
+    assert!(
+        error_description.contains("StaticAuthorizingFlowError"),
+        "unexpected error_description: {error_description}",
+    );
+}
+
+/// Builds a parseable DPoP header for `POST {token_url}`. The PKCE check in the `/token`
+/// handler runs before DPoP semantic verification, so the value just has to deserialize —
+/// the URL/method don't need to match what the handler will later try to verify against.
+fn dpop_header_for_token_request(url: Url) -> (SigningKey, String) {
+    let signing_key = SigningKey::generate();
+    let dpop_header = Dpop::new(&signing_key, url, &Method::POST, None, None)
+        .unwrap()
+        .to_string();
+
+    (signing_key, dpop_header)
+}
+
+/// Plant an `AuthCodeIssued` session against the given authorizing_issuer, returning the
+/// issuer-generated code and PKCE code verifier the caller can use to drive `/token`.
+async fn plant_authorized_session(authorizing_issuer: &MockAuthorizingIssuer) -> (AuthorizationCode, String) {
+    let documents = mock_issuable_documents(NonZeroUsize::MIN);
+    let pkce_pair = S256PkcePair::generate();
+
+    let code = authorizing_issuer
+        .complete_authorization(
+            documents,
+            AuthRequestValues::new(
+                MOCK_WALLET_CLIENT_ID.to_string(),
+                REDIRECT_URI.parse().unwrap(),
+                pkce_pair.code_challenge().to_string(),
+                HashSet::from([
+                    "com.example.pid_dc+sd-jwt".parse().unwrap(),
+                    "other_scope".parse().unwrap(),
+                ]),
+            ),
+        )
+        .await
+        .unwrap();
+
+    (code, pkce_pair.into_code_verifier())
+}
+
+#[tokio::test]
+async fn token_ok() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token").parse().unwrap();
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: None,
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let token_response = response
+        .json::<VciTokenResponse>()
+        .await
+        .expect("response body should deserialize to VciTokenResponse");
+
+    assert_eq!(token_response.oauth_response.token_type, TokenType::DPoP);
+    assert!(token_response.oauth_response.refresh_token.is_none());
+    assert!(token_response.oauth_response.scope.is_none());
+    assert!(token_response.oauth_response.expires_in.is_none());
+
+    let EntryContainer { entry, .. } = token_response
+        .authorization_details
+        .as_ref()
+        .expect("VciTokenResponse should contain authorization_details")
+        .as_ref()
+        .iter()
+        .exactly_one()
+        .expect("authorization_details should contain a single entry");
+
+    assert_eq!(
+        entry.config_entry.credential_configuration_id.as_ref(),
+        "com.example.pid_dc+sd-jwt"
+    );
+    assert_eq!(entry.credential_identifiers.len().get(), 1);
+}
+
+#[tokio::test]
+async fn token_rejects_missing_code_verifier() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let (code, _code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token",).parse().unwrap();
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: None,
+            code_verifier: None,
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_grant"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn token_rejects_unknown_code_verifier() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let (code, _code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token",).parse().unwrap();
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: None,
+            code_verifier: Some("a-verifier-the-issuer-does-not-have".to_string()),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_grant"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn token_rejects_grant_type_mismatch() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    // Plant an authorization-code session, then try to redeem its code using the pre-authorized-code
+    // grant. The code is placed in the `pre-authorized_code` field so the session is still found, and
+    // the grant-type mismatch is what the handler must reject.
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token",).parse().unwrap();
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::PreAuthorizedCode {
+                pre_authorized_code: code,
+            },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: None,
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("unsupported_grant_type"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn token_rejects_authorization_details() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token").parse().unwrap();
+
+    // Create a Token Request that contains (valid) `authorization_details`. The issuer should reject this as
+    // being unsupported.
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: None,
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: Some(
+            vec_nonempty![EntryContainer::new_credential_config(
+                "com.example.pid_dc+sd-jwt".to_string().into()
+            )]
+            .try_into()
+            .unwrap(),
+        ),
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_request"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn token_rejects_scope_mismatch() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token").parse().unwrap();
+
+    // Reducing the scope in the Token Request should result in an "invalid_scope" error response.
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: Some(HashSet::from(["com.example.pid_dc+sd-jwt".parse().unwrap()])),
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url.clone())
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_scope"), "unexpected body: {body}");
+
+    // However, including exactly the same scope as in the Authorization Request should be allowed.
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: Some(HashSet::from([
+                "com.example.pid_dc+sd-jwt".parse().unwrap(),
+                "other_scope".parse().unwrap(),
+            ])),
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn pre_authorized_code_flow_rejects_token_request_scope() {
+    let attestation_count = NonZeroUsize::MIN;
+    let PreAuthCodeFlowServer {
+        issuer,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_pre_authorized_code_flow_server(attestation_count).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer.issuer_identifier().as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token",).parse().unwrap();
+
+    let documents = mock_issuable_documents(attestation_count);
+    let credential_offer = issuer.new_preauthorized_session(documents).await.unwrap();
+    let pre_authorized_code = credential_offer
+        .grants
+        .unwrap()
+        .pre_authorized_code
+        .unwrap()
+        .pre_authorized_code;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::PreAuthorizedCode { pre_authorized_code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: None,
+            scope: Some(HashSet::from([
+                "com.example.pid_dc+sd-jwt".parse().unwrap(),
+                "other_scope".parse().unwrap(),
+            ])),
+            code_verifier: None,
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer.issuer_identifier().to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_scope"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn token_rejects_differing_client_id() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let token_url: Url = format!("{}issuance/token", issuer_identifier.as_base_url().as_ref().as_str())
+        .parse()
+        .unwrap();
+
+    // A Token Request with a wrong `client_id` should result in a 401 response with the
+    // `invalid_client_attestation` error code.
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some("wrong_client_id".to_string()),
+            redirect_uri: Some(REDIRECT_URI.parse().unwrap()),
+            scope: None,
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), None)
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_client_attestation"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn token_rejects_differing_redirect_uri() {
+    let AuthCodeFlowServer {
+        authorizing_issuer,
+        issuer_identifier,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_auth_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer_identifier.as_base_url().as_ref().as_str();
+    let token_url: Url = format!("{base}issuance/token").parse().unwrap();
+
+    // A Token Request without a `redirect_uri` should result in a 400 response with the `invalid_request` error code.
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: None,
+            scope: None,
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url.clone())
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_request"), "unexpected body: {body}");
+
+    // A Token Request with a different `redirect_uri` as was used in the Authorization Request should result in a 400
+    // response with the `invalid_request` error code.
+    let (code, code_verifier) = plant_authorized_session(&authorizing_issuer).await;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::AuthorizationCode { code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: Some("https://wallet.example.com/other_path".parse().unwrap()),
+            scope: None,
+            code_verifier: Some(code_verifier),
+        },
+        authorization_details: None,
+    };
+
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer_identifier.to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let (_dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("invalid_request"), "unexpected body: {body}");
+}
+
+#[tokio::test]
+async fn pre_authorized_code_flow_credential_request() {
+    // Prepare an issuer with a new Pre-Authorized Code flow.
+    let attestation_count = NonZeroUsize::MIN;
+    let PreAuthCodeFlowServer {
+        issuer,
+        tls_trust_anchor,
+        wptl_ca,
+        ..
+    } = start_pre_authorized_code_flow_server(attestation_count).await;
+
+    let documents = mock_issuable_documents(attestation_count);
+    let credential_offer = issuer.new_preauthorized_session(documents).await.unwrap();
+
+    // Retrieve the client authorization challenge from the issuer.
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let base = issuer.issuer_identifier().as_base_url().as_ref().as_str();
+    let challenge = fetch_client_auth_challenge(
+        &HttpClient::new(http_client.clone()),
+        format!("{base}issuance/client_auth_challenge").parse().unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // Build the TokenRequest and send it to the issuer to get the TokenResponse and DPoP nonce.
+    let wia = MockWiaClient::from_ca(&wptl_ca)
+        .issue_wia(issuer.issuer_identifier().to_string(), Some(challenge))
+        .await
+        .unwrap();
+
+    let pre_authorized_code = credential_offer
+        .grants
+        .unwrap()
+        .pre_authorized_code
+        .unwrap()
+        .pre_authorized_code;
+
+    let token_request = VciTokenRequest {
+        oauth_request: oauth::token::TokenRequest {
+            grant_type: TokenRequestGrantType::PreAuthorizedCode { pre_authorized_code },
+            client_id: Some(MOCK_WALLET_CLIENT_ID.to_string()),
+            redirect_uri: None,
+            scope: None,
+            code_verifier: None,
+        },
+        authorization_details: None,
+    };
+
+    let token_url = format!("{base}issuance/token",).parse::<Url>().unwrap();
+
+    let (dpop_key, dpop_header) = dpop_header_for_token_request(token_url.clone());
+    let response = http_client
+        .post(token_url)
+        .header(WIA_HEADER_NAME, wia.wia().serialization())
+        .header(WIA_POP_HEADER_NAME, wia.wia_pop().serialization())
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .form(&token_request)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+
+    let dpop_nonce = response
+        .headers()
+        .get(DPOP_NONCE_HEADER_NAME)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let token_response = response.json::<VciTokenResponse>().await.unwrap();
+
+    // Retrieve a fresh nonce from the issuer.
+    let nonce_url = format!("{base}issuance/nonce",).parse::<Url>().unwrap();
+
+    let nonce_response = http_client
+        .post(nonce_url.clone())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<NonceResponse>()
+        .await
+        .unwrap();
+
+    // Use the proof nonce to build a CredentialRequest and send it to the issuer to have a single credential issued.
+    let credential_id = token_response
+        .authorization_details
+        .expect("TokenResponse should contain authorization_details")
+        .into_credential_ids_by_config_ids()
+        .into_values()
+        .next()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let wscd = IssuanceMockRemoteWscd::new(&wptl_ca);
+    let time = MockTimeGenerator::default();
+    let key_attestation = wscd.sign_key_attestation(
+        vec_nonempty![*SigningKey::generate().verifying_key()],
+        Some(nonce_response.c_nonce),
+        &time,
+    );
+    let credential_request = CredentialRequest::new(
+        CredentialRequestIdentifier::CredentialIdentifier(credential_id.clone()),
+        key_attestation,
+    );
+
+    let credential_request_encrypter = JweEncrypter::from(
+        JwePublicKey::try_from_jwk(
+            issuer
+                .metadata()
+                .credential_request_encryption
+                .as_ref()
+                .unwrap()
+                .jwks
+                .keys
+                .first(),
+        )
+        .unwrap(),
+    );
+    let credential_request_jwe = credential_request
+        .encrypt(&credential_request_encrypter, EncryptionAlgorithm::A128Gcm, None)
+        .unwrap();
+
+    let credential_url = format!("{base}issuance/{CREDENTIAL_ENDPOINT_PATH}",)
+        .parse::<Url>()
+        .unwrap();
+
+    let dpop_header = Dpop::new(
+        &dpop_key,
+        credential_url.clone(),
+        &Method::POST,
+        Some(&token_response.oauth_response.access_token),
+        Some(dpop_nonce.parse().unwrap()),
+    )
+    .unwrap()
+    .to_string();
+
+    // Sending an unencrypted Credential Request should fail, as request encryption is mandatory.
+    let response = http_client
+        .post(credential_url.clone())
+        .header(
+            AUTHORIZATION,
+            format!("DPoP {}", token_response.oauth_response.access_token.as_ref()),
+        )
+        .header(DPOP_HEADER_NAME, dpop_header.clone())
+        .json(&credential_request)
+        .send()
+        .await
+        .expect("sending credential request to issuer should succeed");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("invalid_encryption_parameters"),
+        "unexpected body: {body}"
+    );
+
+    // Sending an encrypted Credential Request should succeed and result in issued credentials.
+    let credential_response = http_client
+        .post(credential_url.clone())
+        .header(
+            AUTHORIZATION,
+            format!("DPoP {}", token_response.oauth_response.access_token.as_ref()),
+        )
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .header(CONTENT_TYPE, HeaderValue::from_static(APPLICATION_JWT))
+        .body(credential_request_jwe)
+        .send()
+        .await
+        .expect("sending credential request to issuer should succeed")
+        .error_for_status()
+        .expect("requesting credential from issuer should succeed")
+        .json::<CredentialResponse>()
+        .await
+        .expect("requesting credential from issuer should result in a CredentialResponse");
+
+    let Credentials::SdJwt(sd_jwt_credentials) = credential_response
+        .into_immediate_credentials()
+        .expect("CredentialResponse should contain immediate credentials")
+    else {
+        panic!("CredentialResponse should contain SD-JWT credentials");
+    };
+
+    assert_eq!(sd_jwt_credentials.len().get(), 1);
+
+    // Retrieving a fresh nonce and trying to request the same credential a second should result in a 400 HTTP status
+    // code and "credential_request_denied" error code.
+    let nonce_response = http_client
+        .post(nonce_url.clone())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json::<NonceResponse>()
+        .await
+        .unwrap();
+    let key_attestation = wscd.sign_key_attestation(
+        vec_nonempty![*SigningKey::generate().verifying_key()],
+        Some(nonce_response.c_nonce),
+        &time,
+    );
+    let credential_request = CredentialRequest::new(
+        CredentialRequestIdentifier::CredentialIdentifier(credential_id),
+        key_attestation,
+    );
+    let credential_request_jwe = credential_request
+        .encrypt(&credential_request_encrypter, EncryptionAlgorithm::A128Gcm, None)
+        .unwrap();
+
+    let dpop_header = Dpop::new(
+        &dpop_key,
+        credential_url.clone(),
+        &Method::POST,
+        Some(&token_response.oauth_response.access_token),
+        Some(dpop_nonce.parse().unwrap()),
+    )
+    .unwrap()
+    .to_string();
+
+    let response = http_client
+        .post(credential_url)
+        .header(
+            AUTHORIZATION,
+            format!("DPoP {}", token_response.oauth_response.access_token.as_ref()),
+        )
+        .header(DPOP_HEADER_NAME, dpop_header)
+        .header(CONTENT_TYPE, HeaderValue::from_static(APPLICATION_JWT))
+        .body(credential_request_jwe)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("credential_request_denied"), "unexpected body: {body}");
+}
+
+async fn setup_metadata_test() -> (Arc<MockIssuer>, RequestBuilder) {
+    let PreAuthCodeFlowServer {
+        issuer,
+        tls_trust_anchor,
+        ..
+    } = start_pre_authorized_code_flow_server(NonZeroUsize::MIN).await;
+
+    let http_client = tls_reqwest_client_builder([tls_trust_anchor.into_certificate()])
+        .build()
+        .unwrap();
+
+    let metadata_url: Url = format!(
+        "{}.well-known/openid-credential-issuer",
+        issuer.issuer_identifier().as_base_url().as_ref().as_str()
+    )
+    .parse()
+    .unwrap();
+
+    (issuer, http_client.get(metadata_url))
+}
+
+#[rstest]
+#[case(None)]
+#[case(Some(APPLICATION_JWT))]
+#[tokio::test]
+async fn openid_metadata_signed(#[case] accept_header: Option<&str>) {
+    let (issuer, mut request) = setup_metadata_test().await;
+
+    if let Some(accept_header) = accept_header {
+        request = request.header(ACCEPT, accept_header);
+    }
+    let response = request.send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(response.headers()[CONTENT_TYPE], APPLICATION_JWT);
+    let text = response.text().await.unwrap();
+    let jwt: VerifiedJwt<SignedIssuerMetadataPayload> = VerifiedJwt::dangerous_parse_unverified(text.as_str()).unwrap();
+
+    let payload = jwt.into_payload();
+    let ttl = (*payload.exp.unwrap().as_ref() - *payload.iat.as_ref())
+        .to_std()
+        .unwrap();
+    assert_eq!(ttl, Duration::from_secs(3600));
+
+    assert_eq!(&payload.sub.as_ref(), &issuer.issuer_identifier());
+    assert_eq!(&payload.metadata.credential_issuer, issuer.issuer_identifier());
+    let issuer_info = payload.metadata.issuer_info.as_ref().unwrap();
+    let [IssuerInfo::RegistrationCertificate { data }] = issuer_info.as_slice() else {
+        panic!("expected exactly one registration certificate");
+    };
+    let IssuerInfo::RegistrationCertificate { data: expected } =
+        issuer.metadata().issuer_info.as_ref().unwrap().first()
+    else {
+        panic!("expected a configured registration certificate");
+    };
+    assert_eq!(String::try_from(data).unwrap(), String::try_from(expected).unwrap());
+}
+
+#[rstest]
+#[case("application/json", 406)]
+#[case("application/jßon", 400)]
+#[tokio::test]
+async fn openid_metadata_error(#[case] accept_header: &str, #[case] status_code: u16) {
+    let (_, request) = setup_metadata_test().await;
+
+    let response = request.header(ACCEPT, accept_header).send().await.unwrap();
+    assert_eq!(response.status(), status_code);
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_credential_preview_endpoint_only_served_when_enabled(
+    #[values(true, false)] credential_preview_endpoint: bool,
+) {
+    let (issuer, _, _, _, _) = setup_mock_issuer_with_metadata(
+        "https://example.com/".parse().unwrap(),
+        vec![CredentialConfigurationFormat::new_sd_jwt_credential_metadata(
+            MOCK_ATTESTATION_TYPES[0].to_string(),
+            CredentialMetadata::new_example(&["first_name"]),
+        )],
+        credential_preview_endpoint,
+        Arc::new(MemorySessionStore::default()),
+    );
+
+    let response = create_issuance_router(Arc::new(issuer))
+        .oneshot(
+            Request::post("/issuance/credential_preview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status() == StatusCode::NOT_FOUND, !credential_preview_endpoint);
+}

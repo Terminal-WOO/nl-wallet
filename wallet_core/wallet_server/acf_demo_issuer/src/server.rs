@@ -1,0 +1,149 @@
+use std::sync::Arc;
+
+use anyhow::Result;
+use axum::middleware;
+use http_utils::health::HealthChecker;
+use http_utils::health::create_health_router;
+use issuer_common::nonce_store::ProofNonceStore;
+use issuer_common::par_store::IssuerParStore;
+use itertools::Itertools;
+use openid4vc::authorizing_issuer::AuthorizingIssuer;
+use openid4vc::cleanup::CLEANUP_INTERVAL;
+use openid4vc::cleanup::start_cleanup_task;
+use openid4vc::issuer::IssuanceData;
+use openid4vc_server::issuer::create_authorization_router;
+use openid4vc_server::issuer::create_issuance_router;
+use server_utils::keys::PrivateKeyVariant;
+use server_utils::server::add_cache_control_no_store_layer;
+use server_utils::server::create_internal_listener;
+use server_utils::server::create_wallet_listener;
+use server_utils::server::listen;
+use server_utils::server::secure_internal_router;
+use server_utils::settings::Settings;
+use server_utils::store::SessionStoreVariant;
+use status_lists::postgres::NoRevokeAll;
+use status_lists::postgres::PostgresStatusListService;
+use status_lists::revoke::create_revocation_router;
+use status_lists::serve::create_serve_router;
+use tokio::net::TcpListener;
+use url::Url;
+use utils::vec_at_least::VecNonEmpty;
+use web_utils::headers::set_content_security_policy;
+
+use crate::flow::DemoAuthorizationCodeFlow;
+use crate::flow::create_static_router;
+
+pub type AcfDemoIssuer = AuthorizingIssuer<
+    PrivateKeyVariant,
+    PostgresStatusListService<PrivateKeyVariant, NoRevokeAll>,
+    SessionStoreVariant<IssuanceData>,
+    ProofNonceStore,
+    IssuerParStore,
+    DemoAuthorizationCodeFlow,
+>;
+
+/// Build the `Content-Security-Policy` served on the consent page. `form-action` must allow both the
+/// page's own origin (`'self'`, for the POST back to `/consent`) and the wallet's redirect target: the
+/// consent submission 302-redirects there, and browsers enforce `form-action` across that redirect.
+pub fn build_consent_csp(wallet_redirect_uris: &VecNonEmpty<Url>) -> String {
+    let form_action_sources = wallet_redirect_uris
+        .iter()
+        .map(|uri| match uri.scheme() {
+            "http" | "https" => uri.origin().ascii_serialization(),
+            scheme => format!("{scheme}:"),
+        })
+        .sorted()
+        .dedup()
+        .join(" ");
+
+    format!(
+        "default-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; form-action 'self' \
+         {form_action_sources}; frame-ancestors 'none'; object-src 'none'; base-uri 'none';"
+    )
+}
+
+pub async fn serve(
+    authorizing_issuer: Arc<AcfDemoIssuer>,
+    server_settings: Settings,
+    serve_status_lists: bool,
+    health_checkers: impl IntoIterator<Item = Box<dyn HealthChecker + Send + Sync>>,
+    csp_header: &'static str,
+) -> Result<()> {
+    serve_with_listeners(
+        create_wallet_listener(&server_settings.wallet_server).await?,
+        create_internal_listener(&server_settings.internal_server).await?,
+        authorizing_issuer,
+        server_settings,
+        serve_status_lists,
+        health_checkers,
+        csp_header,
+    )
+    .await
+}
+
+#[expect(clippy::too_many_arguments)]
+pub async fn serve_with_listeners(
+    wallet_listener: TcpListener,
+    internal_listener: Option<TcpListener>,
+    authorizing_issuer: Arc<AcfDemoIssuer>,
+    server_settings: Settings,
+    serve_status_lists: bool,
+    health_checkers: impl IntoIterator<Item = Box<dyn HealthChecker + Send + Sync>>,
+    csp_header: &'static str,
+) -> Result<()> {
+    let status_list_services =
+        VecNonEmpty::try_from(authorizing_issuer.issuer().status_lists().cloned().collect_vec())?;
+
+    // Periodically remove expired PAR requests, state-bridge entries, sessions and proof nonces for
+    // as long as the server runs; the guard aborts the task when this function returns.
+    let _cleanup_task = start_cleanup_task(CLEANUP_INTERVAL, Arc::clone(&authorizing_issuer));
+
+    let issuance_router = create_issuance_router(Arc::clone(authorizing_issuer.issuer()));
+    let authorization_router = create_authorization_router(Arc::clone(&authorizing_issuer));
+    let auth_flow_router = DemoAuthorizationCodeFlow::callback_router(Arc::clone(&authorizing_issuer));
+    // Static assets (CSS, fonts, images) are merged outside no-store so the browser can cache them.
+    let mut router =
+        add_cache_control_no_store_layer(issuance_router.merge(authorization_router).merge(auth_flow_router))
+            .merge(create_static_router());
+
+    if serve_status_lists {
+        let status_list_router = create_serve_router(
+            status_list_services
+                .iter()
+                .map(|service| service.config().to_route_source()),
+        )?;
+
+        router = router.merge(status_list_router);
+    }
+
+    let router = router.layer(middleware::from_fn(move |req, next| {
+        set_content_security_policy(req, next, csp_header)
+    }));
+
+    let (internal_router, internal_openapi) = create_revocation_router(status_list_services);
+
+    #[cfg(feature = "test_internal_ui")]
+    let mut internal_router = internal_router.merge(
+        utoipa_swagger_ui::SwaggerUi::new("/api-docs")
+            .config(utoipa_swagger_ui::Config::default().validator_url("none"))
+            .url("/openapi.json", internal_openapi),
+    );
+
+    #[cfg(not(feature = "test_internal_ui"))]
+    let mut internal_router = internal_router.route("/openapi.json", axum::routing::get(axum::Json(internal_openapi)));
+
+    internal_router = secure_internal_router(&server_settings.internal_server, internal_router);
+    internal_router = add_cache_control_no_store_layer(internal_router);
+
+    let health_router = create_health_router(health_checkers);
+
+    listen(
+        wallet_listener,
+        internal_listener,
+        router,
+        internal_router,
+        health_router,
+        server_settings.log_requests,
+    )
+    .await
+}

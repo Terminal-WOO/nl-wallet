@@ -4,10 +4,9 @@ use std::str::FromStr;
 use std::sync::LazyLock;
 
 use nutype::nutype;
-use regex::Regex;
+use regex::regex;
 use serde::Deserialize;
 use serde::Serialize;
-
 use utils::path::prefix_local_path;
 
 use crate::gba;
@@ -101,7 +100,7 @@ fn read_csv(name: &str) -> Result<HashMap<String, String>, csv::Error> {
 }
 
 fn csv_path(name: &str) -> PathBuf {
-    prefix_local_path(format!("resources/stamdata/{name}.csv").as_ref()).into_owned()
+    prefix_local_path(PathBuf::from(format!("resources/stamdata/{name}.csv"))).into_owned()
 }
 
 #[nutype(
@@ -385,7 +384,7 @@ impl TryFrom<&Categorievoorkomen> for GbaInvestigation {
 }
 
 fn municipalities_code_description(code: String) -> GbaCodeDescription {
-    let (code, description) = if Regex::new(r"^\d{4}$").unwrap().is_match(&code) {
+    let (code, description) = if regex!(r"^\d{4}$").is_match(&code) {
         let description = MUNICIPALITIES_TABLE.get(&code).cloned();
         (Some(code), description)
     } else {
@@ -582,8 +581,9 @@ pub struct GbaInvestigation {
 
 #[cfg(test)]
 mod test {
-    use crate::haal_centraal::Bsn;
     use rstest::rstest;
+
+    use crate::haal_centraal::Bsn;
 
     #[rstest]
     #[case("999991772")]

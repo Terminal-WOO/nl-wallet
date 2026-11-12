@@ -3,26 +3,23 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-use p256::ecdsa::Signature;
-use p256::ecdsa::VerifyingKey;
-use p256::pkcs8::DecodePublicKey;
-use parking_lot::Mutex;
-
 use crypto::keys::EcdsaKey;
 use crypto::keys::EncryptionKey;
 use crypto::keys::SecureEcdsaKey;
 use crypto::keys::SecureEncryptionKey;
-use crypto::keys::WithIdentifier;
+use p256::ecdsa::Signature;
+use p256::ecdsa::VerifyingKey;
+use p256::pkcs8::DecodePublicKey;
+use parking_lot::Mutex;
 use utils::spawn;
-
-use crate::bridge::hw_keystore::get_encryption_key_bridge;
-use crate::bridge::hw_keystore::get_signing_key_bridge;
 
 use super::HardwareKeyStoreError;
 use super::KeyStoreError;
 use super::PlatformEcdsaKey;
 use super::PlatformEncryptionKey;
 use super::StoredByIdentifier;
+use crate::bridge::hw_keystore::get_encryption_key_bridge;
+use crate::bridge::hw_keystore::get_signing_key_bridge;
 
 /// A static hash map of sets that contains all the identifiers for which an instance
 /// of that type currently exists within the application, keyed by the type's `TypeId`.
@@ -84,7 +81,8 @@ impl EcdsaKey for HardwareEcdsaKey {
 
         spawn::blocking(|| {
             let public_key_bytes = get_signing_key_bridge().public_key(identifier)?;
-            let public_key = VerifyingKey::from_public_key_der(&public_key_bytes)?;
+            let public_key = VerifyingKey::from_public_key_der(&public_key_bytes)
+                .map_err(|error| HardwareKeyStoreError::PublicKeyError(Box::new(error)))?;
 
             Ok::<_, Self::Error>(public_key)
         })
@@ -103,12 +101,6 @@ impl EcdsaKey for HardwareEcdsaKey {
 }
 
 impl SecureEcdsaKey for HardwareEcdsaKey {}
-
-impl WithIdentifier for HardwareEcdsaKey {
-    fn identifier(&self) -> &str {
-        &self.unique_key.identifier
-    }
-}
 
 impl StoredByIdentifier for HardwareEcdsaKey {
     type Error = HardwareKeyStoreError;
@@ -132,12 +124,6 @@ impl PlatformEcdsaKey for HardwareEcdsaKey {}
 // HardwareEncryptionKey wraps EncryptionKeyBridge from native.
 pub struct HardwareEncryptionKey {
     unique_key: UniqueKey,
-}
-
-impl WithIdentifier for HardwareEncryptionKey {
-    fn identifier(&self) -> &str {
-        &self.unique_key.identifier
-    }
 }
 
 impl StoredByIdentifier for HardwareEncryptionKey {

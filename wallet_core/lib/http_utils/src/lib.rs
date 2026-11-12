@@ -1,6 +1,13 @@
-pub mod data_uri;
+#[cfg(feature = "client")]
+pub mod client;
 pub mod error;
+pub mod health;
+#[cfg(feature = "httpmock")]
+pub mod httpmock;
+#[cfg(feature = "server")]
+pub mod mediatype;
 #[cfg(feature = "client")]
 pub mod reqwest;
-pub mod tls;
+#[cfg(feature = "server")]
+pub mod server;
 pub mod urls;

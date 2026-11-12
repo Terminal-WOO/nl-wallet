@@ -1,6 +1,6 @@
 use std::ops::Index;
 
-use demo_utils::language::Language;
+use web_utils::language::Language;
 
 // TODO extract duplicate code by using generics
 pub struct Translations<'a> {
@@ -33,6 +33,16 @@ pub const TRANSLATIONS: Translations = Translations {
         insurance_get_cards: "Get your digital insurance cards",
         housing_title: "DreamHome",
         housing_get_cards: "Get your housing card",
+        loyalty_title: "Jum",
+        loyalty_get_card: "Get your Jum Bonuskaart",
+        museum_maandkaart_title: "Museum Demodam",
+        museum_maandkaart_get_card: "Get your Museum Maandkaart",
+        mdl_title: "RDW Demo",
+        mdl_get_card: "Get your digital driver's licence",
+        mvc_title: "RDW Demo",
+        mvc_get_card: "Get your digital vehicle certificate",
+        dezi_title: "Dezi",
+        dezi_get_card: "Get your healthcare identity",
         add_to_nl_wallet: "Add to NL Wallet",
         choose_another_wallet: "Choose another wallet",
         failed_try_again: "Try again",
@@ -50,6 +60,16 @@ pub const TRANSLATIONS: Translations = Translations {
         insurance_get_cards: "Ontvang je digitale verzekeringskaart",
         housing_title: "DroomWoon",
         housing_get_cards: "Ontvang je huurkaart",
+        loyalty_title: "Jum",
+        loyalty_get_card: "Ontvang je Jum Bonuskaart",
+        museum_maandkaart_title: "Museum Demodam",
+        museum_maandkaart_get_card: "Ontvang je Museum Maandkaart",
+        mdl_title: "RDW Demo",
+        mdl_get_card: "Ontvang je digitale rijbewijs",
+        mvc_title: "RDW Demo",
+        mvc_get_card: "Ontvang je digitale kentekenbewijs",
+        dezi_title: "Dezi",
+        dezi_get_card: "Ontvang je zorgidentiteit",
         add_to_nl_wallet: "Toevoegen aan NL Wallet",
         choose_another_wallet: "Kies een andere wallet",
         failed_try_again: "Probeer opnieuw",
@@ -69,6 +89,16 @@ pub struct Words<'a> {
     pub insurance_get_cards: &'a str,
     pub housing_title: &'a str,
     pub housing_get_cards: &'a str,
+    pub loyalty_title: &'a str,
+    pub loyalty_get_card: &'a str,
+    pub museum_maandkaart_title: &'a str,
+    pub museum_maandkaart_get_card: &'a str,
+    pub mdl_title: &'a str,
+    pub mdl_get_card: &'a str,
+    pub mvc_title: &'a str,
+    pub mvc_get_card: &'a str,
+    pub dezi_title: &'a str,
+    pub dezi_get_card: &'a str,
     pub add_to_nl_wallet: &'a str,
     pub choose_another_wallet: &'a str,
     pub failed_try_again: &'a str,

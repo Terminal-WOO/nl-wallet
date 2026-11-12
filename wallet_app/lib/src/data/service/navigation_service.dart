@@ -2,19 +2,27 @@ import 'dart:async';
 
 import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
-import 'package:rxdart/subjects.dart';
 
 import '../../domain/app_event/app_event_listener.dart';
 import '../../domain/model/update/update_notification.dart';
+import '../../domain/model/wallet_state.dart';
 import '../../domain/usecase/navigation/check_navigation_prerequisites_usecase.dart';
 import '../../domain/usecase/navigation/perform_pre_navigation_actions_usecase.dart';
+import '../../domain/usecase/wallet/get_wallet_state_usecase.dart';
+import '../../feature/common/dialog/generic_dialog.dart';
 import '../../feature/common/dialog/idle_warning_dialog.dart';
 import '../../feature/common/dialog/locked_out_dialog.dart';
 import '../../feature/common/dialog/move_stopped_dialog.dart';
 import '../../feature/common/dialog/reset_wallet_dialog.dart';
 import '../../feature/common/dialog/scan_with_wallet_dialog.dart';
 import '../../feature/common/dialog/update_notification_dialog.dart';
+import '../../feature/notification/sheet/request_notification_permission_sheet.dart';
 import '../../util/helper/dialog_helper.dart';
+import '../../wallet_core/error/core_error.dart';
+
+// Slight delay before navigation to 'AppBlocked' is triggered. This is added to allow the app to 'settle'
+// (i.e. finish any lingering navigation events) before showing the [AppBlockedScreen].
+const kAppBlockedNavigationDelay = Duration(milliseconds: 50);
 
 class NavigationService extends AppEventListener {
   /// Key that holds [NavigatorState], used to perform navigation from a non-Widget.
@@ -25,31 +33,76 @@ class NavigationService extends AppEventListener {
   /// here to be handled when [processQueue] is called.
   NavigationRequest? _queuedRequest;
 
-  /// Stream that emits whether the update notification dialog is visible.
-  final BehaviorSubject<bool> _updateNotificationDialogVisible = BehaviorSubject.seeded(false);
+  bool get hasQueuedRequest => _queuedRequest != null;
 
   final CheckNavigationPrerequisitesUseCase _checkNavigationPrerequisitesUseCase;
   final PerformPreNavigationActionsUseCase _performPreNavigationActionsUseCase;
+  final GetWalletStateUseCase _getWalletStateUseCase;
 
   NavigationService(
     this._navigatorKey,
     this._checkNavigationPrerequisitesUseCase,
     this._performPreNavigationActionsUseCase,
+    this._getWalletStateUseCase,
   );
 
   @override
   FutureOr<void> onDashboardShown() => processQueue();
 
+  @override
+  FutureOr<void> onCoreError(CoreError error) async {
+    if (error is CoreAccountRevokedError) {
+      Fimber.d('Account revoked, navigating to app blocked screen. Reason: ${error.revocationData.revocationReason}');
+      await Future.delayed(kAppBlockedNavigationDelay);
+      final navRequest = NavigationRequest.appBlocked(reason: error.revocationData.revocationReason);
+      await _navigate(navRequest);
+    } else if (error is CoreStateError) {
+      Fimber.d('Invariant violation detected, navigating to the invariant error screen.');
+      await Future.delayed(kAppBlockedNavigationDelay);
+      await _navigate(NavigationRequest.invariantError(code: error.description));
+    }
+  }
+
   /// Process the provided [NavigationRequest], or queue it if the app is in a state where it can't be handled.
   /// Overrides any previously set [NavigationRequest] if this request has to be queued as well.
   Future<void> handleNavigationRequest(NavigationRequest request, {bool queueIfNotReady = false}) async {
+    _queuedRequest = null; // It'll get re-queued if it's (still) not ready. Any older request is now considered stale.
     final readyToNavigate = await _checkNavigationPrerequisitesUseCase.invoke(request.navigatePrerequisites);
     if (readyToNavigate) {
       await _navigate(request);
     } else {
-      if (queueIfNotReady) _queuedRequest = request;
-      Fimber.d('Not yet ready to handle $request. Request queued: $queueIfNotReady');
+      // Resolve the reason as to why we could not navigate
+      final state = await _getWalletStateUseCase.invoke();
+      final dialogType = _getNavigationBlockedDialogType(state);
+
+      // Reason for not navigating can be explained, inform the user and discard request
+      if (dialogType != null) {
+        unawaited(showDialog(dialogType, dismissOpenDialogs: true));
+        return;
+      }
+
+      // No specific reason (e.g. simply waiting for user to unlock). Queue request if needed.
+      if (queueIfNotReady) {
+        _queuedRequest = request;
+        Fimber.d('Not ready to handle $request while in $state. Request queued.');
+      }
     }
+  }
+
+  /// Returns the type of dialog that should be shown to the user to explain why the navigation was
+  /// blocked, content is based on the provided [WalletState]. Returns null if there is no specific
+  /// reason to block navigation.
+  WalletDialogType? _getNavigationBlockedDialogType(WalletState state) {
+    return switch (state) {
+      WalletStateUnregistered() || WalletStateEmpty() => .finishSetup,
+      WalletStateTransferPossible() => .finishTransferringDestination,
+      WalletStateTransferring(role: .source) => WalletDialogType.finishTransferringSource,
+      WalletStateTransferring(role: .destination) => WalletDialogType.finishTransferringDestination,
+      WalletStateInDisclosureFlow() => .finishActiveDisclosureSession,
+      WalletStateInIssuanceFlow() => .finishActiveIssuanceSession,
+      WalletStateInPinChangeFlow() || WalletStateInPinRecoveryFlow() => .finishRecoverPin,
+      WalletStateBlocked() || WalletStateLocked() || WalletStateReady() => null,
+    };
   }
 
   Future<void> _navigate(NavigationRequest request) async {
@@ -87,16 +140,23 @@ class NavigationService extends AppEventListener {
 
   /// Show the dialog specified by [type]. Useful when caller does not have a valid context.
   Future<void> showDialog(WalletDialogType type, {bool dismissOpenDialogs = false}) async {
-    final context = _navigatorKey.currentState?.context;
-    if (context == null) return;
     if (dismissOpenDialogs) await _dismissOpenDialogs(); // Dismiss any open dialogs if requested
-    if (!context.mounted) return;
+
+    final context = _navigatorKey.currentState?.context;
+    if (context == null || !context.mounted) return;
     return switch (type) {
       WalletDialogType.idleWarning => IdleWarningDialog.show(context),
       WalletDialogType.resetWallet => ResetWalletDialog.show(context),
       WalletDialogType.scanWithWallet => ScanWithWalletDialog.show(context),
       WalletDialogType.lockedOut => LockedOutDialog.show(context),
       WalletDialogType.moveStopped => MoveStoppedDialog.show(context),
+      WalletDialogType.requestNotificationPermission => RequestNotificationPermissionSheet.show(context),
+      WalletDialogType.finishActiveDisclosureSession => GenericDialog.showActiveDisclosureSession(context),
+      WalletDialogType.finishActiveIssuanceSession => GenericDialog.showActiveIssuanceSession(context),
+      WalletDialogType.finishSetup => GenericDialog.showFinishSetup(context),
+      WalletDialogType.finishTransferringSource => GenericDialog.showFinishTransferSource(context),
+      WalletDialogType.finishTransferringDestination => GenericDialog.showFinishTransferDestination(context),
+      WalletDialogType.finishRecoverPin => GenericDialog.showFinishPin(context),
     };
   }
 
@@ -104,25 +164,15 @@ class NavigationService extends AppEventListener {
     final context = _navigatorKey.currentState?.context;
     if (context == null || !context.mounted) return;
 
-    // Register that the dialog is visible
-    _updateNotificationDialogVisible.add(true);
-
     // Show the dialog
-    try {
-      await switch (notification) {
-        RecommendUpdateNotification() => UpdateNotificationDialog.show(context),
-        WarnUpdateNotification() => UpdateNotificationDialog.show(
-          context,
-          timeUntilBlocked: notification.timeUntilBlocked,
-        ),
-      };
-    } finally {
-      // Register that the dialog is no longer visible
-      _updateNotificationDialogVisible.add(false);
-    }
+    await switch (notification) {
+      RecommendUpdateNotification() => UpdateNotificationDialog.show(context),
+      WarnUpdateNotification() => UpdateNotificationDialog.show(
+        context,
+        timeUntilBlocked: notification.timeUntilBlocked,
+      ),
+    };
   }
-
-  Stream<bool> observeUpdateNotificationDialogVisible() => _updateNotificationDialogVisible.stream.distinct();
 
   Future<void> _dismissOpenDialogs() async {
     final context = _navigatorKey.currentState?.context;
@@ -130,4 +180,17 @@ class NavigationService extends AppEventListener {
   }
 }
 
-enum WalletDialogType { idleWarning, lockedOut, moveStopped, resetWallet, scanWithWallet }
+enum WalletDialogType {
+  idleWarning,
+  lockedOut,
+  moveStopped,
+  resetWallet,
+  scanWithWallet,
+  requestNotificationPermission,
+  finishSetup,
+  finishTransferringSource,
+  finishTransferringDestination,
+  finishActiveDisclosureSession,
+  finishActiveIssuanceSession,
+  finishRecoverPin,
+}

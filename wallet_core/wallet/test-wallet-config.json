@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "exp": 4070908800,
+  "environment": "dev",
+  "lock_timeouts": {
+    "warning_timeout": 240,
+    "inactive_timeout": 300,
+    "background_timeout": 300
+  },
+  "account_server": {
+    "http_config": {
+      "base_url": "https://localhost:3000/api/v1/",
+      "trust_anchors": [
+        "MIIDLjCCAhagAwIBAgIUZz7WwARJ+VjxdTHm31mBhD0bSLUwDQYJKoZIhvcNAQELBQAwHTEbMBkGA1UEAwwSbmwtd2FsbGV0LXByb3ZpZGVyMB4XDTI2MDEwNDExNDkxMloXDTI3MDEwNTEzNDkxMlowHTEbMBkGA1UEAwwSbmwtd2FsbGV0LXByb3ZpZGVyMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjR5Dxuyqu1JT9fbJ92usBJO0bd7K+iai5w/wSyopPbISsPcT3Epgi/XK2UtdX6+GKRyaJka6m1LVOJelmHb64No7ykWIbscFyfCsTnoZ/LjGTbhffQlqdMINGTnB8XN/6RQe8BXLUf/GiePNFS+tWnr9o3OpUPsTZg4+iK265lIlzz018SQSa2HOAPACEa+4Z/MarjyKxwDim5OU4HqQGSOh+Mt2/L1tductK5Uv6Jxj6Ttz/3yG4OzLWvuUJEXwXt6TUtsw9fbDzzOyJzIl2+1Q/x8WKPFepgvynIAr/1n3EDj8+hsXtYuZMn2SJt63H0f+qOzLTcE45c/l8/PH2wIDAQABo2YwZDAdBgNVHQ4EFgQUvayZdD9Wf4FoNZkgb4+CJ9FmwlwwHwYDVR0jBBgwFoAUvayZdD9Wf4FoNZkgb4+CJ9FmwlwwDgYDVR0PAQH/BAQDAgEGMBIGA1UdEwEB/wQIMAYBAf8CAQAwDQYJKoZIhvcNAQELBQADggEBAC7ombBV22Vy/2HDmJyN0djnrmOmIASvy8Jg31enJRxOKo+tqx+HPmKcx6YlUFIQdaEZgIx7ifUSs4VW+acD1OMwSoWwNgu6pulrYsdHsLDtZj+K7by1fanyqjV++ppm8Zw7dXeSYxdrL5P9qckF8i9Qv5slq0D6MbwALxj0dV7KfG1pyE6RKvbGWbnrackTKAwJ359+GsgCXRBf2Ur4Rj2axU5IKo+XqVHE8nnnzIKLrrFMvm8Q6XmWua9SE2+ywwZRUr52ShUw9uHR4e9CiV/MB5jYQJIyauv4R8a46YCVLTsY7G+QfM96L/UtIiryCLOxCnEHCTAWcEcjp90NPxs="
+      ]
+    },
+    "certificate_public_keys": {
+      "0": {
+        "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEUNzPZL65uFHdgDTqP4drbIwWWbL5dgOqIHGyXjPY6DJ+xOqwS9EfM46CVTkwKPIv8Bxz2CeNHDIp1EqzNqjZsg==",
+        "used_from": 1789000000
+      }
+    },
+    "instruction_result_public_keys": {
+      "0": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEFTDftVSPYE0pK43M1SoH/4kEPDj2JXJQL3FZedP2rSq3iOQ3c3/GkP/SiHlwKg1462ke8Rie9/sZOgz/GaQWCQ=="
+    },
+    "wptl_trust_anchors": [
+      "MIIBmTCCAUCgAwIBAgIUHrrZovMqmE6zdRid6xwRxgcn/dIwCgYIKoZIzj0EAwIwITEfMB0GA1UEAwwWd2lhLmlzc3Vlci5leGFtcGxlLmNvbTAeFw0yNjA1MTUxMTQzMzdaFw0yNzA1MTUxMTQzMzdaMCExHzAdBgNVBAMMFndpYS5pc3N1ZXIuZXhhbXBsZS5jb20wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATkSDNKDNcyzl7IbCnJCGLkSufzoPRTiKst3cF9aMB0kEgFr1p1I4MUlm4ngT5hVkL1Q7zW0HMdaxzAMwUv3haAo1YwVDAfBgNVHSMEGDAWgBRCn7wne6DgdMlmrWdOHYoEEnIdAjAdBgNVHQ4EFgQUQp+8J3ug4HTJZq1nTh2KBBJyHQIwEgYDVR0TAQH/BAgwBgEB/wIBADAKBggqhkjOPQQDAgNHADBEAiAjncOEobAPd/qanCrkT3b/u3ZeAsOQOeQg/iI/YyCr1AIgDb0qTKPwn/MO2ZvOGEeP9E/xfGgjL67m2q/L2IovEbY="
+    ],
+    "certificate_refresh_threshold_in_days": 1
+  },
+  "pid_attributes": {
+    "mso_mdoc": {
+      "com.example.nl.pid.1": {
+        "login": { "namespace": "com.example.nl.pid.1", "element_name": "bsn" },
+        "recovery_code": { "namespace": "com.example.nl.pid.1", "element_name": "recovery_code" }
+      }
+    },
+    "sd_jwt": {
+      "urn:example:pid:nl:1": {
+        "login": "bsn",
+        "recovery_code": "recovery_code"
+      }
+    }
+  },
+  "pid_credential_offer": "eu-eaa-offer://?credential_offer_uri=https%3A%2F%2Flocalhost%3A3003%2Fissuance%2Fcredential_offer",
+  "disclosure": {
+    "rp_trust_anchors": [
+      "MIIBdjCCAR2gAwIBAgIUHPa9mip12WLzxqD2y0QXpa5lQoEwCgYIKoZIzj0EAwIwIDEeMBwGA1UEAwwVY2EucmVhZGVyLmV4YW1wbGUuY29tMB4XDTI2MDEwNTEyNDkwNFoXDTI3MDEwNTEyNDkwNFowIDEeMBwGA1UEAwwVY2EucmVhZGVyLmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEqyJGYmZzIbnotoL28O3cjOWpe8luNMrHQrlcvxZkDHpHeA4w/esOEldz+hkk9oiIXhRWiwM2qQRphSxpin6P6qM1MDMwHQYDVR0OBBYEFHkIYHT6NagbYs1248utE165xXoOMBIGA1UdEwEB/wQIMAYBAf8CAQAwCgYIKoZIzj0EAwIDRwAwRAIgeOTr1Vduoa8U8w2DzENjmCmZvZ8mE45zRGHViMAsji4CIEJZAPEyG+2n3vY10yrzrOM5P40wWgtQTpVpocd92d4R"
+    ]
+  },
+  "issuer_trust_anchors": [
+    "MIIBeDCCAR2gAwIBAgIUToywA72MkBn8ZyZwchwrV/3Jf5MwCgYIKoZIzj0EAwIwIDEeMBwGA1UEAwwVY2EuaXNzdWVyLmV4YW1wbGUuY29tMB4XDTI2MDEwNTEyNDkwM1oXDTI3MDEwNTEyNDkwM1owIDEeMBwGA1UEAwwVY2EuaXNzdWVyLmV4YW1wbGUuY29tMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEFt+8WHku+fmYmHMZ3TzsIXG3rpU1Msjxi89YQcNfYXYymYvPlS9UadAGYdu5P89TOMT6tTeoc/CVTUkAh8x36KM1MDMwHQYDVR0OBBYEFKNT6Apja6bCQlLT0CsC8/VmXGPYMBIGA1UdEwEB/wQIMAYBAf8CAQAwCgYIKoZIzj0EAwIDSQAwRgIhANLNNox/uOjKZCs0Hmrc5f+UKpgCEyqUEShnfegbtZ8wAiEAs/oTjlM0zDW1zScleFa4iIvlLSv8jLV4Sl6h1c6xl5A="
+  ],
+  "wrpac_trust_anchors": [
+    "MIIB9DCCAZqgAwIBAgIUe58Dq7Uz+I0yOJQ8xkzMaKNhtcswCgYIKoZIzj0EAwIwTjERMA8GA1UEAwwIQ0Egd3JwYWMxCzAJBgNVBAYMAk5MMREwDwYDVQQKDAhDQSB3cnBhYzEZMBcGBSsGAQEPDA5OVFJOTC0wMDAwMDA0MDAeFw0yNjA2MzAwOTQwNDNaFw0yNzA2MzAwOTQwNDNaME4xETAPBgNVBAMMCENBIHdycGFjMQswCQYDVQQGDAJOTDERMA8GA1UECgwIQ0Egd3JwYWMxGTAXBgUrBgEBDwwOTlRSTkwtMDAwMDAwNDAwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQSFFZo7pqF+nNAS1KbuXfclMDYrH13webYFG9pBa/nI7k0NGA39L9tylSf/9ZJM0lU2o0crm675OqicKtQipf1o1YwVDAfBgNVHSMEGDAWgBS3gHM1Pi+qEMx+ibN7Qu7qBtbdxDAdBgNVHQ4EFgQUt4BzNT4vqhDMfomze0Lu6gbW3cQwEgYDVR0TAQH/BAgwBgEB/wIBADAKBggqhkjOPQQDAgNIADBFAiBxIq5E1bNvYH4tfvClY0QZmYxxqFoWIdxhcS5lrT/lZQIhAIqpoiEZNY3k1CsJFANTNdQPQdGqoGmshlLC/y95kIo1"
+  ],
+  "wrprc_trust_anchors": [
+    "MIIB9DCCAZqgAwIBAgIUJ5N1aGX0s/7X+IpFjHeIddhChbQwCgYIKoZIzj0EAwIwTjERMA8GA1UEAwwIQ0Egd3JwcmMxCzAJBgNVBAYMAk5MMREwDwYDVQQKDAhDQSB3cnByYzEZMBcGBSsGAQEPDA5OVFJOTC0wMDAwMDA1MDAeFw0yNjA2MzAwOTQwNDNaFw0yNzA2MzAwOTQwNDNaME4xETAPBgNVBAMMCENBIHdycHJjMQswCQYDVQQGDAJOTDERMA8GA1UECgwIQ0Egd3JwcmMxGTAXBgUrBgEBDwwOTlRSTkwtMDAwMDAwNTAwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATifX1+wo9pSDsZJFwXJ2ykEE0kmgm64Iboxl+hEkRrtn9qpIXT1iHgAtat+dLpEtNDQfa0mFrhv3b1LzXzMhc7o1YwVDAfBgNVHSMEGDAWgBROkYw2AoGWDWK1zwNGBmpkkqIOdjAdBgNVHQ4EFgQUTpGMNgKBlg1itc8DRgZqZJKiDnYwEgYDVR0TAQH/BAgwBgEB/wIBADAKBggqhkjOPQQDAgNIADBFAiBSV7BmCQ5U2wTbaskQ4IK+2hMegpa7bEDYY4LKL4ncZAIhANuLaQBJnE+5VjK0YiN1Cht/BH52ZY+IoiWR4P6/V8VB"
+  ],
+  "update_policy_server": {
+    "http_config": {
+      "base_url": "https://localhost:3002/update/v1/",
+      "trust_anchors": [
+        "MIIDRjCCAi6gAwIBAgIUX2HHw/hJCMzuKSmZElZgDWeYLogwDQYJKoZIhvcNAQELBQAwKTEnMCUGA1UEAwwebmwtd2FsbGV0LXVwZGF0ZS1wb2xpY3ktc2VydmVyMB4XDTI2MDEwNDExNDkxMloXDTI3MDEwNTEzNDkxMlowKTEnMCUGA1UEAwwebmwtd2FsbGV0LXVwZGF0ZS1wb2xpY3ktc2VydmVyMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArQXFdUSZ9bekaP1aIfdGd5bipfdX6xFyPTgPG2cFLs+geFOIpQGVKOxXmno8Ny7M3OAIk6Z36jl0JKu0/UoAs5VQUBo68oJi9fLrA5ZtsJZFmBKC1ihj9y7CPYcmAs9Pqo0SMCPrLczwYKCh4lbs0hUlR8AKQFDUCyE3u4JbQ7eq1ZhXEHzyJbh8FK2hUp31kbhny30v+g0Kta4M6ma7O3J1p2RIkeB4ejufeGU7QUg2ppAezzLhXBrDe8TKhZugTfms76GBzX9zwTez6owMQHdbpuoi7sCzazswZ8GBomSw10m+JjXKBd3Eq+jkN6u7+qLilHzLS+zQzygIOW5hpQIDAQABo2YwZDAdBgNVHQ4EFgQUGAfrcJypF0+T980SealRb3KaoHgwHwYDVR0jBBgwFoAUGAfrcJypF0+T980SealRb3KaoHgwDgYDVR0PAQH/BAQDAgEGMBIGA1UdEwEB/wQIMAYBAf8CAQAwDQYJKoZIhvcNAQELBQADggEBAIHQKx05waP4LHLjaeRfdkIcOVzXTAS6jquo+LyDG8lY8PURqdtKN+ki1EqSc3sSksqCGYn+4ISuJoOfKcb8HXqZV1hbdgCg6E4/DtOXPE7GTHWL41ulqxZFP1ntkF0co7f2+g/wzqMYDZ7wBrV07zD9YE5jZNtmls8GSMsViP80yb2nrpShPzmE5UmfdYqKYOv/iHu7BmbSJihWHUOTvHV1NPbKkPScwt1hn1HXjfvQxWg1vb1FoWlSFpy6p67d0Sptv0dxFvDOcYL6CHl8juI0snYn2/mAoQezQEiDOv975M1FbDWepPWywLWc5a02RHv5Om7GHTPTYDc7ynERNYU="
+      ]
+    }
+  },
+  "google_cloud_project_number": 304979650398,
+  "static_assets_base_url": "https://localhost:3001/"
+}

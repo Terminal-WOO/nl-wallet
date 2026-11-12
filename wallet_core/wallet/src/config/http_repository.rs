@@ -2,52 +2,56 @@ use std::hash::Hash;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crypto::kid::VerifyingKeyWithKid;
+use http_utils::reqwest::IntoReqwestClient;
 use parking_lot::RwLock;
 use tracing::info;
-
-use http_utils::reqwest::IntoPinnedReqwestClient;
-use jwt::DEFAULT_VALIDATIONS;
-use jwt::EcdsaDecodingKey;
-use jwt::UnverifiedJwt;
 use wallet_configuration::wallet_config::WalletConfiguration;
 
+use super::WALLET_CONFIG_VALIDATION;
+use super::WalletConfigJwt;
+use super::file_repository::RawJwtProvider;
 use crate::config::ConfigurationError;
 use crate::repository::EtagHttpClient;
-use crate::repository::HttpClient;
 use crate::repository::HttpResponse;
 use crate::repository::Repository;
 use crate::repository::RepositoryUpdateState;
 use crate::repository::UpdateableRepository;
 
+type ConfigState = (Arc<WalletConfiguration>, Option<Arc<WalletConfigJwt>>);
+
 pub struct HttpConfigurationRepository<B> {
-    client: EtagHttpClient<UnverifiedJwt<WalletConfiguration>, B, ConfigurationError>,
-    signing_public_key: EcdsaDecodingKey,
-    config: RwLock<Arc<WalletConfiguration>>,
+    client: EtagHttpClient<WalletConfigJwt, B, ConfigurationError>,
+    config_key: VerifyingKeyWithKid,
+    config: RwLock<ConfigState>,
 }
 
 impl<B> HttpConfigurationRepository<B> {
-    pub async fn new(
-        signing_public_key: EcdsaDecodingKey,
-        storage_path: PathBuf,
-        initial_config: WalletConfiguration,
-    ) -> Result<Self, ConfigurationError> {
-        let repo = Self {
-            client: EtagHttpClient::new(
-                "wallet-config".parse().expect("should be a valid filename"),
-                storage_path,
-            )
-            .await?,
-            signing_public_key,
-            config: RwLock::new(Arc::new(initial_config)),
-        };
-
-        Ok(repo)
+    pub fn new(config_key: VerifyingKeyWithKid, etag_path: PathBuf, initial_config: WalletConfiguration) -> Self {
+        Self {
+            client: EtagHttpClient::new(config_key.kid.as_ref(), etag_path),
+            config_key,
+            config: RwLock::new((Arc::new(initial_config), None)),
+        }
     }
 }
 
 impl<C> Repository<Arc<WalletConfiguration>> for HttpConfigurationRepository<C> {
     fn get(&self) -> Arc<WalletConfiguration> {
-        Arc::clone(&self.config.read())
+        Arc::clone(&self.config.read().0)
+    }
+}
+
+#[cfg(any(test, feature = "test"))]
+impl<B> HttpConfigurationRepository<B> {
+    pub fn update_config(&self, new_config: Arc<WalletConfiguration>) {
+        *self.config.write() = (new_config, None);
+    }
+}
+
+impl<B> RawJwtProvider for HttpConfigurationRepository<B> {
+    fn last_raw_jwt(&self) -> Option<Arc<WalletConfigJwt>> {
+        self.config.read().1.as_ref().map(Arc::clone)
     }
 }
 
@@ -55,37 +59,41 @@ impl<C> Repository<Arc<WalletConfiguration>> for HttpConfigurationRepository<C> 
 /// we just panic when that occurs.
 impl<B> UpdateableRepository<Arc<WalletConfiguration>, B> for HttpConfigurationRepository<B>
 where
-    B: IntoPinnedReqwestClient + Clone + Hash + Send + Sync,
+    B: IntoReqwestClient + Clone + Hash + Send + Sync,
 {
     type Error = ConfigurationError;
 
     async fn fetch(&self, client_builder: &B) -> Result<RepositoryUpdateState<Arc<WalletConfiguration>>, Self::Error> {
-        let response = self.client.fetch(client_builder).await?;
-        match response {
-            HttpResponse::Parsed(parsed_response) => {
-                let (_, new_config) =
-                    parsed_response.parse_and_verify(&self.signing_public_key, &DEFAULT_VALIDATIONS)?;
+        let response = self
+            .client
+            .fetch_and_accept(client_builder, |jwt: WalletConfigJwt| {
+                let (_, config) = jwt.parse_and_verify_by_kid(&self.config_key, WALLET_CONFIG_VALIDATION.clone())?;
+                Ok((jwt, config))
+            })
+            .await?;
 
+        match response {
+            HttpResponse::Parsed((parsed_response, new_config)) => {
                 {
                     let current_config = self.config.read();
-                    if new_config.version <= current_config.version {
+                    if new_config.version <= current_config.0.version {
                         info!(
                             "Received wallet configuration with version: {}, but we have version: {}",
-                            new_config.version, current_config.version
+                            new_config.version, current_config.0.version
                         );
-                        return Ok(RepositoryUpdateState::Unmodified(Arc::clone(&current_config)));
+                        return Ok(RepositoryUpdateState::Unmodified(Arc::clone(&current_config.0)));
                     }
                 }
 
                 info!("Received new wallet configuration with version: {}", new_config.version);
 
                 let mut config = self.config.write();
-                let from = Arc::clone(&*config);
-                *config = Arc::new(new_config);
+                let from = Arc::clone(&config.0);
+                *config = (Arc::new(new_config), Some(Arc::new(parsed_response)));
 
                 Ok(RepositoryUpdateState::Updated {
                     from,
-                    to: Arc::clone(&*config),
+                    to: Arc::clone(&config.0),
                 })
             }
             HttpResponse::NotModified => {

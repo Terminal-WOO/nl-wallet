@@ -1,5 +1,6 @@
 part of 'disclosure_bloc.dart';
 
+/// Base class for all events handled by the [DisclosureBloc].
 abstract class DisclosureEvent extends Equatable {
   const DisclosureEvent();
 
@@ -7,24 +8,37 @@ abstract class DisclosureEvent extends Equatable {
   List<Object?> get props => [];
 }
 
+/// Initiates a disclosure session from a [StartDisclosureRequest] (Deeplink/Qr/CloseProximity).
+///
+/// Cancels any ongoing session and triggers [StartDisclosureUseCase].
+/// Results in [DisclosureCheckUrl], [DisclosureConfirmDataAttributes],
+/// [DisclosureCheckOrganizationForLogin], or [DisclosureMissingAttributes].
 class DisclosureSessionStarted extends DisclosureEvent {
-  final String uri;
-  final bool isQrCode;
+  final StartDisclosureRequest request;
 
-  const DisclosureSessionStarted(this.uri, {this.isQrCode = false});
+  const DisclosureSessionStarted(this.request);
 
   @override
-  List<Object?> get props => [uri, isQrCode];
+  List<Object?> get props => [request, ...super.props];
 }
 
+/// User approves the origin URL in a cross-device flow.
+///
+/// Transitions to attribute confirmation or missing attributes state.
 class DisclosureUrlApproved extends DisclosureEvent {
   const DisclosureUrlApproved();
 }
 
+/// User confirms the selection of cards and attributes to be shared.
+///
+/// Transitions the flow to [DisclosureConfirmPin].
 class DisclosureShareRequestedCardsApproved extends DisclosureEvent {
   const DisclosureShareRequestedCardsApproved();
 }
 
+/// User selects a different card for a specific attribute request.
+///
+/// Updates the BLoC's selection cache and refreshes the current state.
 class DisclosureAlternativeCardSelected extends DisclosureEvent {
   final DiscloseCardRequest updatedCardRequest;
 
@@ -34,6 +48,9 @@ class DisclosureAlternativeCardSelected extends DisclosureEvent {
   List<Object?> get props => [updatedCardRequest];
 }
 
+/// User successfully entered their PIN and confirmed the disclosure.
+///
+/// Transitions to [DisclosureSuccess] and retrieves the resulting wallet event.
 class DisclosurePinConfirmed extends DisclosureEvent {
   final String? returnUrl;
 
@@ -43,14 +60,24 @@ class DisclosurePinConfirmed extends DisclosureEvent {
   List<Object?> get props => [returnUrl];
 }
 
+/// User navigates back to a previous step in the disclosure flow.
 class DisclosureBackPressed extends DisclosureEvent {
   const DisclosureBackPressed();
 }
 
+/// Explicitly stops the disclosure session and shows the [DisclosureStopped] screen.
 class DisclosureStopRequested extends DisclosureEvent {
   const DisclosureStopRequested();
 }
 
+/// Silently cancels the disclosure session (e.g., when dismissing the flow).
+///
+/// Does not trigger a state transition; intended for cleanup.
+class DisclosureCancelRequested extends DisclosureEvent {
+  const DisclosureCancelRequested();
+}
+
+/// User opts to report an issue, canceling the session and moving to [DisclosureLeftFeedback].
 class DisclosureReportPressed extends DisclosureEvent {
   final ReportingOption option;
 
@@ -60,8 +87,27 @@ class DisclosureReportPressed extends DisclosureEvent {
   List<Object?> get props => [option];
 }
 
+/// PIN confirmation failed, triggering error handling and potential state change.
 class DisclosureConfirmPinFailed extends DisclosureEvent {
   final ApplicationError error;
 
   const DisclosureConfirmPinFailed({required this.error});
+
+  @override
+  List<Object?> get props => [error];
+}
+
+/// Triggered when the user has entered a PIN (at the start of PIN confirmation)
+class DisclosurePinValidationStarted extends DisclosureEvent {
+  const DisclosurePinValidationStarted();
+}
+
+/// Triggered when a close proximity [BleConnectionEvent] is received.
+class DisclosureCloseProximityEventReceived extends DisclosureEvent {
+  final BleConnectionEvent event;
+
+  const DisclosureCloseProximityEventReceived(this.event);
+
+  @override
+  List<Object?> get props => [...super.props, event];
 }

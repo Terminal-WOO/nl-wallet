@@ -15,23 +15,56 @@ const _kSamplePin = '112233';
 const _kSampleIssuer = CoreMockData.organization;
 
 void main() {
-  final WalletCoreApi core = Mocks.create();
+  /// WalletCore.init can only be called once, so setting up and assigning mock here.
+  final MockWalletCoreApi core = MockWalletCoreApi();
   WalletCore.initMock(api: core);
+  provideDummy<IssuanceStartResult>(const IssuanceStartResult.authorizationUrl('https://example.org/auth'));
 
   late MockMapper<String, CoreError> errorMapper;
   late TypedWalletCore typedWalletCore;
 
   setUp(() async {
-    if (!await isInitialized()) {
-      await core.crateApiFullInit();
-    }
-
     errorMapper = MockMapper();
     typedWalletCore = TypedWalletCore(errorMapper);
 
     // Setup default error mock
     when(errorMapper.map(any)).thenAnswer((invocation) {
       return CoreGenericError(invocation.positionalArguments.first);
+    });
+  });
+
+  tearDown(() => clearInteractions(core));
+
+  group('postInit', () {
+    test('defaults to uninitialized and does not clear streams', () async {
+      final initialized = await isInitialized(); // Call #1
+      expect(initialized, isFalse);
+      await postInit(); // Call #2
+      verify(core.crateApiFullIsInitialized()).called(2);
+
+      // Verify clear methods are NOT called
+      verifyNoMoreInteractions(core);
+    });
+
+    test('streams are cleared when when postInit is called after previous initialization', () async {
+      when(core.crateApiFullIsInitialized()).thenAnswer((_) async => true);
+      final initialized = await isInitialized(); // Call #1
+      expect(initialized, isTrue);
+      await postInit(); // Call #2
+      verify(core.crateApiFullIsInitialized()).called(2);
+
+      // Verify clear stream methods are called
+      verify(core.crateApiFullClearLockStream()).called(1);
+      verify(core.crateApiFullClearConfigurationStream()).called(1);
+      verify(core.crateApiFullClearVersionStateStream()).called(1);
+      verify(core.crateApiFullClearAttestationsStream()).called(1);
+      verify(core.crateApiFullClearRecentHistoryStream()).called(1);
+      verify(core.crateApiFullClearScheduledNotificationsStream()).called(1);
+      verify(core.crateApiFullClearDirectNotificationsCallback()).called(1);
+      verify(core.crateApiFullClearSentryBreadcrumbCallback()).called(1);
+
+      // Make sure wallet starts out locked
+      verify(core.crateApiFullLockWallet()).called(1);
     });
   });
 
@@ -97,10 +130,10 @@ void main() {
     });
   });
 
-  group('cancelPidIssuance', () {
-    test('cancel pid issuance is passed on to core', () async {
-      await typedWalletCore.cancelIssuance();
-      verify(core.crateApiFullCancelIssuance()).called(1);
+  group('cancelSession', () {
+    test('cancel session is passed on to core', () async {
+      await typedWalletCore.cancelSession();
+      verify(core.crateApiFullCancelSession()).called(1);
     });
   });
 
@@ -108,13 +141,14 @@ void main() {
     test('configuration is fetched through core by setting the configuration stream', () async {
       when(core.crateApiFullSetConfigurationStream()).thenAnswer(
         (_) => Stream.value(
-          FlutterConfiguration(
+          const FlutterConfiguration(
             inactiveWarningTimeout: 0,
             inactiveLockTimeout: 0,
             backgroundLockTimeout: 0,
-            pidAttestationTypes: [],
+            pidAttestations: [],
             staticAssetsBaseUrl: '',
-            version: BigInt.zero,
+            version: '0',
+            environment: 'test',
           ),
         ),
       );
@@ -159,16 +193,20 @@ void main() {
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_id',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_address',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
       ];
       when(core.crateApiFullSetAttestationsStream()).thenAnswer((realInvocation) => Stream.value(mockAttestations));
@@ -184,25 +222,31 @@ void main() {
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_id',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
       ];
       final List<AttestationPresentation> updatedCards = [
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_id',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_address',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
       ];
       when(
@@ -220,25 +264,31 @@ void main() {
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_id',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
       ];
       final List<AttestationPresentation> updatedCards = [
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_id',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
         const AttestationPresentation(
           identity: AttestationIdentity.fixed(id: '0'),
           attestationType: 'pid_address',
+          format: .SdJwt,
           displayMetadata: [],
           attributes: [],
           issuer: _kSampleIssuer,
+          validityStatus: ValidityStatus_Valid(validUntil: null),
         ),
       ];
       when(
@@ -255,10 +305,215 @@ void main() {
     });
   });
 
+  group('notifications', () {
+    test('observeNotifications is passed on to core', () async {
+      when(core.crateApiFullSetScheduledNotificationsStream()).thenAnswer((_) => Stream.value([]));
+      await typedWalletCore.observeNotifications().first;
+      verify(core.crateApiFullSetScheduledNotificationsStream()).called(1);
+    });
+
+    test('setupNotificationCallback is passed on to core', () {
+      typedWalletCore.setupNotificationCallback((_) {});
+      verify(core.crateApiFullClearDirectNotificationsCallback()).called(1);
+      verify(core.crateApiFullSetDirectNotificationsCallback(callback: anyNamed('callback'))).called(1);
+    });
+  });
+
+  group('history', () {
+    test('getHistory is passed on to core', () async {
+      await typedWalletCore.getHistory(page: 0, pageSize: 100);
+      verify(core.crateApiFullGetHistory(page: 0, pageSize: 100)).called(1);
+    });
+
+    test('getHistoryForCard is passed on to core', () async {
+      await typedWalletCore.getHistoryForCard('test-id');
+      verify(core.crateApiFullGetHistoryForCard(attestationId: 'test-id')).called(1);
+    });
+
+    test('observeRecentHistory is passed on to core', () async {
+      when(core.crateApiFullSetRecentHistoryStream()).thenAnswer((_) => Stream.value([]));
+      await typedWalletCore.observeRecentHistory().first;
+      verify(core.crateApiFullSetRecentHistoryStream()).called(1);
+    });
+  });
+
+  group('pin management', () {
+    test('checkPin is passed on to core', () async {
+      await typedWalletCore.checkPin(_kSamplePin);
+      verify(core.crateApiFullCheckPin(pin: _kSamplePin)).called(1);
+    });
+
+    test('changePin is passed on to core', () async {
+      await typedWalletCore.changePin(_kSamplePin, 'new-pin');
+      verify(core.crateApiFullChangePin(oldPin: _kSamplePin, newPin: 'new-pin')).called(1);
+    });
+
+    test('continueChangePin is passed on to core', () async {
+      await typedWalletCore.continueChangePin(_kSamplePin);
+      verify(core.crateApiFullContinueChangePin(pin: _kSamplePin)).called(1);
+    });
+  });
+
+  group('biometrics', () {
+    test('isBiometricLoginEnabled is passed on to core', () async {
+      await typedWalletCore.isBiometricLoginEnabled();
+      verify(core.crateApiFullIsBiometricUnlockEnabled()).called(1);
+    });
+
+    test('setBiometricUnlock is passed on to core', () async {
+      await typedWalletCore.setBiometricUnlock(enabled: true);
+      verify(core.crateApiFullSetBiometricUnlock(enable: true)).called(1);
+    });
+
+    test('unlockWithBiometrics is passed on to core', () async {
+      await typedWalletCore.unlockWithBiometrics();
+      verify(core.crateApiFullUnlockWalletWithBiometrics()).called(1);
+    });
+  });
+
+  group('pid and issuance', () {
+    test('createPidRenewalRedirectUri is passed on to core', () async {
+      await typedWalletCore.createPidRenewalRedirectUri();
+      verify(core.crateApiFullCreatePidRenewalRedirectUri()).called(1);
+    });
+
+    test('continuePidIssuance is passed on to core', () async {
+      await typedWalletCore.continueIssuance('uri');
+      verify(core.crateApiFullContinueIssuance(uri: 'uri')).called(1);
+    });
+
+    test('continueDisclosureBasedIssuance is passed on to core', () async {
+      await typedWalletCore.continueDisclosureBasedIssuance(_kSamplePin, [1, 2]);
+      verify(core.crateApiFullContinueDisclosureBasedIssuance(pin: _kSamplePin, selectedIndices: [1, 2])).called(1);
+    });
+
+    test('startIssuanceFromOffer is passed on to core', () async {
+      when(core.crateApiFullStartIssuanceFromOffer(offerUri: 'uri')).thenAnswer(
+        (_) async => const IssuanceStartResult.authorizationUrl('https://example.org/auth'),
+      );
+      await typedWalletCore.startIssuanceFromOffer('uri');
+      verify(core.crateApiFullStartIssuanceFromOffer(offerUri: 'uri')).called(1);
+    });
+
+    test('acceptPidIssuance is passed on to core', () async {
+      await typedWalletCore.acceptPidIssuance(_kSamplePin);
+      verify(core.crateApiFullAcceptPidIssuance(pin: _kSamplePin)).called(1);
+    });
+  });
+
+  group('disclosure', () {
+    test('startDisclosure is passed on to core', () async {
+      await typedWalletCore.startDisclosure('uri', isQrCode: true);
+      verify(core.crateApiFullStartDisclosure(uri: 'uri', isQrCode: true)).called(1);
+    });
+
+    test('startCloseProximityDisclosure is passed on to core', () async {
+      await typedWalletCore.startCloseProximityDisclosure(wrprcStrictMode: true, callback: (_) {});
+      verify(core.crateApiFullStartCloseProximityDisclosure(wrprcStrictMode: true, callback: anyNamed('callback')))
+          .called(1);
+    });
+
+    test('continueCloseProximityDisclosure is passed on to core', () async {
+      await typedWalletCore.continueCloseProximityDisclosure();
+      verify(core.crateApiFullContinueCloseProximityDisclosure()).called(1);
+    });
+
+    test('acceptDisclosure is passed on to core', () async {
+      await typedWalletCore.acceptDisclosure(_kSamplePin, [1, 2]);
+      verify(core.crateApiFullAcceptDisclosure(pin: _kSamplePin, selectedIndices: [1, 2])).called(1);
+    });
+  });
+
+  group('pin recovery', () {
+    test('createPinRecoveryRedirectUri is passed on to core', () async {
+      await typedWalletCore.createPinRecoveryRedirectUri();
+      verify(core.crateApiFullCreatePinRecoveryRedirectUri()).called(1);
+    });
+
+    test('continuePinRecovery is passed on to core', () async {
+      await typedWalletCore.continuePinRecovery('uri');
+      verify(core.crateApiFullContinuePinRecovery(uri: 'uri')).called(1);
+    });
+
+    test('completePinRecovery is passed on to core', () async {
+      await typedWalletCore.completePinRecovery(_kSamplePin);
+      verify(core.crateApiFullCompletePinRecovery(pin: _kSamplePin)).called(1);
+    });
+
+    test('cancelPinRecovery is passed on to core', () async {
+      await typedWalletCore.cancelPinRecovery();
+      verify(core.crateApiFullCancelPinRecovery()).called(1);
+    });
+  });
+
+  group('wallet transfer', () {
+    test('initWalletTransfer is passed on to core', () async {
+      await typedWalletCore.initWalletTransfer();
+      verify(core.crateApiFullInitWalletTransfer()).called(1);
+    });
+
+    test('pairWalletTransfer is passed on to core', () async {
+      await typedWalletCore.pairWalletTransfer('uri');
+      verify(core.crateApiFullPairWalletTransfer(uri: 'uri')).called(1);
+    });
+
+    test('confirmWalletTransfer is passed on to core', () async {
+      await typedWalletCore.confirmWalletTransfer(_kSamplePin);
+      verify(core.crateApiFullConfirmWalletTransfer(pin: _kSamplePin)).called(1);
+    });
+
+    test('transferWallet is passed on to core', () async {
+      await typedWalletCore.transferWallet();
+      verify(core.crateApiFullTransferWallet()).called(1);
+    });
+
+    test('receiveWalletTransfer is passed on to core', () async {
+      await typedWalletCore.receiveWalletTransfer();
+      verify(core.crateApiFullReceiveWalletTransfer()).called(1);
+    });
+
+    test('cancelWalletTransfer is passed on to core', () async {
+      await typedWalletCore.cancelWalletTransfer();
+      verify(core.crateApiFullCancelWalletTransfer()).called(1);
+    });
+
+    test('getWalletTransferState is passed on to core', () async {
+      await typedWalletCore.getWalletTransferState();
+      verify(core.crateApiFullGetWalletTransferState()).called(1);
+    });
+
+    test('skipWalletTransfer is passed on to core', () async {
+      await typedWalletCore.skipWalletTransfer();
+      verify(core.crateApiFullSkipWalletTransfer()).called(1);
+    });
+  });
+
+  group('misc', () {
+    test('getVersionString is passed on to core', () async {
+      await typedWalletCore.getVersionString();
+      verify(core.crateApiFullGetVersionString()).called(1);
+    });
+
+    test('getWalletState is passed on to core', () async {
+      await typedWalletCore.getWalletState();
+      verify(core.crateApiFullGetWalletState()).called(1);
+    });
+
+    test('getRegistrationRevocationCode is passed on to core', () async {
+      await typedWalletCore.getRegistrationRevocationCode();
+      verify(core.crateApiFullGetRegistrationRevocationCode()).called(1);
+    });
+
+    test('getRevocationCode is passed on to core', () async {
+      await typedWalletCore.getRevocationCode(_kSamplePin);
+      verify(core.crateApiFullGetRevocationCode(pin: _kSamplePin)).called(1);
+    });
+  });
+
   ///Verify that methods convert potential [FfiException]s into the expected [CoreError]s
   group('handleCoreException', () {
     /// Create a [FfiException] that should be converted to a [CoreError]
-    final flutterApiError = FlutterApiError(type: FlutterApiErrorType.generic, description: null, data: null);
+    final flutterApiError = const FlutterApiError(type: FlutterApiErrorType.generic, description: null, data: null);
     final ffiException = AnyhowException(jsonEncode(flutterApiError));
 
     test('isValidPin', () async {
@@ -296,9 +551,9 @@ void main() {
       expect(() => typedWalletCore.identifyUri('https://example.org'), throwsA(isA<CoreError>()));
     });
 
-    test('cancelPidIssuance', () async {
-      when(core.crateApiFullCancelIssuance()).thenAnswer((_) async => throw ffiException);
-      expect(() async => typedWalletCore.cancelIssuance(), throwsA(isA<CoreError>()));
+    test('cancelSession', () async {
+      when(core.crateApiFullCancelSession()).thenAnswer((_) async => throw ffiException);
+      expect(() async => typedWalletCore.cancelSession(), throwsA(isA<CoreError>()));
     });
 
     test('acceptOfferedPid', () async {
@@ -332,8 +587,8 @@ void main() {
     });
 
     test('continuePidIssuance', () async {
-      when(core.crateApiFullContinuePidIssuance(uri: 'https://example.org')).thenThrow(ffiException);
-      expect(() => typedWalletCore.continuePidIssuance('https://example.org'), throwsA(isA<CoreError>()));
+      when(core.crateApiFullContinueIssuance(uri: 'https://example.org')).thenThrow(ffiException);
+      expect(() => typedWalletCore.continueIssuance('https://example.org'), throwsA(isA<CoreError>()));
     });
 
     test('continueDisclosureBasedIssuance', () async {
@@ -341,6 +596,11 @@ void main() {
         core.crateApiFullContinueDisclosureBasedIssuance(pin: _kSamplePin, selectedIndices: []),
       ).thenThrow(ffiException);
       expect(() => typedWalletCore.continueDisclosureBasedIssuance(_kSamplePin, []), throwsA(isA<CoreError>()));
+    });
+
+    test('startIssuanceFromOffer', () async {
+      when(core.crateApiFullStartIssuanceFromOffer(offerUri: 'https://example.org')).thenThrow(ffiException);
+      expect(() => typedWalletCore.startIssuanceFromOffer('https://example.org'), throwsA(isA<CoreError>()));
     });
 
     test('acceptDisclosure', () async {
@@ -353,9 +613,23 @@ void main() {
       expect(() => typedWalletCore.startDisclosure('https://example.org'), throwsA(isA<CoreError>()));
     });
 
+    test('startCloseProximityDisclosure', () async {
+      when(core.crateApiFullStartCloseProximityDisclosure(wrprcStrictMode: true, callback: anyNamed('callback')))
+          .thenThrow(ffiException);
+      expect(
+        () => typedWalletCore.startCloseProximityDisclosure(wrprcStrictMode: true, callback: (_) {}),
+        throwsA(isA<CoreError>()),
+      );
+    });
+
+    test('continueCloseProximityDisclosure', () async {
+      when(core.crateApiFullContinueCloseProximityDisclosure()).thenThrow(ffiException);
+      expect(() => typedWalletCore.continueCloseProximityDisclosure(), throwsA(isA<CoreError>()));
+    });
+
     test('getHistory', () async {
-      when(core.crateApiFullGetHistory()).thenThrow(ffiException);
-      expect(() => typedWalletCore.getHistory(), throwsA(isA<CoreError>()));
+      when(core.crateApiFullGetHistory(page: anyNamed('page'), pageSize: anyNamed('pageSize'))).thenThrow(ffiException);
+      expect(() => typedWalletCore.getHistory(page: 0, pageSize: 100), throwsA(isA<CoreError>()));
     });
 
     test('getHistoryForCard', () async {
@@ -453,19 +727,14 @@ void main() {
       expect(() => typedWalletCore.acceptPidIssuance(_kSamplePin), throwsA(isA<CoreError>()));
     });
 
-    test('hasActiveDisclosureSession', () async {
-      when(core.crateApiFullHasActiveDisclosureSession()).thenThrow(ffiException);
-      expect(() => typedWalletCore.hasActiveDisclosureSession(), throwsA(isA<CoreError>()));
+    test('getRegistrationRevocationCode', () async {
+      when(core.crateApiFullGetRegistrationRevocationCode()).thenThrow(ffiException);
+      expect(() => typedWalletCore.getRegistrationRevocationCode(), throwsA(isA<CoreError>()));
     });
 
-    test('hasActiveIssuanceSession', () async {
-      when(core.crateApiFullHasActiveIssuanceSession()).thenThrow(ffiException);
-      expect(() => typedWalletCore.hasActiveIssuanceSession(), throwsA(isA<CoreError>()));
-    });
-
-    test('cancelDisclosure', () async {
-      when(core.crateApiFullCancelDisclosure()).thenThrow(ffiException);
-      expect(() => typedWalletCore.cancelDisclosure(), throwsA(isA<CoreError>()));
+    test('getRevocationCode', () async {
+      when(core.crateApiFullGetRevocationCode(pin: _kSamplePin)).thenThrow(ffiException);
+      expect(() => typedWalletCore.getRevocationCode(_kSamplePin), throwsA(isA<CoreError>()));
     });
   });
 }

@@ -1,7 +1,6 @@
 import 'package:equatable/equatable.dart';
 
 import '../../../wallet_core/error/core_error.dart';
-import '../localized_text.dart';
 import '../pin/check_pin_result.dart';
 import '../pin/pin_validation_error.dart';
 
@@ -65,9 +64,17 @@ class CheckPinError extends ApplicationError {
 /// Hardware unsupported error, indicates the device does not meet the requirements
 class HardwareUnsupportedError extends ApplicationError {
   const HardwareUnsupportedError({required super.sourceError});
+}
 
-  @override
-  List<Object?> get props => [...super.props];
+/// Indicates key and/or app attestation failed during registration, so the device
+/// can not be used with the app (e.g. an outdated OS or an unofficial app install).
+class AttestationFailedError extends ApplicationError {
+  const AttestationFailedError({required super.sourceError});
+}
+
+/// Unrecoverable wallet_core invariant violation (programming error / panic)
+class ApplicationStateError extends ApplicationError {
+  const ApplicationStateError({required super.sourceError});
 }
 
 class SessionError extends ApplicationError {
@@ -92,6 +99,14 @@ enum SessionState { expired, cancelled }
 
 enum SessionType { sameDevice, crossDevice }
 
+class PreAuthorizedCodeExpiredError extends ApplicationError {
+  const PreAuthorizedCodeExpiredError({required super.sourceError});
+}
+
+class CloseProximityDisconnectedError extends ApplicationError {
+  const CloseProximityDisconnectedError({required super.sourceError});
+}
+
 class RedirectUriError extends ApplicationError {
   final RedirectError redirectError;
 
@@ -114,10 +129,19 @@ class DeniedDigidError extends ApplicationError {
 }
 
 class RelyingPartyError extends ApplicationError {
-  final LocalizedText? organizationName;
+  final String? organizationName;
 
   const RelyingPartyError({required super.sourceError, this.organizationName});
 
   @override
   List<Object?> get props => [...super.props, organizationName];
+}
+
+class AccountRevokedError extends ApplicationError {
+  final bool canRegisterNewAccount;
+
+  const AccountRevokedError({required super.sourceError, required this.canRegisterNewAccount});
+
+  @override
+  List<Object?> get props => [...super.props, canRegisterNewAccount];
 }

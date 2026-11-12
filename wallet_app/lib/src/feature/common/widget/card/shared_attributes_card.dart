@@ -8,9 +8,9 @@ import '../../../../util/extension/build_context_extension.dart';
 import '../../../../util/extension/string_extension.dart';
 import '../../../../util/mapper/card/status/card_status_metadata_mapper.dart';
 import '../../../../util/mapper/card/status/card_status_render_type.dart';
-import '../../decoration/shadow_decoration.dart';
 import '../button/button_content.dart';
 import '../default_text_and_focus_style.dart';
+import 'card_shadow_container.dart';
 import 'status/card_status_info_text.dart';
 import 'wallet_card_item.dart';
 
@@ -38,13 +38,22 @@ class SharedAttributesCard extends StatefulWidget {
   /// trigger card selection workflow.
   final VoidCallback? onChangeCardPressed;
 
+  /// Whether to render the "View" call-to-action button below the attributes.
+  /// When false, the card is rendered as a non-interactive container so it can
+  /// be used in read-only contexts (e.g. the deletion event detail screen).
+  final bool showCta;
+
   const SharedAttributesCard({
     required this.card,
     this.attributes,
     this.onPressed,
     this.onChangeCardPressed,
+    this.showCta = true,
     super.key,
-  });
+  }) : assert(
+         showCta || onPressed == null,
+         'onPressed is ignored when showCta is false; the card is rendered as a non-interactive container.',
+       );
 
   @override
   State<SharedAttributesCard> createState() => _SharedAttributesCardState();
@@ -73,29 +82,49 @@ class _SharedAttributesCardState extends State<SharedAttributesCard> {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const CardShadowDecoration(),
+    final cardContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildHeaderStrip(context),
+        _buildCardContent(context),
+      ],
+    );
+    return CardShadowContainer(
+      showShadow: widget.showCta,
       child: Column(
         children: [
-          TextButton(
-            onPressed: widget.onPressed,
-            statesController: _statesController,
-            style: context.theme.textButtonTheme.style?.copyWith(
-              padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-              shape: WidgetStatePropertyAll(_buildMainShape(context)),
-              side: _resolveBorderSide(context),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildHeaderStrip(context),
-                _buildCardContent(context),
-              ],
-            ),
-          ),
+          _buildCardWrapper(context, cardContent),
           showChangeCardButton ? _buildChangeCardCta(context) : const SizedBox.shrink(),
         ],
       ),
+    );
+  }
+
+  /// Wraps the card body in either an interactive [TextButton] (the default) or a
+  /// non-interactive [DecoratedBox] when [SharedAttributesCard.showCta] is false.
+  /// Both branches apply the same border styling so the card looks identical
+  /// regardless of interactivity.
+  Widget _buildCardWrapper(BuildContext context, Widget child) {
+    if (!widget.showCta) {
+      return DecoratedBox(
+        decoration: ShapeDecoration(
+          shape: RoundedRectangleBorder(
+            side: _buildBorderSide(context),
+            borderRadius: const BorderRadius.all(_kCornerRadius),
+          ),
+        ),
+        child: child,
+      );
+    }
+    return TextButton(
+      onPressed: widget.onPressed,
+      statesController: _statesController,
+      style: context.theme.textButtonTheme.style?.copyWith(
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+        shape: WidgetStatePropertyAll(_buildMainShape(context)),
+        side: _resolveBorderSide(context),
+      ),
+      child: child,
     );
   }
 
@@ -130,57 +159,14 @@ class _SharedAttributesCardState extends State<SharedAttributesCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          DefaultTextAndFocusStyle(
-            statesController: _statesController,
-            textStyle: context.textTheme.titleMedium,
-            pressedOrFocusedColor: textPressedColor,
-            child: Text.rich(
-              context.l10n
-                  .sharedAttributesCardTitle(
-                    card.title.l10nValue(context),
-                    (widget.attributes ?? card.attributes).length,
-                  )
-                  .toTextSpan(context),
-            ),
-          ),
+          _buildTitle(context, textPressedColor),
           const SizedBox(height: 8),
-          DefaultTextAndFocusStyle(
-            statesController: _statesController,
-            textStyle: context.textTheme.bodyLarge,
-            pressedOrFocusedColor: textPressedColor,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _buildAttributeList(context),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Focus(
-            // Prevents the button from being focused to avoid duplicate focus handling with the parent TextButton
-            canRequestFocus: false,
-            descendantsAreFocusable: false,
-            child: TextButton.icon(
-              onPressed: widget.onPressed,
-              statesController: _statesController,
-              icon: const Icon(Icons.arrow_forward),
-              iconAlignment: IconAlignment.end,
-              label: Semantics(
-                button: true,
-                attributedLabel: context.l10n
-                    .sharedAttributesCardCtaSemanticsLabel(card.title.l10nValue(context))
-                    .toAttributedString(context),
-                excludeSemantics: true /* exclude semantics from child text */,
-                child: Text.rich(context.l10n.sharedAttributesCardCta.toTextSpan(context)),
-              ),
-              style: context.theme.textButtonTheme.style?.copyWith(
-                backgroundColor: WidgetStateProperty.all(Colors.transparent),
-                minimumSize: const WidgetStatePropertyAll(Size.zero),
-                padding: const WidgetStatePropertyAll(EdgeInsets.zero),
-                side: WidgetStateBorderSide.resolveWith((states) => BorderSide.none),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-            ),
-          ),
-          const SizedBox(height: 4),
+          _buildAttributes(context, textPressedColor),
+          if (widget.showCta) ...[
+            const SizedBox(height: 16),
+            _buildViewCta(context),
+            const SizedBox(height: 4),
+          ],
         ],
       ),
     );
@@ -195,6 +181,64 @@ class _SharedAttributesCardState extends State<SharedAttributesCard> {
               _buildStatusFooter(context, statusMetadata),
             ],
           );
+  }
+
+  Widget _buildTitle(BuildContext context, Color? textPressedColor) {
+    return DefaultTextAndFocusStyle(
+      statesController: _statesController,
+      textStyle: context.textTheme.titleMedium,
+      pressedOrFocusedColor: textPressedColor,
+      child: Text.rich(
+        context.l10n
+            .sharedAttributesCardTitle(
+              widget.card.title.l10nValue(context),
+              (widget.attributes ?? widget.card.attributes).length,
+            )
+            .toTextSpan(context),
+      ),
+    );
+  }
+
+  Widget _buildAttributes(BuildContext context, Color? textPressedColor) {
+    return DefaultTextAndFocusStyle(
+      statesController: _statesController,
+      textStyle: context.textTheme.bodyLarge,
+      pressedOrFocusedColor: textPressedColor,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: _buildAttributeList(context),
+      ),
+    );
+  }
+
+  Widget _buildViewCta(BuildContext context) {
+    // The nested button only mirrors the card's pressed/focused styling. Its own semantics node would be a second,
+    // unnamed button inside the card (PVW-6333), so only its label is merged into the card's button node.
+    return Semantics(
+      attributedLabel: context.l10n
+          .sharedAttributesCardCtaSemanticsLabel(widget.card.title.l10nValue(context))
+          .toAttributedString(context),
+      excludeSemantics: true,
+      child: Focus(
+        // Prevents the button from being focused to avoid duplicate focus handling with the parent TextButton
+        canRequestFocus: false,
+        descendantsAreFocusable: false,
+        child: TextButton.icon(
+          onPressed: widget.onPressed,
+          statesController: _statesController,
+          icon: const Icon(Icons.arrow_forward),
+          iconAlignment: IconAlignment.end,
+          label: Text.rich(context.l10n.sharedAttributesCardCta.toTextSpan(context)),
+          style: context.theme.textButtonTheme.style?.copyWith(
+            backgroundColor: WidgetStateProperty.all(Colors.transparent),
+            minimumSize: const WidgetStatePropertyAll(Size.zero),
+            padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+            side: WidgetStateBorderSide.resolveWith((states) => BorderSide.none),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+        ),
+      ),
+    );
   }
 
   /// Builds the header section of the card, displaying a localized background
@@ -231,9 +275,17 @@ class _SharedAttributesCardState extends State<SharedAttributesCard> {
           padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 24)),
           side: _resolveBorderSide(context),
           shape: WidgetStateOutlinedBorder.resolveWith(
-            (states) => const RoundedRectangleBorder(
-              borderRadius: BorderRadiusGeometry.vertical(bottom: _kCornerRadius),
-            ),
+            // In the default state the top border is omitted to prevent a
+            // doubled (2 px) line at the seam with the main card button above.
+            // For focused/pressed the full border is needed so the focus ring
+            // is visible on all four sides.
+            (states) => states.isPressedOrFocused
+                ? const RoundedRectangleBorder(
+                    borderRadius: BorderRadiusGeometry.vertical(bottom: _kCornerRadius),
+                  )
+                : const _NoTopBorderRoundedRectangleBorder(
+                    borderRadius: BorderRadiusGeometry.vertical(bottom: _kCornerRadius),
+                  ),
           ),
         ),
         onPressed: widget.onChangeCardPressed,
@@ -269,4 +321,46 @@ class _SharedAttributesCardState extends State<SharedAttributesCard> {
     strokeAlign: BorderSide.strokeAlignOutside,
     width: 1,
   );
+}
+
+/// A [RoundedRectangleBorder] that paints only the left, bottom, and right
+/// edges — the top edge is omitted.
+///
+/// Used for the "change card" CTA that sits directly below the main card
+/// button. Both widgets use [BorderSide.strokeAlignOutside]; without omitting
+/// the CTA's top border the two adjacent strokes would produce a doubled
+/// (2 px) line at the seam.
+class _NoTopBorderRoundedRectangleBorder extends RoundedRectangleBorder {
+  const _NoTopBorderRoundedRectangleBorder({super.side, super.borderRadius});
+
+  @override
+  void paint(Canvas canvas, Rect rect, {TextDirection? textDirection}) {
+    if (side.style == BorderStyle.none) return;
+
+    final RRect borderRect = borderRadius.resolve(textDirection).toRRect(rect);
+    final RRect outer = borderRect.inflate(side.strokeOutset);
+    final RRect inner = borderRect.deflate(side.strokeInset);
+
+    // Build the full border ring (area between outer and inner rounded rects).
+    final borderRing = Path.combine(
+      PathOperation.difference,
+      Path()..addRRect(outer),
+      Path()..addRRect(inner),
+    );
+
+    // Keep only the portion at or below the inner rect's top edge, which
+    // effectively removes the top border segment.
+    final clip = Path()..addRect(Rect.fromLTRB(outer.left, inner.top, outer.right, outer.bottom));
+    final clipped = Path.combine(PathOperation.intersect, borderRing, clip);
+
+    canvas.drawPath(clipped, Paint()..color = side.color);
+  }
+
+  @override
+  RoundedRectangleBorder copyWith({BorderSide? side, BorderRadiusGeometry? borderRadius}) {
+    return _NoTopBorderRoundedRectangleBorder(
+      side: side ?? this.side,
+      borderRadius: borderRadius ?? this.borderRadius,
+    );
+  }
 }

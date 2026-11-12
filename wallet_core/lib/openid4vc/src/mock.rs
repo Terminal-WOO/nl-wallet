@@ -1,84 +1,27 @@
-use std::collections::HashMap;
 use std::iter;
 
-use indexmap::IndexSet;
-use rustls_pki_types::TrustAnchor;
-
-use attestation_data::auth::issuer_auth::IssuerRegistration;
+use attestation_types::credential_format::Format;
+use attestation_types::credential_kind::CredentialKind;
 use dcql::disclosure::ExtendingVctRetriever;
-use http_utils::urls::BaseUrl;
+use jwe::algorithm::EcdhAlgorithm;
+use jwe::encryption::JwePublicKey;
+use oauth::issuer_identifier::IssuerIdentifier;
+use oauth::token::AuthorizationCode;
+use p256::SecretKey;
+use p256::elliptic_curve::Generate;
+pub use wscd::mock::MOCK_WALLET_CLIENT_ID;
 
-use crate::issuance_session::CredentialWithMetadata;
-use crate::issuance_session::HttpVcMessageClient;
-use crate::issuance_session::IssuanceSession;
-use crate::issuance_session::IssuanceSessionError;
-use crate::issuance_session::NormalizedCredentialPreview;
-use crate::metadata::CredentialResponseEncryption;
-use crate::metadata::IssuerData;
-use crate::metadata::IssuerMetadata;
-use crate::oidc::Config;
-use crate::token::TokenRequest;
-use crate::token::TokenRequestGrantType;
-
+use crate::metadata::issuer_metadata::AtLeastTwoU64;
 // Re-exported for convenience
-pub use wscd::mock_remote::MOCK_WALLET_CLIENT_ID;
-
-// We can't use `mockall::automock!` on the `IssuerClient` trait directly since `automock` doesn't accept
-// traits using generic methods, and "impl trait" arguments, so we use `mockall::mock!` to make an indirection.
-
-mockall::mock! {
-    #[derive(Debug)]
-    pub IssuanceSession {
-        pub fn start() -> Result<Self, IssuanceSessionError>
-        where
-            Self: Sized;
-
-        pub fn accept(
-            &self,
-        ) -> Result<Vec<CredentialWithMetadata>, IssuanceSessionError>;
-
-        pub fn reject(self) -> Result<(), IssuanceSessionError>;
-
-        pub fn normalized_credential_previews(&self) -> &[NormalizedCredentialPreview];
-
-        pub fn issuer(&self) -> &IssuerRegistration;
-    }
-}
-
-impl IssuanceSession for MockIssuanceSession {
-    async fn start_issuance(
-        _: HttpVcMessageClient,
-        _: BaseUrl,
-        _: TokenRequest,
-        _: &[TrustAnchor<'_>],
-    ) -> Result<Self, IssuanceSessionError>
-    where
-        Self: Sized,
-    {
-        Self::start()
-    }
-
-    async fn accept_issuance<W>(
-        &self,
-        _: &[TrustAnchor<'_>],
-        _: &W,
-        _: bool,
-    ) -> Result<Vec<CredentialWithMetadata>, IssuanceSessionError> {
-        self.accept()
-    }
-
-    async fn reject_issuance(self) -> Result<(), IssuanceSessionError> {
-        self.reject()
-    }
-
-    fn normalized_credential_preview(&self) -> &[NormalizedCredentialPreview] {
-        self.normalized_credential_previews()
-    }
-
-    fn issuer_registration(&self) -> &IssuerRegistration {
-        self.issuer()
-    }
-}
+use crate::metadata::issuer_metadata::BatchCredentialIssuance;
+use crate::metadata::issuer_metadata::CredentialConfiguration;
+use crate::metadata::issuer_metadata::CredentialConfigurationId;
+use crate::metadata::issuer_metadata::CredentialMetadata;
+use crate::metadata::issuer_metadata::CredentialRequestEncryption;
+use crate::metadata::issuer_metadata::IssuerEndpoints;
+use crate::metadata::issuer_metadata::IssuerMetadata;
+use crate::metadata::issuer_metadata::JoinCredentialConfigurationId;
+use crate::token::VciTokenRequest;
 
 pub struct ExtendingVctRetrieverStub;
 impl ExtendingVctRetriever for ExtendingVctRetrieverStub {
@@ -87,61 +30,85 @@ impl ExtendingVctRetriever for ExtendingVctRetrieverStub {
     }
 }
 
-impl Config {
-    /// Construct a new `Config` based on the OP's URL and some standardized or reasonable defaults.
-    pub fn new_mock(issuer: &BaseUrl) -> Self {
-        Self {
-            userinfo_endpoint: Some(issuer.join("/userinfo")),
-            registration_endpoint: None,
-            scopes_supported: Some(IndexSet::from_iter(["openid".to_string()])),
-            response_types_supported: IndexSet::from_iter(
-                ["code", "code id_token", "id_token", "id_token token"].map(str::to_string),
-            ),
-            id_token_signing_alg_values_supported: IndexSet::from_iter(["RS256".to_string()]),
-
-            ..Config::new(
-                issuer.clone(),
-                issuer.join("/authorize"),
-                issuer.join("/token"),
-                issuer.join("/jwks.json"),
-            )
-        }
-    }
-}
-
 impl IssuerMetadata {
-    pub fn new_mock(url: &BaseUrl) -> IssuerMetadata {
-        IssuerMetadata {
-            issuer_config: IssuerData {
-                credential_issuer: url.clone(),
-                authorization_servers: None,
-                credential_endpoint: url.join_base_url("/credential"),
-                batch_credential_endpoint: Some(url.join_base_url("/batch_credential")),
-                deferred_credential_endpoint: None,
-                notification_endpoint: None,
-                credential_response_encryption: CredentialResponseEncryption {
-                    alg_values_supported: vec![],
-                    enc_values_supported: vec![],
-                    encryption_required: false,
-                },
-                credential_identifiers_supported: None,
-                display: None,
-                credential_configurations_supported: HashMap::new(),
-            },
-            protected_metadata: None,
+    pub fn new_mock(
+        issuer_identifier: IssuerIdentifier,
+        credential_configs: Vec<(CredentialConfigurationId, CredentialKind)>,
+    ) -> IssuerMetadata {
+        let endpoints = IssuerEndpoints::new_mock(&issuer_identifier);
+
+        let credential_configurations_supported = credential_configs
+            .into_iter()
+            .map(|(config_id, credential_kind)| {
+                let scope = format!("{config_id}_scope").parse().unwrap();
+                let type_metadata_uri = issuer_identifier
+                    .as_issuer_url()
+                    .join_issuer_url("/issuance/type_metadata")
+                    .join_config_id(&config_id);
+
+                let config = match credential_kind.format {
+                    Format::MsoMdoc => CredentialConfiguration::new_mdoc_ecdsa_p256_sha256(
+                        credential_kind.attestation_type.clone(),
+                        scope,
+                        CredentialMetadata::new_mdoc_example(&credential_kind.attestation_type, &[]),
+                    ),
+                    Format::SdJwt => CredentialConfiguration::new_sd_jwt_ecdsa_p256_sha256(
+                        credential_kind.attestation_type,
+                        scope,
+                        CredentialMetadata::new_example(&[]),
+                        Some(type_metadata_uri),
+                    ),
+                };
+
+                (config_id, config)
+            })
+            .collect();
+
+        Self {
+            credential_issuer: issuer_identifier,
+            authorization_servers: None,
+            endpoints,
+            credential_request_encryption: Some(CredentialRequestEncryption::new_mock()),
+            credential_response_encryption: None,
+            batch_credential_issuance: Some(BatchCredentialIssuance {
+                batch_size: AtLeastTwoU64::try_new(10.try_into().unwrap()).unwrap(),
+            }),
+            display: None,
+            issuer_info: None,
+            credential_configurations_supported,
         }
     }
 }
 
-impl TokenRequest {
-    pub fn new_mock() -> TokenRequest {
-        TokenRequest {
-            grant_type: TokenRequestGrantType::PreAuthorizedCode {
-                pre_authorized_code: "123".to_string().into(),
-            },
-            code_verifier: None,
-            client_id: None,
-            redirect_uri: None,
-        }
+impl CredentialRequestEncryption {
+    pub fn new_mock() -> Self {
+        let credential_request_public_key = JwePublicKey::new(
+            Some("key".to_string()),
+            SecretKey::generate().public_key(),
+            EcdhAlgorithm::EcdhEs,
+        );
+
+        Self::new(credential_request_public_key)
+    }
+}
+
+impl IssuerEndpoints {
+    pub fn new_mock(issuer_identifier: &IssuerIdentifier) -> Self {
+        let issuer_url = issuer_identifier.as_issuer_url();
+        let credential_endpoint = issuer_url.join_issuer_url("/issuance/credential");
+        let nonce_endpoint = issuer_url.join_issuer_url("/issuance/nonce");
+        let credential_preview_endpoint = issuer_url.join_issuer_url("/issuance/credential_preview");
+
+        Self::new(credential_endpoint, nonce_endpoint, Some(credential_preview_endpoint))
+    }
+}
+
+impl VciTokenRequest {
+    pub fn new_mock() -> Self {
+        Self::new_mock_with_pre_authorized_code("123".to_string().into())
+    }
+
+    pub fn new_mock_with_pre_authorized_code(pre_authorized_code: AuthorizationCode) -> Self {
+        VciTokenRequest::new_pre_authorized(pre_authorized_code)
     }
 }

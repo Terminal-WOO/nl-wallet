@@ -1,25 +1,22 @@
 use std::hash::Hash;
 
+use attestation_data::organization::Organization;
 use chrono::DateTime;
 use chrono::Utc;
-use rustls_pki_types::TrustAnchor;
-
-use crypto::CredentialEcdsaKey;
+use crypto::keys::CredentialEcdsaKey;
 use crypto::wscd::DisclosureWscd;
 use dcql::normalized::NormalizedCredentialRequests;
-use http_utils::urls::BaseUrl;
+use url::Url;
 use utils::generator::Generator;
-use wscd::Poa;
-
-use crate::verifier::SessionType;
 
 use super::DisclosureClient;
 use super::DisclosureSession;
+use super::DisclosureTrustAnchors;
 use super::NonEmptyDisclosableAttestations;
-use super::VerifierCertificate;
 use super::error::DisclosureError;
 use super::error::VpSessionError;
 use super::uri_source::DisclosureUriSource;
+use crate::verifier::SessionType;
 
 mockall::mock! {
     #[derive(Debug)]
@@ -32,7 +29,7 @@ mockall::mock! {
             &self,
             request_uri_query: &str,
             uri_source: DisclosureUriSource,
-            trust_anchors: &[TrustAnchor<'a>],
+            trust_anchors: DisclosureTrustAnchors<'a>,
         ) -> Result<MockDisclosureSession, VpSessionError>;
     }
 }
@@ -42,13 +39,13 @@ mockall::mock! {
     pub DisclosureSession {
         pub fn session_type(&self) -> SessionType;
         pub fn credential_requests(&self) -> &NormalizedCredentialRequests;
-        pub fn verifier_certificate(&self) -> &VerifierCertificate;
+        pub fn organization(&self) -> &Organization;
 
-        pub async fn terminate(self) -> Result<Option<BaseUrl>, VpSessionError>;
+        pub async fn terminate(self) -> Result<Option<Url>, VpSessionError>;
         pub async fn disclose(
             self,
             attestations: NonEmptyDisclosableAttestations,
-        ) -> Result<Option<BaseUrl>, (Self, DisclosureError<VpSessionError>)>;
+        ) -> Result<Option<Url>, (Box<Self>, DisclosureError<VpSessionError>)>;
     }
 }
 
@@ -61,11 +58,11 @@ impl DisclosureSession for MockDisclosureSession {
         self.credential_requests()
     }
 
-    fn verifier_certificate(&self) -> &VerifierCertificate {
-        self.verifier_certificate()
+    fn organization(&self) -> &Organization {
+        self.organization()
     }
 
-    async fn terminate(self) -> Result<Option<BaseUrl>, VpSessionError> {
+    async fn terminate(self) -> Result<Option<Url>, VpSessionError> {
         self.terminate().await
     }
 
@@ -74,10 +71,10 @@ impl DisclosureSession for MockDisclosureSession {
         attestations: NonEmptyDisclosableAttestations,
         _wscd: &W,
         _time: &impl Generator<DateTime<Utc>>,
-    ) -> Result<Option<BaseUrl>, (Self, DisclosureError<VpSessionError>)>
+    ) -> Result<Option<Url>, (Box<Self>, DisclosureError<VpSessionError>)>
     where
         K: CredentialEcdsaKey + Eq + Hash,
-        W: DisclosureWscd<Key = K, Poa = Poa>,
+        W: DisclosureWscd<Key = K>,
     {
         self.disclose(attestations).await
     }

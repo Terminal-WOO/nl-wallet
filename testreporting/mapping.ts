@@ -4,13 +4,17 @@ import { basename, extname } from "node:path"
 const filenameToGroupMapping: Record<string, string> = {
   "browsertest-wallet-web": "Browsertests",
   "browsertest-fallback-pages": "Browsertests",
-  e2e: "End-to-end tests",
+  "browsertest-revocation-portal": "Browsertests",
+  "e2e-android": "End-to-end tests (Android)",
+  "e2e-ios": "End-to-end tests (iOS)",
   flutter: "Wallet App",
   "flutter-ui": "Golden Tests",
   web: "Wallet Web",
   ios: "Platform Support iOS",
   android: "Platform Support Android",
   rust: "Wallet Core",
+  "revocation-portal": "Revocation Portal",
+  "admin-portal": "Admin Portal",
 }
 
 export function fileNameToGroup(fileName: string) {

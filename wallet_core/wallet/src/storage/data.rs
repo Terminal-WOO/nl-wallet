@@ -1,10 +1,14 @@
-use josekit::jwk::Jwk;
+use crypto::utils::KeyBytes;
+use jwe::decryption::JweEcdhSecretKey;
+use jwe::encryption::JwePublicKey;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde_with::DisplayFromStr;
 use serde_with::base64::Base64;
 use serde_with::serde_as;
-
+use wallet_account::RevocationCode;
+use wallet_account::messages::errors::AccountRevokedData;
 use wallet_account::messages::registration::WalletCertificate;
 
 use crate::pin::change::State;
@@ -25,8 +29,10 @@ pub struct KeyData {
 pub struct RegistrationData {
     pub attested_key_identifier: String,
     #[serde_as(as = "Base64")]
-    pub pin_salt: Vec<u8>,
+    pub pin_salt: KeyBytes,
     pub wallet_id: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub revocation_code: RevocationCode,
     pub wallet_certificate: WalletCertificate,
 }
 
@@ -69,9 +75,10 @@ pub struct TransferData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all_fields = "snake_case")]
 pub enum TransferKeyData {
-    Source { public_key: Jwk },
-    Destination { private_key: Jwk },
+    Source { public_key: JwePublicKey },
+    Destination { secret_key: JweEcdhSecretKey },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,4 +110,15 @@ impl KeyedData for TransferData {
 
 impl KeyedData for PinRecoveryData {
     const KEY: &'static str = "pin_recovery";
+}
+
+impl KeyedData for AccountRevokedData {
+    const KEY: &'static str = "revocation_reason";
+}
+
+#[cfg(test)]
+impl From<State> for ChangePinData {
+    fn from(source: State) -> Self {
+        ChangePinData { state: source }
+    }
 }

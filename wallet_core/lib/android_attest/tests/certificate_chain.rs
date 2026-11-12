@@ -1,13 +1,6 @@
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-
-use android_attest::certificate_chain::verify_google_key_attestation_with_params;
-use android_attest::sig_alg::ECDSA_P256_SHA256_WITH_NULL_PARAMETERS;
-use assert_matches::assert_matches;
-use chrono::Utc;
-use num_bigint::BigUint;
-use rstest::rstest;
-use rustls_pki_types::CertificateDer;
 
 use android_attest::android_crl::AndroidCrlStatus;
 use android_attest::android_crl::RevocationStatusEntry;
@@ -18,8 +11,13 @@ use android_attest::attestation_extension::key_description::KeyDescription;
 use android_attest::attestation_extension::key_description::SecurityLevel;
 use android_attest::certificate_chain::GoogleKeyAttestationError;
 use android_attest::certificate_chain::verify_google_key_attestation;
+use android_attest::certificate_chain::verify_google_key_attestation_with_params;
 use android_attest::mock_chain::MockCaChain;
 use android_attest::root_public_key::RootPublicKey;
+use android_attest::sig_alg::ECDSA_P256_SHA256_WITH_NULL_PARAMETERS;
+use chrono::Utc;
+use rstest::rstest;
+use rustls_pki_types::CertificateDer;
 use webpki::ring::ECDSA_P256_SHA256;
 use webpki::ring::RSA_PKCS1_2048_8192_SHA256;
 
@@ -52,16 +50,10 @@ fn revoked_intermediary_from(mock_ca: &MockCaChain) -> RevocationStatusList {
         entries: HashMap::new(),
     };
     // Get SerialNumber of intermediary
-    let serial_number = mock_ca
-        .last_certificate_and_keypair
-        .0
-        .params()
-        .serial_number
-        .as_ref()
-        .unwrap();
+    let last_serial_number = *mock_ca.serial_numbers.last().unwrap();
     // Insert revoked entry in the CRL
     revocation_list.entries.insert(
-        BigUint::from_bytes_be(serial_number.as_ref()),
+        last_serial_number.into(),
         RevocationStatusEntry {
             status: AndroidCrlStatus::Revoked,
             comment: None,
@@ -94,7 +86,9 @@ fn perform_google_key_attestation(
         revocation_list,
         attestation_challenge,
     )
-    .map(|_| ())
+    .map(|(_leaf_cert, key_attestation)| {
+        assert_eq!(key_attestation.attestation_challenge.as_ref(), attestation_challenge);
+    })
 }
 
 #[test]
@@ -279,7 +273,7 @@ fn test_google_key_attestation_signature_algorithm_with_null_parameters() {
     ];
 
     // Verify the attested key
-    verify_google_key_attestation_with_params(
+    let (_leaf_cert, key_attestation) = verify_google_key_attestation_with_params(
         &certificate_chain,
         &root_public_keys,
         revocation_list,
@@ -288,4 +282,6 @@ fn test_google_key_attestation_signature_algorithm_with_null_parameters() {
         Utc::now(),
     )
     .expect("valid certificate chain");
+
+    assert_eq!(key_attestation.attestation_challenge.as_ref(), attestation_challenge);
 }

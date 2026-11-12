@@ -2,13 +2,24 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use derive_more::Debug;
+use indexmap::IndexSet;
+use itertools::Itertools;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::TrustAnchor;
+use serde::Deserialize;
+use serde::Deserializer;
+use serde::Serialize;
+use serde::Serializer;
 use webpki::Error;
 use webpki::anchor_from_trusted_cert;
 use yoke::Yoke;
 use yoke::Yokeable;
+
+use crate::x509::BorrowingCertificate;
+use crate::x509::CertificateParseError;
 
 #[derive(Yokeable, Debug, Clone)]
 struct ParsedTrustAnchor<'a> {
@@ -76,5 +87,129 @@ impl TryFrom<Vec<u8>> for BorrowingTrustAnchor {
 impl From<BorrowingTrustAnchor> for Vec<u8> {
     fn from(value: BorrowingTrustAnchor) -> Self {
         value.as_ref().to_vec()
+    }
+}
+
+/// A collection of configured trust anchors for certificate chain validation.
+///
+/// Internally this type stores:
+/// - the original [`BorrowingCertificate`]s, used to identify configured trust anchors in a supplied certificate chain
+/// - the pre-parsed [`TrustAnchor<'static>`] values used for certificate chain validation using webpki
+///
+/// Parsing happens once at construction/deserialization time, so callers pay no per-call overhead.
+///
+/// Serialises to and Deserializes from a JSON array of standard base64-encoded DER certificates.
+#[derive(Clone, Debug)]
+pub struct TrustAnchors {
+    #[debug(skip)]
+    certificates: IndexSet<BorrowingCertificate>,
+    #[debug(skip)]
+    trust_anchors: Vec<TrustAnchor<'static>>,
+}
+
+impl TrustAnchors {
+    #[cfg(feature = "mock")]
+    pub fn empty() -> Self {
+        Self {
+            certificates: Default::default(),
+            trust_anchors: Default::default(),
+        }
+    }
+
+    pub fn as_trust_anchor_slice(&self) -> &[TrustAnchor<'static>] {
+        self.trust_anchors.as_slice()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.trust_anchors.is_empty()
+    }
+
+    pub fn contains(&self, certificate: &BorrowingCertificate) -> bool {
+        self.certificates.contains(certificate)
+    }
+
+    pub fn find_in_chain<'a>(
+        &self,
+        chain: impl IntoIterator<Item = &'a BorrowingCertificate>,
+    ) -> Option<&'a BorrowingCertificate> {
+        chain.into_iter().find(|certificate| self.contains(certificate))
+    }
+}
+
+impl PartialEq for TrustAnchors {
+    fn eq(&self, other: &Self) -> bool {
+        self.certificates == other.certificates
+    }
+}
+
+impl Eq for TrustAnchors {}
+
+impl TryFrom<Vec<Vec<u8>>> for TrustAnchors {
+    type Error = CertificateParseError;
+
+    fn try_from(input: Vec<Vec<u8>>) -> Result<Self, Self::Error> {
+        let certificates: IndexSet<BorrowingCertificate> =
+            input.into_iter().map(BorrowingCertificate::from_der).try_collect()?;
+        certificates.try_into()
+    }
+}
+
+impl TryFrom<IndexSet<BorrowingCertificate>> for TrustAnchors {
+    type Error = CertificateParseError;
+
+    fn try_from(certificates: IndexSet<BorrowingCertificate>) -> Result<Self, Self::Error> {
+        let trust_anchors: Vec<_> = certificates
+            .iter()
+            .map(BorrowingCertificate::as_der)
+            .map(webpki::anchor_from_trusted_cert)
+            .map_ok(|ta| ta.to_owned())
+            .try_collect()
+            .map_err(|e| CertificateParseError::TrustAnchorCertificateParsing(Box::new(e)))?;
+
+        let result = Self {
+            certificates,
+            trust_anchors,
+        };
+
+        Ok(result)
+    }
+}
+
+#[cfg(any(test, feature = "examples", feature = "generate"))]
+impl TrustAnchors {
+    pub fn try_from_trust_anchors(
+        trust_anchors: impl IntoIterator<Item = BorrowingTrustAnchor>,
+    ) -> Result<Self, CertificateParseError> {
+        let (certificates, trust_anchors) = trust_anchors
+            .into_iter()
+            .map(|ta| BorrowingCertificate::from_der(ta.as_ref()).map(|cert| (cert, ta.to_owned_trust_anchor())))
+            .try_collect()?;
+
+        Ok(Self {
+            certificates,
+            trust_anchors,
+        })
+    }
+}
+
+impl Serialize for TrustAnchors {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let base64_strings: Vec<String> = self
+            .certificates
+            .iter()
+            .map(|c| BASE64_STANDARD.encode(c.as_ref()))
+            .collect();
+        base64_strings.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TrustAnchors {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let base64_strings: Vec<String> = Vec::deserialize(deserializer)?;
+        let der_bytes: Vec<Vec<u8>> = base64_strings
+            .iter()
+            .map(|s| BASE64_STANDARD.decode(s).map_err(serde::de::Error::custom))
+            .collect::<Result<_, _>>()?;
+        TrustAnchors::try_from(der_bytes).map_err(serde::de::Error::custom)
     }
 }

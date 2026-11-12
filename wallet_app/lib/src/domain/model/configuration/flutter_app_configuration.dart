@@ -1,39 +1,26 @@
-import 'package:equatable/equatable.dart';
-import 'package:flutter/foundation.dart';
-import 'package:wallet_core/core.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
 
-@immutable
-class FlutterAppConfiguration extends Equatable {
-  final Duration idleLockTimeout;
-  final Duration idleWarningTimeout;
-  final Duration backgroundLockTimeout;
-  final String staticAssetsBaseUrl;
-  final int version;
+import '../pid/pid_attestation.dart';
+import 'maintenance_window.dart';
 
-  const FlutterAppConfiguration({
-    required this.idleLockTimeout,
-    required this.idleWarningTimeout,
-    required this.backgroundLockTimeout,
-    required this.staticAssetsBaseUrl,
-    required this.version,
-  });
+part 'flutter_app_configuration.freezed.dart';
 
-  factory FlutterAppConfiguration.fromFlutterConfig(FlutterConfiguration config) {
-    return FlutterAppConfiguration(
-      idleLockTimeout: Duration(seconds: config.inactiveLockTimeout),
-      idleWarningTimeout: Duration(seconds: config.inactiveWarningTimeout),
-      backgroundLockTimeout: Duration(seconds: config.backgroundLockTimeout),
-      staticAssetsBaseUrl: config.staticAssetsBaseUrl,
-      version: config.version.toInt(),
-    );
-  }
+@freezed
+abstract class FlutterAppConfiguration with _$FlutterAppConfiguration {
+  const factory FlutterAppConfiguration({
+    required Duration idleLockTimeout,
+    required Duration idleWarningTimeout,
+    required Duration backgroundLockTimeout,
+    required String staticAssetsBaseUrl,
+    required List<PidAttestation> pidAttestations,
+    required MaintenanceWindow? maintenanceWindow,
+    required String version,
+    required String environment,
+  }) = _FlutterAppConfiguration;
 
-  @override
-  List<Object?> get props => [
-    idleLockTimeout,
-    idleWarningTimeout,
-    backgroundLockTimeout,
-    staticAssetsBaseUrl,
-    version,
-  ];
+  const FlutterAppConfiguration._();
+
+  String get versionAndEnvironment => '$version ($environment)';
+
+  Set<String> get pidAttestationTypes => pidAttestations.map((it) => it.attestationType).toSet();
 }

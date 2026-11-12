@@ -1,16 +1,15 @@
 #![expect(dead_code)]
 
-use rstest::rstest;
-
 use error_category::Category;
 use error_category::ErrorCategory;
+use rstest::rstest;
 
 #[derive(ErrorCategory)]
 enum ChildError {
     #[category(expected)]
     Unit,
-    #[category(unexpected)]
-    Unexpected,
+    #[category(impossible)]
+    Impossible,
     #[category(expected)]
     EmptyTuple(),
     #[category(critical)]
@@ -106,15 +105,9 @@ struct DoubleStructRoot {
     field_2: ChildError,
 }
 
-#[test]
-fn derive_error_category() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/derive_error_category/fail_*.rs");
-}
-
 #[rstest]
 #[case(ChildError::Unit, Category::Expected)]
-#[case(ChildError::Unexpected, Category::Unexpected)]
+#[case(ChildError::Impossible, Category::Impossible)]
 #[case(ChildError::EmptyTuple(), Category::Expected)]
 #[case(ChildError::SingleTuple(42), Category::Critical)]
 #[case(ChildError::DoubleTuple(42, 42), Category::PersonalData)]

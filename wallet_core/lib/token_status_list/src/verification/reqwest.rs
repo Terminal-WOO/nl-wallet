@@ -1,37 +1,35 @@
-use std::sync::Arc;
-
 use derive_more::AsRef;
 use http::header;
+use reqwest::ClientBuilder;
 use url::Url;
 
-use http_utils::reqwest::default_reqwest_client_builder;
-
-use crate::status_list_token::StatusListToken;
+use crate::status_list_jwt::StatusListJwt;
 use crate::verification::client::StatusListClient;
 use crate::verification::client::StatusListClientError;
 
 const STATUS_LIST_JWT_ACCEPT: &str = "application/statuslist+jwt";
 
 #[derive(Debug, Clone, AsRef)]
-pub struct StatusListReqwestClient(reqwest::Client);
+pub struct HttpStatusListClient(reqwest::Client);
 
-impl StatusListReqwestClient {
-    pub fn new() -> Result<Self, reqwest::Error> {
-        Ok(Self(default_reqwest_client_builder().build()?))
+impl HttpStatusListClient {
+    pub fn new(client_builder: ClientBuilder) -> Result<Self, reqwest::Error> {
+        let client = client_builder.build()?;
+
+        Ok(Self(client))
     }
 }
 
-impl StatusListClient for StatusListReqwestClient {
-    async fn fetch(&self, url: Url) -> Result<StatusListToken, StatusListClientError> {
+impl StatusListClient for HttpStatusListClient {
+    async fn fetch(&self, url: Url) -> Result<StatusListJwt, StatusListClientError> {
         let response = self
             .as_ref()
             .get(url)
             .header(header::ACCEPT, STATUS_LIST_JWT_ACCEPT)
             .send()
-            .await
-            .map_err(Arc::new)?;
+            .await?;
 
-        let status_list_token = response.text().await.map_err(Arc::new)?.parse().map_err(Arc::new)?;
+        let status_list_token = response.error_for_status()?.text().await?.parse()?;
 
         Ok(status_list_token)
     }

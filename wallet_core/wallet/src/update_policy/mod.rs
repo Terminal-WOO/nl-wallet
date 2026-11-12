@@ -4,16 +4,14 @@ mod http_repository;
 mod mock;
 
 use background_repository::BackgroundUpdateableUpdatePolicyRepository;
-
 use error_category::ErrorCategory;
-use http_utils::tls::pinning::TlsPinningConfig;
-
-use crate::repository::FileStorageError;
-use crate::repository::HttpClientError;
+use http_utils::client::TlsPinningConfig;
 
 pub use self::http_repository::HttpUpdatePolicyRepository;
 #[cfg(any(test, feature = "test"))]
 pub use self::mock::MockUpdatePolicyRepository;
+use crate::repository::FileStorageError;
+use crate::repository::HttpClientError;
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]

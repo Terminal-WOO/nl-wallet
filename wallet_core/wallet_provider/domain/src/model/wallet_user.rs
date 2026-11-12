@@ -1,17 +1,35 @@
+use android_attest::attestation_extension::key_attestation::OsVersion;
+use android_attest::attestation_extension::key_attestation::PatchLevel;
+use apple_app_attest::AssertionCounter;
 use chrono::DateTime;
 use chrono::Utc;
+use crypto::kid::Kid;
+use crypto::p256_der::verifying_key_sha256;
+use derive_more::AsRef;
 use derive_more::Debug;
-use p256::ecdsa::VerifyingKey;
-use semver::Version;
-use serde::Serialize;
-use uuid::Uuid;
-
-use apple_app_attest::AssertionCounter;
+use derive_more::Display;
+use derive_more::From;
+use derive_more::Into;
 use hsm::model::encrypted::Encrypted;
 use hsm::model::wrapped_key::WrappedKey;
+use p256::ecdsa::VerifyingKey;
+use semver::Version;
+use serde::Deserialize;
+use serde::Serialize;
+use uuid::Uuid;
+use wallet_account::messages::errors::RevocationReason;
 use wallet_account::messages::transfer::TransferSessionState;
 
-pub type WalletId = String;
+use crate::model::QueryResult;
+
+pub type WalletUserQueryResult = QueryResult<WalletUser>;
+pub type WalletUserStateQueryResult = QueryResult<WalletUserState>;
+
+#[derive(Debug, Clone)]
+pub struct WithKid<T> {
+    pub value: T,
+    pub kid: Kid,
+}
 
 #[derive(Debug)]
 pub struct WalletUser {
@@ -19,16 +37,35 @@ pub struct WalletUser {
     pub wallet_id: WalletId,
     pub hw_pubkey: VerifyingKey,
     #[debug(skip)]
-    pub encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+    pub encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
     #[debug(skip)]
-    pub encrypted_previous_pin_pubkey: Option<Encrypted<VerifyingKey>>,
+    pub encrypted_previous_pin_pubkey: Option<WithKid<Encrypted<VerifyingKey>>>,
     pub unsuccessful_pin_entries: u8,
     pub last_unsuccessful_pin_entry: Option<DateTime<Utc>>,
     pub instruction_challenge: Option<InstructionChallenge>,
     pub instruction_sequence_number: u64,
     pub attestation: WalletUserAttestation,
     pub state: WalletUserState,
-    pub recovery_code: Option<String>,
+    pub revocation_code_hmac: Vec<u8>,
+    pub revocation_registration: Option<RevocationRegistration>,
+    pub recovery_code: Option<RecoveryCode>,
+    pub recovery_code_is_denied: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct RevocationRegistration {
+    pub reason: RevocationReason,
+    pub date_time: DateTime<Utc>,
+}
+
+/// The result of revoking a set of wallet users.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedWalletUsers {
+    /// The number of wallet users that were revoked by this call, i.e. excluding those already revoked.
+    pub revoked_count: u64,
+    /// The WIA ids of all requested wallet users, including those already revoked.
+    pub wia_ids: Vec<Uuid>,
 }
 
 #[derive(Debug)]
@@ -52,7 +89,15 @@ pub struct TransferSession {
 #[derive(Debug)]
 pub enum WalletUserAttestation {
     Apple { assertion_counter: AssertionCounter },
-    Android,
+    Android { identifiers: AndroidHardwareIdentifiers },
+}
+
+#[derive(Debug, Default)]
+pub struct AndroidHardwareIdentifiers {
+    pub brand: Option<String>,
+    pub model: Option<String>,
+    pub os_version: Option<OsVersion>,
+    pub os_patch_level: Option<PatchLevel>,
 }
 
 impl WalletUser {
@@ -72,29 +117,27 @@ pub struct InstructionChallenge {
 }
 
 #[derive(Debug)]
-pub enum WalletUserQueryResult {
-    Found(Box<WalletUser>),
-    NotFound,
-}
-
-#[derive(Debug)]
 pub struct WalletUserCreate {
-    pub wallet_id: String,
+    pub wallet_id: WalletId,
     pub hw_pubkey: VerifyingKey,
     #[debug(skip)]
-    pub encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+    pub encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
     pub attestation_date_time: DateTime<Utc>,
     pub attestation: WalletUserAttestationCreate,
+    pub revocation_code_hmac: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub enum WalletUserState {
     Active,
     Blocked,
     RecoveringPin,
     Transferring,
     Transferred,
+    Revoked,
 }
 
 #[derive(Debug)]
@@ -106,54 +149,94 @@ pub enum WalletUserAttestationCreate {
     Android {
         certificate_chain: Vec<Vec<u8>>,
         integrity_verdict_json: String,
+        identifiers: AndroidHardwareIdentifiers,
     },
 }
 
 #[derive(Clone)]
 pub struct WalletUserKeys {
     pub wallet_user_id: Uuid,
+    pub batch_id: Uuid,
     pub keys: Vec<WalletUserKey>,
 }
 
 #[derive(Clone)]
 pub struct WalletUserKey {
     pub wallet_user_key_id: Uuid,
-    pub key_identifier: String,
-    pub key: WrappedKey,
+    pub key: WithKid<WrappedKey>,
+    pub is_blocked: bool,
 }
 
-#[derive(Clone)]
-pub struct WalletUserPinRecoveryKeys {
-    pub wallet_user_id: Uuid,
-    pub keys: Vec<WalletUserPinRecoveryKey>,
+impl WalletUserKey {
+    pub fn sha256_fingerprint(&self) -> String {
+        verifying_key_sha256(self.key.value.public_key())
+    }
 }
 
-#[derive(Clone)]
-pub struct WalletUserPinRecoveryKey {
-    pub wallet_user_key_id: Uuid,
-    pub key_identifier: String,
-    pub pubkey: VerifyingKey,
+#[derive(Debug, Clone, AsRef, From, Into, Display, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "utoipa",
+    derive(utoipa::ToSchema),
+    schema(examples("dozCMuQOCEJPtuSNXtB2VkCdaEFNMhEZ"))
+)]
+pub struct WalletId(String);
+
+#[derive(Debug, Clone, AsRef, From, Into, Display, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "utoipa",
+    derive(utoipa::ToSchema),
+    schema(examples("54aa94af2afc4da286967253a33a61410f0d069c0d77ff748fd83e9fc82c7526"))
+)]
+pub struct RecoveryCode(String);
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct WalletUserIsRevoked {
+    pub wallet_id: WalletId,
+    pub recovery_code: Option<RecoveryCode>,
+    pub state: WalletUserState,
+    pub revocation_registration: Option<RevocationRegistration>,
+    pub can_register_new_wallet: bool,
+}
+
+impl From<WalletUser> for WalletUserIsRevoked {
+    fn from(wallet_user: WalletUser) -> Self {
+        Self {
+            wallet_id: wallet_user.wallet_id,
+            recovery_code: wallet_user.recovery_code,
+            state: wallet_user.state,
+            revocation_registration: wallet_user.revocation_registration,
+            can_register_new_wallet: !wallet_user.recovery_code_is_denied,
+        }
+    }
 }
 
 #[cfg(feature = "mock")]
 pub mod mock {
     use std::str::FromStr;
 
-    use p256::ecdsa::VerifyingKey;
-    use uuid::uuid;
-
     use crypto::utils::random_bytes;
     use hsm::model::encrypted::Encrypted;
     use hsm::model::encrypted::InitializationVector;
+    use p256::ecdsa::VerifyingKey;
+    use uuid::uuid;
 
-    use crate::model::wallet_user::WalletUser;
-    use crate::model::wallet_user::WalletUserAttestation;
-    use crate::model::wallet_user::WalletUserState;
+    use super::AndroidHardwareIdentifiers;
+    use super::Kid;
+    use super::WalletUser;
+    use super::WalletUserAttestation;
+    use super::WalletUserState;
+    use super::WithKid;
+    use crate::model::wallet_user::WalletId;
 
     pub fn wallet_user_1() -> WalletUser {
+        wallet_user_with_id("wallet_123".to_owned().into())
+    }
+
+    pub fn wallet_user_with_id(wallet_id: WalletId) -> WalletUser {
         WalletUser {
             id: uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
-            wallet_id: "wallet_123".to_string(),
+            wallet_id,
             hw_pubkey: VerifyingKey::from_str(
                 r#"-----BEGIN PUBLIC KEY-----
 MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEhaPRcKTAS30m0409bpOzQLfLNOh5
@@ -162,15 +245,23 @@ SssTb0eI53lvfdvG/xkNcktwsXEIPL1y3lUKn1u1ZhFTnQn4QKmnvaN4uQ==
 "#,
             )
             .unwrap(),
-            encrypted_pin_pubkey: Encrypted::new(random_bytes(32), InitializationVector(random_bytes(32))),
+            encrypted_pin_pubkey: WithKid {
+                value: Encrypted::new(random_bytes(32), InitializationVector(random_bytes(32))),
+                kid: Kid::try_from("0").unwrap(),
+            },
             encrypted_previous_pin_pubkey: None,
             unsuccessful_pin_entries: 0,
             last_unsuccessful_pin_entry: None,
             instruction_challenge: None,
             instruction_sequence_number: 0,
-            attestation: WalletUserAttestation::Android,
+            attestation: WalletUserAttestation::Android {
+                identifiers: AndroidHardwareIdentifiers::default(),
+            },
             state: WalletUserState::Active,
+            revocation_code_hmac: random_bytes(32),
+            revocation_registration: None,
             recovery_code: None,
+            recovery_code_is_denied: false,
         }
     }
 }

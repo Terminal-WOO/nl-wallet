@@ -1,0 +1,1189 @@
+use std::convert::Infallible;
+use std::num::NonZeroUsize;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use attestation_types::status_claim::StatusClaim;
+use attestation_types::status_claim::StatusListClaim;
+use chrono::DateTime;
+use chrono::Utc;
+use cose::CborError;
+use cose::CoseError;
+use cose::cbor_serialize;
+use crypto::keys::EcdsaKeySend;
+use futures::StreamExt;
+use futures::future::join_all;
+use futures::future::try_join_all;
+use http_utils::urls::BaseUrlError;
+use itertools::Itertools;
+use jwt::error::JwtParseError;
+use jwt::error::JwtSignError;
+use measure::measure;
+use rand::seq::SliceRandom;
+use sea_orm::ColumnTrait;
+use sea_orm::DatabaseConnection;
+use sea_orm::DatabaseTransaction;
+use sea_orm::DbErr;
+use sea_orm::EntityTrait;
+use sea_orm::IntoActiveModel;
+use sea_orm::JoinType;
+use sea_orm::NotSet;
+use sea_orm::QueryFilter;
+use sea_orm::QueryOrder;
+use sea_orm::QuerySelect;
+use sea_orm::RelationTrait;
+use sea_orm::SelectColumns;
+use sea_orm::Set;
+use sea_orm::SqlErr;
+use sea_orm::TransactionTrait;
+use sea_orm::TryInsertResult;
+use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::LockBehavior;
+use sea_orm::sea_query::LockType;
+use sea_orm::sea_query::OnConflict;
+use sea_orm::sea_query::Query;
+use sea_orm::sqlx::types::chrono::NaiveDate;
+use token_status_list::status_list::PackedStatusList;
+use token_status_list::status_list::StatusList;
+use token_status_list::status_list::StatusType;
+use token_status_list::status_list_cwt::StatusListCwt;
+use token_status_list::status_list_jwt::StatusListJwt;
+use token_status_list::status_list_service::ObtainClaimError;
+use token_status_list::status_list_service::StatusListService;
+use token_status_list::status_list_token::StatusListToken;
+use token_status_list::status_list_token::StatusListTokenBuilder;
+use token_status_list::status_list_token::StatusListTokenClaims;
+use tokio::task::AbortHandle;
+use tokio::task::JoinError;
+use tokio::task::JoinHandle;
+use url::Url;
+use utils::date_time_seconds::DateTimeSeconds;
+use utils::generator::TimeGenerator;
+use utils::vec_at_least::VecNonEmpty;
+use uuid::Uuid;
+
+use crate::ExternalId;
+use crate::config::StatusListConfig;
+use crate::entity::attestation_batch;
+use crate::entity::attestation_batch_list_indices;
+use crate::entity::attestation_group;
+use crate::entity::status_list;
+use crate::entity::status_list_item;
+use crate::publish::LockVersion;
+use crate::publish::PublishDirError;
+use crate::publish::PublishLockError;
+use crate::refresh::RefreshControl;
+
+#[cfg(feature = "revocation_helper")]
+pub mod revocation_helper;
+
+/// Number of tries to create status list while obtaining a status claim.
+const IN_FLIGHT_CREATE_TRIES: usize = 5;
+
+/// Maximal concurrent publish when revoke_all is called
+const REPUBLISH_ALL_MAX_CONCURRENT: usize = 16;
+
+#[trait_variant::make(Send)]
+pub trait RevokeAll {
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Whether all items in a status list needs to be revoked
+    async fn is_revoked_all(&self) -> Result<bool, Self::Error>;
+}
+
+#[derive(Debug, Clone)]
+pub struct NoRevokeAll;
+
+impl RevokeAll for NoRevokeAll {
+    type Error = Infallible;
+
+    async fn is_revoked_all(&self) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+}
+
+/// StatusListService implementation using Postgres.
+///
+/// StatusListService tries to obtain status lists locations with minimal write queries.
+/// This is implemented by creating all items for every list upfront (in the background).
+/// When the create_threshold is too low, this will happen in flight.
+///
+/// When a status list is depleted the deletion of the items (which are not necessary anymore)
+/// will be scheduled in the background.
+///
+/// On creation the service will schedule housekeeping for all lists that still have list items.
+///
+/// The items of the status list have a sequence number on total order per attestation group. This
+/// simplifies the queries to fetch the available items. The next sequence number of the status list
+/// is the exclusive end of the sequence numbers used for that status list and the start of a new
+/// status list. This next sequence number is also stored on the attestation group to detect a
+/// concurrent creation of the list by a separate instance.
+#[derive(Debug)]
+pub struct PostgresStatusListService<K, R> {
+    connection: DatabaseConnection,
+    /// ID of the attestation group in the DB
+    attestation_group_id: i16,
+    config: Arc<StatusListConfig<K>>,
+    revoke_all: R,
+}
+
+// Manually implement Clone as derived Clone uses incorrect bounds:
+// https://github.com/rust-lang/rust/issues/26925#issue-94161444
+impl<K, R> Clone for PostgresStatusListService<K, R>
+where
+    K: EcdsaKeySend + Sync + 'static,
+    R: RevokeAll + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            connection: self.connection.clone(),
+            attestation_group_id: self.attestation_group_id,
+            config: self.config.clone(),
+            revoke_all: self.revoke_all.clone(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StatusListServiceError {
+    #[error("base url error: {0}")]
+    BaseUrl(#[from] BaseUrlError),
+
+    #[error("database error: {0}")]
+    Db(#[from] DbErr),
+
+    #[error("could not randomize indices: {0}")]
+    Indices(#[from] JoinError),
+
+    #[error("invalid publish dir: {0}")]
+    InvalidPublishDir(PathBuf),
+
+    #[error("io error: {0}")]
+    IO(#[from] std::io::Error),
+
+    #[error("io error for `{0}`: {1}")]
+    IOWithPath(PathBuf, #[source] std::io::Error),
+
+    #[error("could sign JWT: {0}")]
+    JwtSign(#[from] JwtSignError),
+
+    #[error("could not sign CWT: {0}")]
+    CwtSign(#[source] CoseError),
+
+    #[error("could not serialize CWT: {0}")]
+    CwtSerialization(#[source] CborError),
+
+    #[error("no status list available and could not create one")]
+    NoStatusListAvailable,
+
+    #[error("could not lock for publish: {0}")]
+    PublishLock(#[from] PublishLockError),
+
+    #[error("could not get revoke all state: {0}")]
+    RevokeAll(#[from] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("too many claims requested: {0}")]
+    TooManyClaimsRequested(usize),
+
+    #[error("could not write to publication directory: {0}")]
+    PublishDir(#[source] PublishDirError),
+}
+
+struct Publisher<'a, K, R> {
+    service: &'a PostgresStatusListService<K, R>,
+    revoke_all: bool,
+}
+
+impl<'a, K, R> Publisher<'a, K, R>
+where
+    K: EcdsaKeySend + Sync + 'static,
+    R: RevokeAll + Clone + Sync + 'static,
+{
+    async fn publish(
+        &self,
+        list_id: i64,
+        external_id: &ExternalId,
+        size: usize,
+    ) -> Result<bool, StatusListServiceError> {
+        if self.revoke_all {
+            self.service.publish_status_list_all_revoked(external_id, size).await
+        } else {
+            self.service
+                .publish_status_list_from_db(list_id, external_id, size)
+                .await
+        }
+    }
+}
+
+impl<'a, K, R> Clone for Publisher<'a, K, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, K, R> Copy for Publisher<'a, K, R> {}
+
+impl<K, R> StatusListService for PostgresStatusListService<K, R>
+where
+    K: EcdsaKeySend + Sync + 'static,
+    R: RevokeAll + Clone + Sync + 'static,
+{
+    type Error = StatusListServiceError;
+
+    async fn obtain_status_claims(
+        &self,
+        batch_id: Uuid,
+        expires: Option<DateTimeSeconds>,
+        copies: NonZeroUsize,
+    ) -> Result<VecNonEmpty<StatusClaim>, ObtainClaimError<Self::Error>> {
+        tracing::debug!("Obtaining status claims with {} copies", copies);
+        self.obtain_status_claims_and_scheduled_tasks(batch_id, expires, copies)
+            .await
+            .map(|(claims, _)| claims)
+    }
+
+    fn start_refresh_job(&self) -> AbortHandle {
+        self.start_refresh_job()
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn republish_all(&self, force: bool) -> Result<(), Self::Error> {
+        if force {
+            tracing::warn!("Resetting published status lists locks");
+            self.config
+                .publish_dir
+                .clear_locks()
+                .await
+                .map_err(StatusListServiceError::PublishDir)?;
+        }
+
+        let publisher = self
+            .to_publisher()
+            .await
+            .map_err(|error| StatusListServiceError::RevokeAll(Box::new(error)))?;
+
+        let mut stream = status_list::Entity::find()
+            .select_only()
+            .select_column(status_list::Column::Id)
+            .select_column(status_list::Column::ExternalId)
+            .select_column(status_list::Column::Size)
+            .filter(status_list::Column::AttestationGroupId.eq(self.attestation_group_id))
+            .into_tuple::<(i64, String, i32)>()
+            .stream(&self.connection)
+            .await
+            .map_err(StatusListServiceError::Db)?
+            .map(async |result| match result {
+                Ok((list_id, external_id, size)) => {
+                    let external_id = ExternalId::try_from(external_id).expect("external id from db should be valid");
+                    publisher.publish(list_id, &external_id, size as usize).await
+                }
+                Err(error) => Err(StatusListServiceError::Db(error)),
+            })
+            .buffer_unordered(REPUBLISH_ALL_MAX_CONCURRENT);
+
+        let mut result = Ok(());
+        while let Some(job_result) = stream.next().await {
+            if let Err(err) = job_result {
+                tracing::error!("Error publishing list: {:?}", err);
+                result = Err(err);
+            }
+        }
+        result
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn revoke_attestation_batches(&self, batch_ids: Vec<Uuid>) -> Result<(), Self::Error> {
+        // Find batches and status_lists for this service by batch_ids
+        let batches: Vec<(i64, i64, String, i32)> = attestation_batch::Entity::find()
+            .select_only()
+            .column(attestation_batch::Column::Id)
+            .select_column(status_list::Column::Id)
+            .select_column(status_list::Column::ExternalId)
+            .select_column(status_list::Column::Size)
+            .inner_join(status_list::Entity)
+            .filter(
+                attestation_batch::Column::BatchId
+                    .is_in(batch_ids)
+                    .and(status_list::Column::AttestationGroupId.eq(self.attestation_group_id)),
+            )
+            .into_tuple()
+            .all(&self.connection)
+            .await
+            .map_err(StatusListServiceError::Db)?;
+
+        let (attestation_batch_ids, status_list_info): (Vec<_>, Vec<_>) = batches
+            .into_iter()
+            .map(|(batch_id, status_list_id, external_id, size)| (batch_id, (status_list_id, external_id, size)))
+            .unzip();
+
+        // Update revocation for all batches
+        attestation_batch::Entity::update_many()
+            .col_expr(attestation_batch::Column::IsRevoked, Expr::value(true))
+            .filter(attestation_batch::Column::Id.is_in(attestation_batch_ids))
+            .exec(&self.connection)
+            .await
+            .map_err(StatusListServiceError::Db)?;
+
+        // Publish new status list
+        let publisher = self
+            .to_publisher()
+            .await
+            .map_err(|error| StatusListServiceError::RevokeAll(Box::new(error)))?;
+        try_join_all(status_list_info.into_iter().unique_by(|(id, _, _)| *id).map(
+            |(list_id, external_id, size)| async move {
+                let external_id = ExternalId::try_from(external_id).expect("external id from db should be valid");
+                let size = size.try_into().expect("size should be non-zero");
+                publisher.publish(list_id, &external_id, size).await
+            },
+        ))
+        .await?;
+
+        Ok(())
+    }
+}
+
+impl<K, R> PostgresStatusListService<K, R> {
+    pub async fn try_new(
+        attestation_group: &str,
+        connection: DatabaseConnection,
+        config: StatusListConfig<K>,
+        revoke_all: R,
+    ) -> Result<Self, DbErr> {
+        let attestation_group_id = initialize_attestation_group_id(&connection, attestation_group).await?;
+
+        Ok(Self {
+            connection,
+            attestation_group_id,
+            config: Arc::new(config),
+            revoke_all,
+        })
+    }
+
+    pub fn config(&self) -> &StatusListConfig<K> {
+        &self.config
+    }
+
+    fn external_id_url(&self, external_id: &ExternalId) -> Url {
+        self.config
+            .base_url
+            .join_base_url(&self.config.context_path)
+            .join(external_id.as_ref())
+    }
+}
+
+impl<K, R> PostgresStatusListService<K, R>
+where
+    K: EcdsaKeySend + Sync + 'static,
+    R: RevokeAll + Clone + Sync + 'static,
+{
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    pub async fn obtain_status_claims_and_scheduled_tasks(
+        &self,
+        batch_id: Uuid,
+        expires: Option<DateTimeSeconds>,
+        copies: NonZeroUsize,
+    ) -> Result<(VecNonEmpty<StatusClaim>, Vec<JoinHandle<()>>), ObtainClaimError<StatusListServiceError>> {
+        let copies = copies.get();
+
+        // If issuer requests more copies than the size of a complete status list,
+        // this is a configuration issue.
+        if copies > self.config.list_size.as_usize() {
+            return Err(ObtainClaimError::InternalError(
+                StatusListServiceError::TooManyClaimsRequested(copies),
+            ));
+        }
+
+        // Get status lists with exclusive lock or create if not available
+        let (tx, lists) = self
+            .fetch_exclusive_available_status_lists_or_create(copies)
+            .await
+            .map_err(ObtainClaimError::InternalError)?;
+
+        // Get the next status list items and store them in the attestation_batch table
+        let lists_with_items = self
+            .fetch_status_list_items(&tx, lists, copies as u64)
+            .await
+            .map_err(ObtainClaimError::InternalError)?;
+        Self::create_attestation_batch(
+            &tx,
+            batch_id,
+            expires.map(|d| DateTime::from(d).date_naive()),
+            lists_with_items.iter().map(|(list, items)| {
+                let indices = items.iter().map(|item| item.index).collect();
+                (list.id, indices)
+            }),
+        )
+        .await?;
+
+        tx.commit()
+            .await
+            .map_err(|error| ObtainClaimError::InternalError(StatusListServiceError::Db(error)))?;
+
+        // Schedule housekeeping after committing
+        let tasks = self.schedule_housekeeping(lists_with_items.iter().map(|(list, _)| list));
+
+        // Convert into StatusClaim using the base url
+        let claims = lists_with_items
+            .into_iter()
+            .flat_map(|(list, items)| {
+                let external_id = ExternalId::try_from(list.external_id).expect("external id from db should be valid");
+                let url = self.external_id_url(&external_id);
+                items.into_iter().map(move |item| {
+                    StatusClaim::StatusList(StatusListClaim {
+                        idx: item.index as u32,
+                        uri: url.clone(),
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Ok((claims.try_into().unwrap(), tasks))
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn fetch_exclusive_available_status_lists_or_create(
+        &self,
+        copies: usize,
+    ) -> Result<(DatabaseTransaction, Vec<status_list::Model>), StatusListServiceError> {
+        let mut tries = IN_FLIGHT_CREATE_TRIES;
+        loop {
+            // Always restart transaction (e.g. level was set to repeatable read)
+            let tx = self.connection.begin().await?;
+            let lists = status_list::Entity::find()
+                .filter(status_list::Column::AttestationGroupId.eq(self.attestation_group_id))
+                .filter(status_list::Column::Available.gt(0))
+                // Use a lock because we use and update availability afterward
+                .lock_exclusive()
+                .all(&tx)
+                .await?;
+
+            // If the `create_threshold` is large enough compared to the requested claim_size and
+            // concurrent requests, this should always be true. If this is false, the
+            // `create_threshold` should be increased.
+            let available: usize = lists.iter().map(|list| list.available as usize).sum();
+            if available >= copies {
+                return Ok((tx, lists));
+            }
+
+            if tries == IN_FLIGHT_CREATE_TRIES {
+                tracing::warn!(
+                    "Creating status list in flight for attestation group ID {}, increase create_threshold or \
+                     list_size",
+                    self.attestation_group_id,
+                )
+            } else if tries == 0 {
+                return Err(StatusListServiceError::NoStatusListAvailable);
+            }
+            tries -= 1;
+
+            let max_next_sequence_no = if let Some(max) = lists.iter().map(|list| list.next_sequence_no).max() {
+                max
+            } else {
+                status_list::Entity::find()
+                    .select_only()
+                    .column_as(status_list::Column::NextSequenceNo.max(), "max_next_sequence_no")
+                    .filter(status_list::Column::AttestationGroupId.eq(self.attestation_group_id))
+                    .group_by(status_list::Column::AttestationGroupId)
+                    .into_tuple::<Option<i64>>()
+                    .one(&tx)
+                    .await?
+                    .flatten()
+                    .unwrap_or_default()
+            };
+
+            let _ = self
+                .create_status_list(max_next_sequence_no, true)
+                .await
+                .inspect_err(|err| {
+                    tracing::error!(
+                        "Error creating status list in flight for attestation group ID {}: {:?}",
+                        self.attestation_group_id,
+                        err
+                    );
+                })?;
+        }
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn fetch_status_list_items(
+        &self,
+        tx: &DatabaseTransaction,
+        mut lists: Vec<status_list::Model>,
+        num_copies: u64,
+    ) -> Result<Vec<(status_list::Model, Vec<status_list_item::Model>)>, StatusListServiceError> {
+        let start_sequence_no = lists
+            .iter()
+            .map(|list| list.next_sequence_no - i64::from(list.available))
+            .min();
+
+        let items = status_list_item::Entity::find()
+            .filter(status_list_item::Column::AttestationGroupId.eq(self.attestation_group_id))
+            .filter(status_list_item::Column::SequenceNo.gte(start_sequence_no))
+            .order_by_asc(status_list_item::Column::SequenceNo)
+            .limit(num_copies)
+            .all(tx)
+            .await?;
+        if items.len() != num_copies as usize {
+            panic!(
+                "Insufficient number of items in status list: fetched: {}, requested: {}",
+                items.len(),
+                num_copies,
+            );
+        }
+
+        // The items are ordered by sequence_no which implies ordering by list_id in the way they
+        // are created by, which means `chunk_by` can be used instead of `into_group_map`.
+        let mut list_with_items = Vec::with_capacity(lists.len());
+        for (list_id, chunk) in &items.into_iter().chunk_by(|item| item.status_list_id) {
+            let list = lists.remove(
+                lists
+                    .iter()
+                    .position(|list| list.id == list_id)
+                    .unwrap_or_else(|| panic!("List with ID {} not found", list_id)),
+            );
+            let items = chunk.collect::<Vec<_>>();
+            list_with_items.push((list, items));
+        }
+
+        // Update availability of status lists (cannot be done in ChunkBy as it is not Send)
+        for (list, items) in &mut list_with_items {
+            list.available -= items.len() as i32;
+            if list.available < 0 {
+                panic!("More list items than available in status list for ID {}", list.id);
+            }
+            let update_result = status_list::Entity::update_many()
+                .col_expr(status_list::Column::Available, Expr::value(list.available))
+                .filter(status_list::Column::Id.eq(list.id))
+                .exec(tx)
+                .await?;
+            if update_result.rows_affected != 1 {
+                panic!("Status list update affected none or multiple rows for ID {}", list.id);
+            }
+        }
+
+        Ok(list_with_items)
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn create_attestation_batch(
+        tx: &DatabaseTransaction,
+        batch_id: Uuid,
+        expiration_date: Option<NaiveDate>,
+        list_indices: impl Iterator<Item = (i64, Vec<i32>)>,
+    ) -> Result<(), ObtainClaimError<StatusListServiceError>> {
+        let model = attestation_batch::ActiveModel {
+            id: NotSet,
+            batch_id: Set(batch_id),
+            expiration_date: Set(expiration_date),
+            is_revoked: Set(false),
+        };
+        let attestation_batch_id = attestation_batch::Entity::insert(model)
+            .exec(tx)
+            .await
+            .map_err(|error| {
+                if error
+                    .sql_err()
+                    .is_some_and(|error| matches!(error, SqlErr::UniqueConstraintViolation(_)))
+                {
+                    ObtainClaimError::BatchIdExists(batch_id)
+                } else {
+                    ObtainClaimError::InternalError(StatusListServiceError::Db(error))
+                }
+            })?
+            .last_insert_id;
+
+        let models = list_indices.map(|(list_id, indices)| attestation_batch_list_indices::ActiveModel {
+            attestation_batch_id: Set(attestation_batch_id),
+            status_list_id: Set(list_id),
+            indices: Set(indices),
+        });
+
+        attestation_batch_list_indices::Entity::insert_many(models)
+            .exec(tx)
+            .await
+            .map_err(|error| ObtainClaimError::InternalError(StatusListServiceError::Db(error)))?;
+
+        Ok(())
+    }
+
+    /// Creates new status list if not already created.
+    ///
+    /// The `next_sequence_no` is used to ensure only a single new list is created.
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn create_status_list(
+        &self,
+        next_sequence_no: i64,
+        wait_for_lock: bool,
+    ) -> Result<bool, StatusListServiceError> {
+        let tx = self.connection.begin().await?;
+
+        // Get exclusive lock on attestation group
+        let mut query =
+            attestation_group::Entity::find().filter(attestation_group::Column::Id.eq(self.attestation_group_id));
+        query = match wait_for_lock {
+            false => query.lock_with_behavior(LockType::Update, LockBehavior::SkipLocked),
+            true => query.lock_exclusive(),
+        };
+        let attestation_group = match (query.one(&tx).await?, wait_for_lock) {
+            (None, false) => return Ok(false),
+            (Some(attestation_group), _) => attestation_group,
+            _ => panic!("Missing attestation group for ID {}", self.attestation_group_id),
+        };
+
+        // Status list was created by someone else
+        if attestation_group.next_sequence_no != next_sequence_no {
+            return Ok(false);
+        }
+
+        // Create new list
+        let external_id = ExternalId::generate();
+        let list_size = self.config.list_size.into_inner();
+        let new_next_sequence_no = attestation_group.next_sequence_no + i64::from(list_size);
+        let list = status_list::ActiveModel {
+            id: NotSet,
+            attestation_group_id: Set(self.attestation_group_id),
+            external_id: Set(external_id.clone().into()),
+            available: Set(list_size),
+            size: Set(list_size),
+            next_sequence_no: Set(new_next_sequence_no),
+        };
+        let list_id = match status_list::Entity::insert(list)
+            .on_conflict(
+                OnConflict::column(status_list::Column::ExternalId)
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .on_empty_do_nothing()
+            .exec(&tx)
+            .await?
+        {
+            TryInsertResult::Inserted(inserted) => inserted.last_insert_id,
+            _ => return Ok(false),
+        };
+
+        // Publish status list
+        let service = self.clone();
+        let publish = tokio::spawn(async move { service.publish_new_status_list(&external_id).await });
+
+        // Create new list items
+        let indices = tokio::task::spawn_blocking(move || {
+            let mut indices = (0..list_size).collect::<Vec<_>>();
+            indices.shuffle(&mut rand::rng());
+            indices
+        })
+        .await?;
+
+        // Insert items into batches limited by u16::MAX params
+        let mut next_sequence_no = next_sequence_no as usize;
+        for chunk in indices.chunks((u16::MAX / 4) as usize) {
+            let items = chunk
+                .iter()
+                .enumerate()
+                .map(|(k, index)| status_list_item::ActiveModel {
+                    attestation_group_id: Set(self.attestation_group_id),
+                    sequence_no: Set((next_sequence_no + k) as i64),
+                    status_list_id: Set(list_id),
+                    index: Set(*index),
+                })
+                .collect::<Vec<_>>();
+            next_sequence_no += items.len();
+            status_list_item::Entity::insert_many(items).exec(&tx).await?;
+        }
+
+        // Update next sequence no of attestation group
+        assert_eq!(
+            next_sequence_no, new_next_sequence_no as usize,
+            "Inserted items did not match calculated sequence number",
+        );
+        let mut attestation_group = attestation_group.into_active_model();
+        attestation_group.next_sequence_no = Set(new_next_sequence_no);
+        attestation_group::Entity::update(attestation_group).exec(&tx).await?;
+
+        // Wait for publish to complete before committing
+        publish.await??;
+
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    pub async fn initialize_lists(&self) -> Result<Vec<JoinHandle<()>>, DbErr> {
+        tracing::info!("Initializing status lists for ID {}", self.attestation_group_id);
+
+        // Fetch all lists that still have list items in the database
+        let lists = status_list::Entity::find()
+            .filter(status_list::Column::AttestationGroupId.eq(self.attestation_group_id))
+            .filter(
+                status_list::Column::Id.in_subquery(
+                    Query::select()
+                        .expr(Expr::column(status_list_item::Column::StatusListId))
+                        .from(status_list_item::Entity)
+                        .to_owned(),
+                ),
+            )
+            .all(&self.connection)
+            .await?;
+
+        // Create status lists if all lists for this attestation group are full
+        if lists.is_empty() {
+            let next_sequence_no = attestation_group::Entity::find_by_id(self.attestation_group_id)
+                .select_only()
+                .select_column(attestation_group::Column::NextSequenceNo)
+                .into_tuple()
+                .one(&self.connection)
+                .await?
+                .unwrap_or_else(|| panic!("Missing attestation group for ID {}", self.attestation_group_id));
+
+            tracing::info!(
+                "Schedule creation of status list items for list ID {}",
+                self.attestation_group_id
+            );
+            let service = self.clone();
+            let task = tokio::spawn(async move { service.create_status_list_in_background(next_sequence_no).await });
+            Ok(vec![task])
+        } else {
+            Ok(self.schedule_housekeeping(&lists))
+        }
+    }
+
+    fn schedule_housekeeping<'a>(
+        &self,
+        lists: impl IntoIterator<Item = &'a status_list::Model>,
+    ) -> Vec<JoinHandle<()>> {
+        let mut tasks = Vec::new();
+        for list in lists {
+            if list.available == 0 {
+                tracing::info!("Schedule deletion of status list items for list ID {}", list.id);
+
+                let connection = self.connection.clone();
+                let list_id = list.id;
+                tasks.push(tokio::spawn(Self::delete_status_list_items(connection, list_id)));
+            }
+            if list.available < self.config.create_threshold.into_inner() {
+                tracing::info!(
+                    "Schedule creation of status list items for attestation group ID {}",
+                    list.attestation_group_id,
+                );
+
+                let service = self.clone();
+                let next_sequence_no = list.next_sequence_no;
+                tasks.push(tokio::spawn(async move {
+                    service.create_status_list_in_background(next_sequence_no).await
+                }));
+            }
+        }
+        tasks
+    }
+
+    async fn create_status_list_in_background(&self, next_sequence_no: i64) {
+        // No wait, as this can be spawned multiple times, e.g.
+        //  - when multiple instances are initializing the list
+        //  - when the threshold is hit and the status list is not created yet.
+        // Waiting will only hog connections from the DB pool waiting for the lock.
+        match self.create_status_list(next_sequence_no, false).await {
+            Ok(created) if created => tracing::info!(
+                "Created status list for attestation group ID {}",
+                self.attestation_group_id,
+            ),
+            Err(err) => tracing::warn!(
+                "Failed to create status list for attestation group ID {}: {}",
+                self.attestation_group_id,
+                err,
+            ),
+            _ => {}
+        };
+    }
+
+    #[measure(name = "nlwallet_status_list_operations", "service" => "status_lists")]
+    async fn delete_status_list_items(connection: DatabaseConnection, id: i64) {
+        let result = status_list_item::Entity::delete_many()
+            .filter(status_list_item::Column::StatusListId.eq(id))
+            .exec(&connection)
+            .await;
+
+        if let Err(err) = result {
+            tracing::warn!("Failed to delete status list items of {}: {}", id, err);
+        }
+    }
+
+    async fn to_publisher<'a>(&'a self) -> Result<Publisher<'a, K, R>, R::Error> {
+        Ok(Publisher {
+            service: self,
+            revoke_all: self.revoke_all.is_revoked_all().await?,
+        })
+    }
+
+    pub fn start_refresh_job(&self) -> AbortHandle {
+        let service = self.clone();
+        // Create control before spawning as the constructor can panic on incompatible settings
+        let refresh_control = RefreshControl::new(self.config.refresh_threshold);
+        tokio::spawn(async move {
+            tracing::info!(
+                "Starting refresh job for attestation group ID {}",
+                service.attestation_group_id
+            );
+            loop {
+                // Wrap in separate spawn job to catch panics
+                let job_service = service.clone();
+                match tokio::spawn(async move { job_service.refresh_status_lists(&refresh_control).await }).await {
+                    Ok(delay) => {
+                        tracing::debug!(
+                            "Next refresh of status lists scheduled in {}s for attestation group ID {}",
+                            delay.as_secs(),
+                            service.attestation_group_id
+                        );
+                        tokio::time::sleep(delay).await
+                    }
+                    Err(err) => {
+                        tracing::error!(
+                            "Join error on refresh job for attestation group ID {}: {:?}",
+                            service.attestation_group_id,
+                            err
+                        );
+                        tokio::time::sleep(refresh_control.next_refresh_delay([])).await;
+                    }
+                };
+            }
+        })
+        .abort_handle()
+    }
+
+    async fn refresh_status_lists(&self, refresh_control: &RefreshControl) -> Duration {
+        tracing::debug!(
+            "Refreshing status lists for attestation group ID {}",
+            self.attestation_group_id
+        );
+
+        // Get all lists
+        let lists = match status_list::Entity::find()
+            .filter(status_list::Column::AttestationGroupId.eq(self.attestation_group_id))
+            .all(&self.connection)
+            .await
+        {
+            Ok(lists) => lists,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not fetch status lists from DB for attestation ID {}: {}",
+                    self.attestation_group_id,
+                    err
+                );
+                return refresh_control.next_refresh_delay([]);
+            }
+        };
+
+        // Get publisher
+        let publisher = match self.to_publisher().await {
+            Ok(publisher) => publisher,
+            Err(err) => {
+                tracing::warn!("Failed to get refresh flag: {err}");
+                return refresh_control.next_refresh_delay([]);
+            }
+        };
+
+        // Republish if necessary
+        let expiries = join_all(lists.into_iter().map(|list| {
+            async move {
+                let external_id = ExternalId::try_from(list.external_id).expect("external id from db should be valid");
+                let path = self.config.publish_dir.jwt_path(&external_id);
+                let mut expiry = read_token_expiry(&path)
+                    .await
+                    .inspect_err(|err| tracing::warn!("Could not read expiry from `{}`: {}", path.display(), err))
+                    // Ignore error is ok because it is just logged with WARN
+                    .ok();
+
+                // The expiry is read from the JWT only, as the CWT is always written before the JWT. A missing CWT
+                // can occur for lists that were published before the CWT format was supported.
+                let cwt_path = self.config.publish_dir.cwt_path(&external_id);
+                let cwt_exists = tokio::fs::try_exists(&cwt_path)
+                    .await
+                    .inspect_err(|err| tracing::warn!("Could not check existence of `{}`: {}", cwt_path.display(), err))
+                    // Ignore error is ok because it is just logged with WARN
+                    .unwrap_or(false);
+
+                if !cwt_exists || expiry.is_none_or(|exp| refresh_control.should_refresh(exp)) {
+                    tracing::info!("Republishing status list for ID {}", list.id);
+                    let size = list.size.try_into().expect("size should be non-zero");
+
+                    match publisher.publish(list.id, &external_id, size).await {
+                        // Always read token expiry as it can be changed by another instance
+                        Ok(_) => {
+                            expiry = read_token_expiry(&path)
+                                .await
+                                .inspect_err(|err| {
+                                    tracing::error!(
+                                        "Could not read expiry from just published token `{}`: {}",
+                                        path.display(),
+                                        err
+                                    )
+                                })
+                                // Ignore error is ok because it is just logged with ERROR
+                                .ok()
+                        }
+                        Err(err) => tracing::warn!("Failed to refresh status list for ID {}: {}", list.id, err),
+                    }
+                }
+                expiry
+            }
+        }))
+        .await;
+
+        // Calculate delay for next job: if one or more expiry cannot be read,
+        // even after republishing, default to empty list.
+        refresh_control.next_refresh_delay(expiries.into_iter().collect::<Option<Vec<_>>>().unwrap_or_default())
+    }
+
+    async fn publish_new_status_list(&self, external_id: &ExternalId) -> Result<(), StatusListServiceError> {
+        let is_revoked_all = self
+            .revoke_all
+            .is_revoked_all()
+            .await
+            .map_err(|e| StatusListServiceError::RevokeAll(Box::new(e)))?;
+
+        // Build new status list
+        let expires = Utc::now() + self.config.expiry;
+        let sub = self.external_id_url(external_id);
+        let packed = if is_revoked_all {
+            PackedStatusList::all_invalid(self.config.list_size.as_usize())
+        } else {
+            PackedStatusList::new(self.config.list_size.as_usize())
+        };
+        let claims = StatusListToken::builder(sub, packed)
+            .exp(Some(expires))
+            .ttl(self.config.ttl)
+            .build(&TimeGenerator);
+        let (jwt, cwt) = self.sign_tokens(claims).await?;
+
+        // Write to disk
+        let publish_lock = self.config.publish_dir.lock_for(external_id);
+        let jwt_path = self.config.publish_dir.jwt_path(external_id);
+        let cwt_path = self.config.publish_dir.cwt_path(external_id);
+        tokio::task::spawn_blocking(move || {
+            // create because a new status list external id can be reused if the transaction fails
+            publish_lock.create(expires)?;
+            // Write the CWT before the JWT, so that a written JWT implies a written CWT (see refresh)
+            let cwt = cbor_serialize(&cwt).map_err(StatusListServiceError::CwtSerialization)?;
+            std::fs::write(&cwt_path, cwt).map_err(|err| StatusListServiceError::IOWithPath(cwt_path, err))?;
+            std::fs::write(&jwt_path, jwt.as_ref().serialization())
+                .map_err(|err| StatusListServiceError::IOWithPath(jwt_path, err))
+        })
+        .await?
+    }
+
+    async fn publish_status_list_from_db(
+        &self,
+        list_id: i64,
+        external_id: &ExternalId,
+        size: usize,
+    ) -> Result<bool, StatusListServiceError> {
+        // Fetch all revoked attestation for this status list
+        let result: Vec<Vec<i32>> = attestation_batch_list_indices::Entity::find()
+            .join(
+                JoinType::InnerJoin,
+                attestation_batch_list_indices::Relation::AttestationBatch.def(),
+            )
+            .select_only()
+            .select_column(attestation_batch_list_indices::Column::Indices)
+            .filter(attestation_batch_list_indices::Column::StatusListId.eq(list_id))
+            .filter(attestation_batch::Column::IsRevoked.eq(true))
+            .into_tuple()
+            .all(&self.connection)
+            .await?;
+
+        let expires = Utc::now() + self.config.expiry;
+        let version = LockVersion::from(result.len(), expires);
+        self.config
+            .publish_dir
+            .lock_for(external_id)
+            .with_lock_if_newer(version, async || {
+                // Build packed status list
+                let sub = self.external_id_url(external_id);
+                let builder = tokio::task::spawn_blocking(move || {
+                    let mut status_list = StatusList::new(size);
+                    for index in result.into_iter().flatten() {
+                        status_list.insert(index as usize, StatusType::Invalid);
+                    }
+                    StatusListToken::builder(sub, status_list.pack())
+                })
+                .await?;
+
+                self.sign_and_write_token(builder, expires, external_id).await
+            })
+            .await
+    }
+
+    async fn publish_status_list_all_revoked(
+        &self,
+        external_id: &ExternalId,
+        size: usize,
+    ) -> Result<bool, StatusListServiceError> {
+        let expires = Utc::now() + self.config.expiry;
+        let version = LockVersion::from(usize::MAX, expires);
+        self.config
+            .publish_dir
+            .lock_for(external_id)
+            .with_lock_if_newer(version, async || {
+                let sub = self.external_id_url(external_id);
+                let builder = StatusListToken::builder(sub, PackedStatusList::all_invalid(size));
+                self.sign_and_write_token(builder, expires, external_id).await
+            })
+            .await
+    }
+
+    async fn sign_and_write_token(
+        &self,
+        builder: StatusListTokenBuilder,
+        expires: DateTime<Utc>,
+        external_id: &ExternalId,
+    ) -> Result<(), StatusListServiceError> {
+        // Sign
+        let claims = builder.exp(Some(expires)).ttl(self.config.ttl).build(&TimeGenerator);
+        let (jwt, cwt) = self.sign_tokens(claims).await?;
+
+        // Write the CWT before the JWT, so that a written JWT implies a written CWT (see refresh).
+        let jwt_path = self.config.publish_dir.jwt_path(external_id);
+        let cwt_path = self.config.publish_dir.cwt_path(external_id);
+        let tmp_path = self.config.publish_dir.tmp_path(external_id);
+        tokio::task::spawn_blocking(move || {
+            let cwt = cbor_serialize(&cwt).map_err(StatusListServiceError::CwtSerialization)?;
+            let jwt = jwt.as_ref().serialization();
+
+            write_atomically(&tmp_path, &cwt_path, &cwt)?;
+            write_atomically(&tmp_path, &jwt_path, jwt)
+        })
+        .await??;
+
+        Ok(())
+    }
+
+    /// Sign the claims as both a JWT and a CWT. Both tokens contain the same claims, including `iat`.
+    async fn sign_tokens(
+        &self,
+        claims: StatusListTokenClaims,
+    ) -> Result<(StatusListJwt, StatusListCwt), StatusListServiceError> {
+        let jwt = StatusListJwt::sign(claims.clone(), &self.config.key_pair).await?;
+        let cwt = StatusListCwt::sign(claims, &self.config.key_pair)
+            .await
+            .map_err(StatusListServiceError::CwtSign)?;
+
+        Ok((jwt, cwt))
+    }
+}
+
+async fn initialize_attestation_group_id(
+    connection: &DatabaseConnection,
+    attestation_group: &str,
+) -> Result<i16, DbErr> {
+    if let Some(id) = fetch_attestation_group_id(connection, attestation_group).await? {
+        return Ok(id);
+    }
+    let insert = attestation_group::ActiveModel {
+        id: NotSet,
+        name: Set(attestation_group.to_string()),
+        next_sequence_no: Set(0),
+    };
+    match attestation_group::Entity::insert(insert)
+        .on_conflict(
+            OnConflict::column(attestation_group::Column::Name)
+                .do_nothing()
+                .to_owned(),
+        )
+        .on_empty_do_nothing()
+        .exec(connection)
+        .await?
+    {
+        TryInsertResult::Inserted(inserted) => Ok(inserted.last_insert_id),
+        _ => Ok(fetch_attestation_group_id(connection, attestation_group)
+            .await?
+            .expect("attestation group should be intialized")),
+    }
+}
+
+async fn fetch_attestation_group_id(
+    connection: &DatabaseConnection,
+    attestation_group: &str,
+) -> Result<Option<i16>, DbErr> {
+    attestation_group::Entity::find()
+        .filter(attestation_group::Column::Name.eq(attestation_group))
+        .select_only()
+        .select_column(attestation_group::Column::Id)
+        .into_tuple()
+        .one(connection)
+        .await
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TokenReadError {
+    #[error("IO error: {0}")]
+    IO(#[from] std::io::Error),
+    #[error("JWT parse error: {0}")]
+    JwtParse(#[from] JwtParseError),
+    #[error("no expiry set")]
+    NoExpiry,
+}
+
+// Write to a tempfile and atomically move via rename.
+fn write_atomically(tmp_path: &Path, path: &Path, contents: impl AsRef<[u8]>) -> Result<(), StatusListServiceError> {
+    std::fs::write(tmp_path, contents)
+        .map_err(|err| StatusListServiceError::IOWithPath(tmp_path.to_path_buf(), err))?;
+    std::fs::rename(tmp_path, path).map_err(|err| StatusListServiceError::IOWithPath(path.to_path_buf(), err))
+}
+
+async fn read_token_expiry(path: &Path) -> Result<DateTime<Utc>, TokenReadError> {
+    let token = tokio::fs::read_to_string(path).await?.parse::<StatusListJwt>()?;
+    // Trusting the files this service writes
+    let (_, claims) = token.dangerous_parse_unverified()?;
+    claims.exp.ok_or(TokenReadError::NoExpiry)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+    use std::time::Duration;
+
+    use crypto::server_keys::generate::Ca;
+    use p256::ecdsa::SigningKey;
+    use utils::num::NonZeroU31;
+    use utils::num::U31;
+
+    use super::*;
+    use crate::publish::PublishDir;
+
+    fn mock_service() -> PostgresStatusListService<SigningKey, NoRevokeAll> {
+        PostgresStatusListService {
+            connection: DatabaseConnection::default(),
+            attestation_group_id: 1,
+            config: StatusListConfig {
+                list_size: NonZeroU31::MIN,
+                create_threshold: U31::ONE,
+                expiry: Duration::from_secs(3600),
+                refresh_threshold: Duration::from_secs(600),
+                ttl: None,
+                base_url: "https://example.com/".parse().unwrap(),
+                context_path: "tsl".to_string(),
+                publish_dir: PublishDir::try_new(std::env::temp_dir()).unwrap(),
+                key_pair: Ca::generate_issuer_mock_ca()
+                    .unwrap()
+                    .generate_issuer_status_list_mock()
+                    .unwrap(),
+            }
+            .into(),
+            revoke_all: NoRevokeAll,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_obtain_status_claims_too_many_copies() {
+        let service = mock_service();
+
+        let batch_id = Uuid::new_v4();
+        let result = service
+            .obtain_status_claims_and_scheduled_tasks(batch_id, None, 3.try_into().unwrap())
+            .await;
+        assert_matches!(
+            result,
+            Err(ObtainClaimError::InternalError(StatusListServiceError::TooManyClaimsRequested(size))) if size == 3
+        );
+    }
+}

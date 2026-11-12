@@ -3,7 +3,6 @@ import 'dart:ui';
 import 'package:clock/clock.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wallet/l10n/generated/app_localizations.dart';
-import 'package:wallet/src/domain/model/attribute/attribute.dart';
 import 'package:wallet/src/domain/model/event/wallet_event.dart';
 import 'package:wallet/src/domain/model/organization.dart';
 import 'package:wallet/src/feature/common/widget/activity_summary.dart';
@@ -19,17 +18,20 @@ final kGoldenSize = const Size(300, 94);
 void main() {
   late AppLocalizations l10n;
 
-  DisclosureEvent disclosureAt(DateTime time, {Organization? relyingParty}) =>
-      WalletEvent.disclosure(
-            dateTime: time,
-            status: EventStatus.success,
-            relyingParty: relyingParty ?? WalletMockData.organization,
-            purpose: 'disclosure'.untranslated,
-            cards: [WalletMockData.card],
-            policy: WalletMockData.policy,
-            type: DisclosureType.regular,
-          )
-          as DisclosureEvent;
+  DisclosureEvent disclosureAt(DateTime time, {Organization? relyingParty}) => WalletEvent.disclosure(
+    dateTime: time,
+    status: EventStatus.success,
+    relyingParty: relyingParty ?? WalletMockData.organization,
+    purpose: 'disclosure'.untranslated,
+    cards: [WalletMockData.card],
+    type: DisclosureType.regular,
+  ) as DisclosureEvent;
+
+  DeletionEvent deletionAt(DateTime time) => WalletEvent.deletion(
+    dateTime: time,
+    status: EventStatus.success,
+    card: WalletMockData.card,
+  ) as DeletionEvent;
 
   setUp(() async {
     l10n = await TestUtils.englishLocalizations;
@@ -109,6 +111,11 @@ void main() {
         expect(summary.mode, ActivityDisplayMode.lastWeek);
       },
     );
+
+    test('when the only activity is a deletion that happened today, the mode is today', () {
+      final summary = ActivitySummary(events: [deletionAt(clock.now())]);
+      expect(summary.mode, ActivityDisplayMode.today);
+    });
   });
 
   group('widgets', () {
@@ -171,6 +178,55 @@ void main() {
       expect(cardsAddedFinder, findsOneWidget);
     });
 
+    testWidgets('single card deleted subtitle is shown', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        ActivitySummary(
+          events: [deletionAt(clock.now())],
+        ),
+      );
+
+      final cardsDeletedFinder = find.textContaining(
+        l10n.activitySummaryCardsDeleted(1, 1),
+      );
+      expect(cardsDeletedFinder, findsOneWidget);
+    });
+
+    testWidgets('multiple cards deleted subtitle is shown', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        ActivitySummary(
+          events: [
+            deletionAt(clock.now()),
+            deletionAt(clock.now()),
+            deletionAt(clock.now()),
+          ],
+        ),
+      );
+
+      final cardsDeletedFinder = find.textContaining(
+        l10n.activitySummaryCardsDeleted(3, 3),
+      );
+      expect(cardsDeletedFinder, findsOneWidget);
+    });
+
+    testWidgets('cards added and deleted subtitles are both shown', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        ActivitySummary(
+          events: [
+            WalletEvent.issuance(
+              dateTime: clock.now(),
+              status: EventStatus.success,
+              card: WalletMockData.card,
+              eventType: IssuanceEventType.cardIssued,
+            ),
+            deletionAt(clock.now()),
+          ],
+        ),
+      );
+
+      expect(find.textContaining(l10n.activitySummaryCardsAdded(1, 1)), findsOneWidget);
+      expect(find.textContaining(l10n.activitySummaryCardsDeleted(1, 1)), findsOneWidget);
+    });
+
     testWidgets('relevant organization name is shown', (tester) async {
       final disclosureEvent = disclosureAt(clock.now());
       await tester.pumpWidgetWithAppWrapper(
@@ -180,7 +236,7 @@ void main() {
       );
 
       final organizationFinder = find.textContaining(
-        l10n.activitySummarySharedWith(disclosureEvent.relyingParty.displayName.testValue),
+        l10n.activitySummarySharedWith(disclosureEvent.relyingParty.displayName),
       );
       expect(organizationFinder, findsOneWidget);
     });
@@ -197,7 +253,7 @@ void main() {
       );
 
       final organizationFinder = find.textContaining(
-        l10n.activitySummarySharedWith(WalletMockData.disclosureEvent.relyingParty.displayName.testValue),
+        l10n.activitySummarySharedWith(WalletMockData.disclosureEvent.relyingParty.displayName),
       );
       expect(organizationFinder, findsOneWidget);
     });
@@ -209,19 +265,19 @@ void main() {
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'Org-X'.untranslated,
+                displayName: 'Org-X',
               ),
             ),
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'Org-Y'.untranslated,
+                displayName: 'Org-Y',
               ),
             ),
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'Org-Z'.untranslated,
+                displayName: 'Org-Z',
               ),
             ),
           ],
@@ -244,25 +300,25 @@ void main() {
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'Org-X'.untranslated,
+                displayName: 'Org-X',
               ),
             ),
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'Org-Y'.untranslated,
+                displayName: 'Org-Y',
               ),
             ),
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'not-shown-a'.untranslated,
+                displayName: 'not-shown-a',
               ),
             ),
             disclosureAt(
               clock.now(),
               relyingParty: WalletMockData.organization.copyWith(
-                displayName: 'not-shown-b'.untranslated,
+                displayName: 'not-shown-b',
               ),
             ),
           ],
@@ -352,15 +408,15 @@ void main() {
           events: [
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-X'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-X'),
             ),
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-Y'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-Y'),
             ),
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-Z'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-Z'),
             ),
           ],
         ),
@@ -375,19 +431,19 @@ void main() {
           events: [
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-A'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-A'),
             ),
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-B'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-B'),
             ),
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-C'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-C'),
             ),
             disclosureAt(
               clock.now(),
-              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-D'.untranslated),
+              relyingParty: WalletMockData.organization.copyWith(displayName: 'Org-D'),
             ),
           ],
         ),
@@ -396,7 +452,9 @@ void main() {
       await screenMatchesGolden('activity_summary/more_than_three_orgs_shared_with');
     });
 
-    testGoldens('all interactions - new cards, updated cards, shared with, logged in at', (tester) async {
+    testGoldens('all interactions - new cards, renewed cards, deleted cards, shared with, logged in at', (
+      tester,
+    ) async {
       await tester.pumpWidgetWithAppWrapper(
         ActivitySummary(
           events: [
@@ -407,7 +465,6 @@ void main() {
               relyingParty: WalletMockData.organization,
               purpose: 'disclosure'.untranslated,
               cards: [WalletMockData.card],
-              policy: WalletMockData.policy,
               type: DisclosureType.login,
             ),
             WalletEvent.issuance(
@@ -422,11 +479,22 @@ void main() {
               card: WalletMockData.card,
               eventType: IssuanceEventType.cardRenewed,
             ),
+            deletionAt(clock.now()),
           ],
         ),
-        surfaceSize: Size(kGoldenSize.width, kGoldenSize.height + 66),
+        surfaceSize: Size(kGoldenSize.width, kGoldenSize.height + 88),
       );
       await screenMatchesGolden('activity_summary/all_interactions');
+    });
+
+    testGoldens('single card deleted', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        ActivitySummary(
+          events: [deletionAt(clock.now())],
+        ),
+        surfaceSize: kGoldenSize,
+      );
+      await screenMatchesGolden('activity_summary/single_card_deleted');
     });
   });
 }

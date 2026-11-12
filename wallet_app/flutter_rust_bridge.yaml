@@ -1,4 +1,4 @@
-rust_input: crate::api,crate::model
+rust_input: crate::api,crate::models::image
 rust_root: ../wallet_core/flutter_api/
 dart_output: packages/wallet_core/lib/src
 dart_format_line_length: 120
@@ -10,3 +10,4 @@ add_mod_to_lib: false
 c_output: ios/Runner/frb_generated.h
 type_64bit_int: false
 full_dep: true
+rust_features: ["allow_insecure_url"]

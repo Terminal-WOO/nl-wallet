@@ -9,20 +9,17 @@ use p256::ecdsa::Signature;
 use p256::ecdsa::SigningKey;
 use p256::ecdsa::VerifyingKey;
 use p256::ecdsa::signature::Signer;
+use p256::elliptic_curve::Generate;
 use parking_lot::Mutex;
-use rand_core::OsRng;
 
-use crate::CredentialEcdsaKey;
-use crate::EcdsaKey;
-use crate::SecureEcdsaKey;
-use crate::WithIdentifier;
+use crate::keys::CredentialEcdsaKey;
+use crate::keys::EcdsaKey;
+use crate::keys::SecureEcdsaKey;
 use crate::utils::random_string;
-use crate::wscd::DisclosureResult;
 use crate::wscd::DisclosureWscd;
-use crate::wscd::WscdPoa;
 
 /// To be used in test in place of `RemoteEcdsaKey`, implementing the
-/// [`EcdsaKey`], [`SecureEcdsaKey`] and [`WithIdentifier`] traits.
+/// [`EcdsaKey`], [`SecureEcdsaKey`] and [`CredentialEcdsaKey`] traits.
 #[derive(Debug, Clone, Constructor)]
 pub struct MockRemoteEcdsaKey {
     pub identifier: String,
@@ -46,7 +43,7 @@ impl Hash for MockRemoteEcdsaKey {
 
 impl MockRemoteEcdsaKey {
     pub fn new_random(identifier: String) -> Self {
-        Self::new(identifier, SigningKey::random(&mut OsRng))
+        Self::new(identifier, SigningKey::generate())
     }
 
     pub fn verifying_key(&self) -> &VerifyingKey {
@@ -69,35 +66,27 @@ impl EcdsaKey for MockRemoteEcdsaKey {
 }
 impl SecureEcdsaKey for MockRemoteEcdsaKey {}
 
-impl WithIdentifier for MockRemoteEcdsaKey {
-    fn identifier(&self) -> &str {
-        &self.identifier
-    }
-}
-
 impl CredentialEcdsaKey for MockRemoteEcdsaKey {}
 
 #[derive(Debug, thiserror::Error)]
-pub enum MockRemoteWscdError {
+pub enum DisclosureMockRemoteWscdError {
     #[error("signing error")]
     Signing,
-    #[error("poa error")]
-    Poa,
     #[error("ECDSA error: {0}")]
     Ecdsa(#[source] <MockRemoteEcdsaKey as EcdsaKey>::Error),
 }
 
 /// A type that implements [`DisclosureWscd`] and can be used in tests. It has the option
-/// of returning `MockRemoteWscdError::Signing` when signing, influenced
+/// of returning `DisclosureMockRemoteWscdError::Signing` when signing, influenced
 /// by a boolean field on the type.
 #[derive(Debug)]
-pub struct MockRemoteWscd {
+pub struct DisclosureMockRemoteWscd {
     pub signing_keys: Mutex<HashMap<String, SigningKey>>,
 
     pub has_multi_key_signing_error: bool,
 }
 
-impl MockRemoteWscd {
+impl DisclosureMockRemoteWscd {
     pub fn new(keys: Vec<MockRemoteEcdsaKey>) -> Self {
         let signing_keys = keys.into_iter().map(|key| (key.identifier, key.key)).collect();
 
@@ -130,22 +119,15 @@ impl MockRemoteWscd {
     }
 }
 
-impl Default for MockRemoteWscd {
+impl Default for DisclosureMockRemoteWscd {
     fn default() -> Self {
         Self::new_signing_keys(HashMap::new())
     }
 }
 
-pub struct MockPoa;
-
-impl WscdPoa for MockPoa {
-    type Input = ();
-}
-
-impl DisclosureWscd for MockRemoteWscd {
+impl DisclosureWscd for DisclosureMockRemoteWscd {
     type Key = MockRemoteEcdsaKey;
-    type Error = MockRemoteWscdError;
-    type Poa = MockPoa;
+    type Error = DisclosureMockRemoteWscdError;
 
     fn new_key<I: Into<String>>(&self, identifier: I, public_key: VerifyingKey) -> Self::Key {
         let identifier = identifier.into();
@@ -170,10 +152,9 @@ impl DisclosureWscd for MockRemoteWscd {
     async fn sign(
         &self,
         messages_and_keys: Vec<(Vec<u8>, Vec<&Self::Key>)>,
-        _poa_input: <Self::Poa as WscdPoa>::Input,
-    ) -> Result<DisclosureResult<Self::Poa>, Self::Error> {
+    ) -> Result<Vec<Vec<Signature>>, Self::Error> {
         if self.has_multi_key_signing_error {
-            return Err(MockRemoteWscdError::Signing);
+            return Err(DisclosureMockRemoteWscdError::Signing);
         }
 
         let signatures = future::try_join_all(
@@ -182,7 +163,7 @@ impl DisclosureWscd for MockRemoteWscd {
                 .map(|(msg, keys)| async move {
                     let signatures = future::try_join_all(keys.iter().map(|key| async { key.try_sign(msg).await }))
                         .await
-                        .map_err(MockRemoteWscdError::Ecdsa)?
+                        .map_err(DisclosureMockRemoteWscdError::Ecdsa)?
                         .into_iter()
                         .collect::<Vec<_>>();
 
@@ -192,9 +173,6 @@ impl DisclosureWscd for MockRemoteWscd {
         )
         .await?;
 
-        let keys_count = messages_and_keys.into_iter().flat_map(|(_, keys)| keys).count();
-        let poa = if keys_count < 2 { None } else { Some(MockPoa) };
-
-        Ok(DisclosureResult { signatures, poa })
+        Ok(signatures)
     }
 }

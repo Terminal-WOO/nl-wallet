@@ -12,40 +12,53 @@ doctest = false
 
 [features]
 # Include examples from the ISO specification
-examples = ["dep:anyhow", "dep:hex", "dep:hex-literal"]
+examples = ["dep:anyhow", "dep:hex-literal"]
 # Include code for generating certificates and keys
-generate = ["dep:time", "rcgen/aws_lc_rs", "rcgen/x509-parser"]
+generate = ["der/derive", "der/oid", "dep:time", "rcgen/aws_lc_rs", "rcgen/x509-parser"]
 # Include mock implementations and constructors for testing
-mock = ["dep:parking_lot", "dep:rand_core", "futures/std"]
+mock = ["dep:parking_lot", "dep:rand_core"]
 # Implement SecureEcdsaKey and EphemeralEcdsaKey on p256 key
 mock_secure_keys = []
+# Expose AES-SIV test vectors
+test = ["dep:hex-literal"]
 
 [dependencies]
-aes-gcm = { workspace = true, features = ["std"] }
+aes-gcm.workspace = true
 base64.workspace = true
-chrono = { workspace = true, features = ["std", "clock"] }
-derive_more = { workspace = true, features = ["debug", "as_ref", "from", "into", "display"] }
+chrono.workspace = true
+derive_more = { workspace = true, features = ["debug", "as_ref", "from", "from_str", "into", "display"] }
+hex = { workspace = true, features = ["serde"] }
 indexmap = { workspace = true, features = ["serde"] }
-p256 = { workspace = true, features = ["std", "ecdsa", "pem"] }
+itertools.workspace = true
+moka = { workspace = true, features = ["future"] }
+nutype.workspace = true
+p256 = { workspace = true, features = ["pkcs8", "serde"] }
+p384 = { workspace = true, features = ["pkcs8", "serde"] }
 rustls-pki-types.workspace = true
 rustls-webpki.workspace = true
 rand.workspace = true
+regex.workspace = true
+reqwest.workspace = true
 ring.workspace = true
+rsa = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_with = { workspace = true, features = ["macros"] }
 sha2.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 trait-variant.workspace = true
+url.workspace = true
 x509-parser = { workspace = true, features = ["verify", "validate"] }
 yoke = { workspace = true, features = ["derive"] }
+zeroize = { workspace = true, features = ["zeroize_derive"] }
 
 error_category.path = "../error_category"
-http_utils.path = "../http_utils"
+http_utils = { path = "../http_utils", features = ["client"] }
 utils.path = "../utils"
 
 anyhow = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
-hex = { workspace = true, optional = true }
+der = { workspace = true, optional = true }
+futures.workspace = true
 hex-literal = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
@@ -53,6 +66,22 @@ rcgen = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 
 [dev-dependencies]
-assert_matches.workspace = true
-rcgen = { workspace = true, features = ["x509-parser", "aws_lc_rs"] }
+aes.workspace = true
+# Not used directly: enables `bigint` for the asn1-rs used by x509-parser, which doesn't forward this feature, so
+# that `Oid::to_id_string()` renders arcs larger than 64 bits in dotted notation
+asn1-rs = { workspace = true, features = ["bigint"] }
+chrono = { workspace = true, features = ["now"] }
+cmac.workspace = true
+ctr.workspace = true
+der = { workspace = true, features = ["derive", "heapless", "oid"] }
+ecdsa.workspace = true
+hex-literal.workspace = true
+httpmock.workspace = true
+rcgen = { workspace = true, features = ["x509-parser", "aws_lc_rs", "pem"] }
+rsa.workspace = true
+rstest.workspace = true
 time.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+http_utils = { path = "../http_utils", features = ["httpmock"] }
+utils = { path = "../utils", features = ["mock_time"] }

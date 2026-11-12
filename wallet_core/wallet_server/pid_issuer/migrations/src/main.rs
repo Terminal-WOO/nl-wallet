@@ -1,8 +1,6 @@
-use sea_orm_migration::prelude::*;
-
-use issuance_server_migrations::Migrator;
+use pid_issuer_migrations::Migrator;
 
 #[tokio::main]
 async fn main() {
-    cli::run_cli(Migrator).await;
+    sea_orm_migration::cli::run_cli(Migrator).await;
 }

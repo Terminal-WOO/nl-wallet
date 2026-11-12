@@ -2,15 +2,14 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 
-use aes_gcm::AeadCore;
 use aes_gcm::Aes256Gcm;
 use aes_gcm::Key;
 use aes_gcm::KeyInit;
 use aes_gcm::aead::Aead;
+use aes_gcm::aead::Generate;
 use aes_gcm::aead::Nonce;
 use hmac::Hmac;
 use hmac::Mac;
-use rand_core::OsRng;
 use sha2::Sha256;
 use tokio::fs::DirEntry;
 use tracing::debug;
@@ -84,12 +83,12 @@ where
 
 fn filename(hmac_key: &Key<HmacSha256>, path: &Path, name: &str) -> PathBuf {
     let hmac = name_to_encoded_hash(name, hmac_key);
-    path.join(format!("{}.aes", &hmac))
+    path.join(format!("{}.aes", hmac))
 }
 
 fn encrypt_bytes(key: &Key<Aes256Gcm>, bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let cipher = Aes256Gcm::new(key);
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let nonce = Nonce::<Aes256Gcm>::generate();
     let mut ciphertext = cipher.encrypt(&nonce, bytes)?;
 
     let mut result = nonce.as_slice().to_vec();
@@ -100,14 +99,14 @@ fn encrypt_bytes(key: &Key<Aes256Gcm>, bytes: &[u8]) -> Result<Vec<u8>, Error> {
 
 fn decrypt_bytes(decryption_key: &Key<Aes256Gcm>, bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let (nonce, ciphertext) = bytes.split_at(AES256GCM_NONCE_SIZE);
-    let nonce = Nonce::<Aes256Gcm>::from_slice(nonce);
+    let nonce = Nonce::<Aes256Gcm>::try_from(nonce).map_err(|_| Error::InvalidNonce)?;
     let cipher = Aes256Gcm::new(decryption_key);
-    let bytes = cipher.decrypt(nonce, ciphertext)?;
+    let bytes = cipher.decrypt(&nonce, ciphertext)?;
     Ok(bytes)
 }
 
 fn name_to_mac(name: &str, hmac_key: &Key<HmacSha256>) -> HmacSha256 {
-    let mut mac = <HmacSha256 as Mac>::new(hmac_key);
+    let mut mac = HmacSha256::new(hmac_key);
     mac.update(name.as_bytes());
     mac
 }
@@ -125,26 +124,26 @@ pub fn verify_name(name: &str, authentication_code: &str, hmac_key: &Key<HmacSha
 
 #[cfg(test)]
 mod tests {
+    use crypto::keys::SymmetricKey;
     use crypto::utils::random_bytes;
     use crypto::utils::random_string;
 
     use crate::gba::encryption::HmacSha256;
     use crate::gba::encryption::name_to_encoded_hash;
     use crate::gba::encryption::verify_name;
-    use crate::settings::SymmetricKey;
 
     #[test]
     fn encode_to_hash_and_verify() {
         let name = random_string(16);
         let key = SymmetricKey::from(random_bytes(64));
-        let hash = name_to_encoded_hash(&name, key.key::<HmacSha256>());
+        let hash = name_to_encoded_hash(&name, key.key::<HmacSha256>().unwrap());
 
         assert_eq!(
             hash,
-            name_to_encoded_hash(&name, key.key::<HmacSha256>()),
+            name_to_encoded_hash(&name, key.key::<HmacSha256>().unwrap()),
             "should generate identical hash for identical input"
         );
 
-        assert!(verify_name(&name, &hash, key.key::<HmacSha256>()).unwrap());
+        assert!(verify_name(&name, &hash, key.key::<HmacSha256>().unwrap()).unwrap());
     }
 }

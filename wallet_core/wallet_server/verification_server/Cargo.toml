@@ -19,99 +19,86 @@ path = "tests/verifier_api.rs"
 required-features = ["test"]
 
 [[test]]
-name = "postgres"
-path = "tests/postgres.rs"
-required-features = ["db_test"]
-
-[[test]]
 name = "settings"
 path = "tests/settings.rs"
 required-features = ["integration_test"]
 
 [features]
-default = ["postgres"]
-# Allow the disclosure return URL and its prefix to use http://
-allow_insecure_url = ["openid4vc/allow_insecure_url", "http_utils/allow_insecure_url"]
-# Include session storage in PostgreSQL
-postgres = ["server_utils/postgres"]
+# Allow the disclosure return URL to use "http://".
+allow_insecure_url = ["openid4vc/allow_insecure_url"]
 test = [
-    "allow_insecure_url",
     "attestation_data/example_credential_payloads",
-    "attestation_data/generate",
     "attestation_data/mock",
-    "chrono/clock",
-    "chrono/std",
+    "attestation_types/test_pid_constants",
+    "chrono/now",
+    "crypto/examples",
+    "crypto/mock",
     "dcql/mock",
-    "dep:assert_matches",
-    "dep:attestation_types",
     "dep:http",
     "dep:itertools",
     "dep:parking_lot",
+    "dep:reqwest",
     "dep:rstest",
     "dep:sd_jwt",
     "dep:sd_jwt_vc_metadata",
     "dep:serde_json",
-    "dep:serde_urlencoded",
+    "dep:serde_qs",
     "dep:ssri",
     "dep:url",
     "mdoc/mock_example_constructors",
     "openid4vc/mock",
     "openid4vc/test",
-    "reqwest/rustls-tls-webpki-roots",
     "server_utils/parsed_key_pair_conversion",
     "token_status_list/mock",
     "tokio/macros",
-    "tokio/test-util",
     "utils/mock_time",
-    "wscd/examples",
-    "wscd/mock",
 ]
-# Enable integration tests
-integration_test = ["test"]
 # Include and run integration tests that depend on an external PostgreSQL database
-db_test = ["dep:serial_test", "futures/async-await", "integration_test", "postgres", "tokio/sync"]
+db_test = ["dep:db_test"]
+# Enable integration tests
+integration_test = ["db_test", "allow_insecure_url", "test"]
 
 [dependencies]
 anyhow.workspace = true
-axum = { workspace = true, features = ["form", "http1", "json", "query", "tokio", "tower-log", "tracing"] }
+axum.workspace = true
 config = { workspace = true, features = ["toml"] }
+cose.path = "../../lib/cose"
 derive_more = { workspace = true, features = ["as_ref", "from", "into_iterator"] }
-futures = { workspace = true, features = ["std"] }
+futures.workspace = true
+jwt.path = "../../lib/jwt"
 nutype = { workspace = true, features = ["serde"] }
 ring.workspace = true
 rustls-pki-types.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_with = { workspace = true, features = ["base64", "hex"] }
-tokio = { workspace = true, features = ["parking_lot", "rt-multi-thread", "net"] }
-tower-http = { workspace = true, features = ["auth", "cors", "set-header", "trace"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
 tracing.workspace = true
 
-assert_matches = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rstest = { workspace = true, optional = true }
-serde_urlencoded = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-serial_test = { workspace = true, optional = true }
+serde_qs = { workspace = true, optional = true }
 ssri = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
 attestation_data.path = "../../lib/attestation_data"
 crypto.path = "../../lib/crypto"
 dcql.path = "../../lib/dcql"
-hsm = { path = "../../lib/hsm", features = ["settings"] }
+hsm.path = "../../lib/hsm"
 http_utils = { path = "../../lib/http_utils", features = ["server"] }
 openid4vc = { path = "../../lib/openid4vc", features = ["axum"] }
 openid4vc_server = { path = "../../lib/openid4vc_server", features = ["disclosure"] }
-server_utils.path = "../server_utils"
-utils = { path = "../../lib/utils" }
+server_utils = { path = "../server_utils", features = ["postgres"] }
+utils.path = "../../lib/utils"
 
 attestation_types = { path = "../../lib/attestation_types", optional = true }
+db_test = { path = "../../lib/db_test", optional = true }
 mdoc = { path = "../../lib/mdoc", optional = true }
 sd_jwt = { path = "../../lib/sd_jwt", optional = true }
 sd_jwt_vc_metadata = { path = "../../lib/sd_jwt_vc_metadata", optional = true }
 token_status_list = { path = "../../lib/token_status_list", features = ["verification"] }
-wscd = { path = "../../lib/wscd", optional = true }

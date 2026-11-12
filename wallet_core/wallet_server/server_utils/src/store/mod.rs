@@ -1,11 +1,5 @@
 #[cfg(feature = "postgres")]
 pub mod postgres;
-#[cfg(feature = "postgres")]
-use postgres::PostgresSessionStore;
-
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use url::Url;
 
 use openid4vc::server_state::Expirable;
 use openid4vc::server_state::HasProgress;
@@ -16,6 +10,11 @@ use openid4vc::server_state::SessionStore;
 use openid4vc::server_state::SessionStoreError;
 use openid4vc::server_state::SessionStoreTimeouts;
 use openid4vc::server_state::SessionToken;
+#[cfg(feature = "postgres")]
+use postgres::PostgresSessionStore;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use url::Url;
 
 /// This enum effectively switches between the different types that implement `DisclosureSessionStore`,
 /// by implementing this trait itself and forwarding the calls to the type contained in the invariant.
@@ -40,6 +39,7 @@ pub enum StoreConnection {
 }
 
 impl StoreConnection {
+    #[cfg_attr(not(feature = "postgres"), expect(clippy::unused_async))]
     pub async fn try_new(url: Url) -> Result<Self, StoreError> {
         match url.scheme() {
             #[cfg(feature = "postgres")]
@@ -51,6 +51,7 @@ impl StoreConnection {
 }
 
 impl<T> SessionStoreVariant<T> {
+    #[cfg_attr(not(feature = "postgres"), expect(clippy::needless_pass_by_value))]
     pub fn new(connection: StoreConnection, timeouts: SessionStoreTimeouts) -> SessionStoreVariant<T> {
         match connection {
             #[cfg(feature = "postgres")]

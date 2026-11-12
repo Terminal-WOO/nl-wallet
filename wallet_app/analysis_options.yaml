@@ -3,9 +3,17 @@ include: package:flutter_lints/flutter.yaml
 analyzer:
   errors:
     todo: ignore
+    invalid_annotation_target: ignore # https://github.com/rrousselGit/freezed/issues/488
   exclude:
     - "pub/core_domain/lib/src/core_domain/**.dart"
     - "**/**.g.dart"
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
 
 linter:
   # The lint rules applied to this project can be customized in the
@@ -74,7 +82,6 @@ linter:
     sort_unnamed_constructors_first: true
     tighten_type_of_initializing_formals: true
     unawaited_futures: true
-    unnecessary_await_in_return: true
     unnecessary_breaks: true
     unnecessary_lambdas: true
     unnecessary_library_directive: true
@@ -85,7 +92,6 @@ linter:
     use_colored_box: true
     use_decorated_box: true
     use_enums: true
-    use_if_null_to_convert_nulls_to_bools: true
     use_is_even_rather_than_modulo: true
     use_named_constants: true
     use_raw_strings: true

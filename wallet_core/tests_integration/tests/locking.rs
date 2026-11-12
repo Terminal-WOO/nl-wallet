@@ -1,61 +1,75 @@
+use std::assert_matches;
 use std::time::Duration;
 
-use assert_matches::assert_matches;
+use db_test::DbSetup;
+use hsm::test::HsmSetup;
 use rstest::rstest;
 use serial_test::serial;
-use tokio::time::sleep;
-
 use tests_integration::common::*;
+use tokio::time::sleep;
+use wallet::Pin;
 use wallet::errors::InstructionError;
 use wallet::errors::WalletUnlockError;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[rstest]
 #[serial(hsm)]
-async fn test_unlock_ok(#[values(WalletDeviceVendor::Apple, WalletDeviceVendor::Google)] vendor: WalletDeviceVendor) {
-    let pin = "112234";
+async fn ltc37_test_unlock_ok(
+    #[values(WalletDeviceVendor::Apple, WalletDeviceVendor::Google)] vendor: WalletDeviceVendor,
+) {
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let pin: Pin = "112234".into();
 
-    let (mut wallet, _, _) = setup_wallet_and_default_env(vendor).await;
-    wallet = do_wallet_registration(wallet, pin).await;
+    let (mut wallet, _, _) = setup_wallet_and_default_env(&db_setup, &hsm_setup, &tempdir, vendor).await;
+    wallet = do_wallet_registration(wallet, pin.clone()).await;
 
     wallet.lock();
     assert!(wallet.is_locked());
 
-    wallet.unlock(pin.to_owned()).await.expect("Should unlock wallet");
+    wallet.unlock(pin.clone()).await.expect("Should unlock wallet");
     assert!(!wallet.is_locked());
 
     wallet.lock();
 
     // Test multiple instructions
-    wallet.unlock(pin.to_owned()).await.expect("Should unlock wallet");
+    wallet.unlock(pin).await.expect("Should unlock wallet");
     assert!(!wallet.is_locked());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_block() {
-    let pin = "112234";
+async fn ltc47_test_block() {
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let correct_pin: Pin = "112234".into();
 
-    let (mut settings, wp_root_ca) = wallet_provider_settings();
+    let (mut settings, wp_root_ca) = wallet_provider_settings(db_setup.wallet_provider_url(), db_setup.audit_log_url());
     settings.pin_policy.rounds = 1;
     settings.pin_policy.attempts_per_round = 2;
     settings.pin_policy.timeouts = vec![];
 
     let (mut wallet, _, _) = setup_wallet_and_env(
+        &db_setup,
+        &hsm_setup,
+        &tempdir,
         WalletDeviceVendor::Apple,
         update_policy_server_settings(),
         (settings, wp_root_ca),
-        pid_issuer_settings(),
-        issuance_server_settings(),
+        pid_issuer_settings(db_setup.pid_issuer_url(), None),
+        issuance_server_settings(db_setup.issuance_server_url()),
     )
     .await;
-    wallet = do_wallet_registration(wallet, pin).await;
+    wallet = do_wallet_registration(wallet, correct_pin.clone()).await;
 
     wallet.lock();
     assert!(wallet.is_locked());
 
+    let wrong_pin = "555555".into();
     let result = wallet
-        .unlock("555555".to_owned())
+        .unlock(wrong_pin)
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -67,33 +81,39 @@ async fn test_block() {
     );
     assert!(wallet.is_locked());
 
+    let another_wrong_pin = "555556".into();
     let result = wallet
-        .unlock("555556".to_owned())
+        .unlock(another_wrong_pin)
         .await
         .expect_err("invalid pin should block wallet");
     assert_matches!(result, WalletUnlockError::Instruction(InstructionError::Blocked));
     assert!(wallet.is_locked());
 
-    let result = wallet
-        .unlock("112234".to_owned())
-        .await
-        .expect_err("wallet should be blocked");
+    let result = wallet.unlock(correct_pin).await.expect_err("wallet should be blocked");
     assert_matches!(result, WalletUnlockError::Instruction(InstructionError::Blocked));
     assert!(wallet.is_locked());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_unlock_error() {
-    let pin = "112234";
-    let (mut wallet, _, _) = setup_wallet_and_default_env(WalletDeviceVendor::Apple).await;
-    wallet = do_wallet_registration(wallet, pin).await;
+async fn ltc46_test_unlock_error() {
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let correct_pin: Pin = "112234".into();
+    let wrong_pin_1: Pin = "555555".into();
+    let wrong_pin_2: Pin = "555556".into();
+    let wrong_pin_3: Pin = "555557".into();
+
+    let (mut wallet, _, _) =
+        setup_wallet_and_default_env(&db_setup, &hsm_setup, &tempdir, WalletDeviceVendor::Apple).await;
+    wallet = do_wallet_registration(wallet, correct_pin.clone()).await;
 
     wallet.lock();
     assert!(wallet.is_locked());
 
     let r1 = wallet
-        .unlock("555555".to_owned())
+        .unlock(wrong_pin_1)
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -106,7 +126,7 @@ async fn test_unlock_error() {
     assert!(wallet.is_locked());
 
     let r2 = wallet
-        .unlock("555556".to_owned())
+        .unlock(wrong_pin_2)
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -119,7 +139,7 @@ async fn test_unlock_error() {
     assert!(wallet.is_locked());
 
     let r3 = wallet
-        .unlock("555557".to_owned())
+        .unlock(wrong_pin_3.clone())
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -135,7 +155,7 @@ async fn test_unlock_error() {
     sleep(Duration::from_millis(200)).await;
 
     let r4 = wallet
-        .unlock("555557".to_owned())
+        .unlock(wrong_pin_3.clone())
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -145,7 +165,7 @@ async fn test_unlock_error() {
     assert!(wallet.is_locked());
 
     let r5 = wallet
-        .unlock("555557".to_owned())
+        .unlock(wrong_pin_3.clone())
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(r5, WalletUnlockError::Instruction(InstructionError::Timeout { timeout_millis: t }) if t < 200);
@@ -154,7 +174,7 @@ async fn test_unlock_error() {
     sleep(Duration::from_millis(200)).await;
 
     let r6 = wallet
-        .unlock("555557".to_owned())
+        .unlock(wrong_pin_3.clone())
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -167,7 +187,7 @@ async fn test_unlock_error() {
     assert!(wallet.is_locked());
 
     let r7 = wallet
-        .unlock("555557".to_owned())
+        .unlock(wrong_pin_3.clone())
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -180,7 +200,7 @@ async fn test_unlock_error() {
     assert!(wallet.is_locked());
 
     let r8 = wallet
-        .unlock("555557".to_owned())
+        .unlock(wrong_pin_3.clone())
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
@@ -192,18 +212,18 @@ async fn test_unlock_error() {
     );
     assert!(wallet.is_locked());
 
-    let r8 = wallet
-        .unlock("555557".to_owned())
+    let r9 = wallet
+        .unlock(wrong_pin_3)
         .await
         .expect_err("invalid pin should return error");
     assert_matches!(
-        r8,
+        r9,
         WalletUnlockError::Instruction(InstructionError::Timeout { timeout_millis: 400 })
     );
     assert!(wallet.is_locked());
 
     sleep(Duration::from_millis(400)).await;
 
-    wallet.unlock(pin.to_owned()).await.expect("should unlock wallet");
+    wallet.unlock(correct_pin).await.expect("should unlock wallet");
     assert!(!wallet.is_locked());
 }

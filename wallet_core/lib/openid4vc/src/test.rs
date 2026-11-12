@@ -1,0 +1,410 @@
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::num::NonZeroU8;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use attestation_data::attributes::Attribute;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use attestation_data::registration_certificate::mock::MockRegistrationCertificate;
+use attestation_types::claim_path::ClaimPath;
+use attestation_types::credential_format::Format;
+use attestation_types::credential_kind::CredentialKind;
+use attestation_types::status_claim::StatusClaim;
+use chrono::DateTime;
+use chrono::Days;
+use chrono::Utc;
+use crypto::server_keys::KeyPair;
+use crypto::server_keys::generate::Ca;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::crl::mock::MockCertificateCrlVerifier;
+use derive_more::Constructor;
+use indexmap::IndexMap;
+use oauth::errors::AuthorizationErrorCode;
+use oauth::errors::ErrorWithCode;
+use oauth::issuer_identifier::IssuerIdentifier;
+use oauth::par::PAR_TTL;
+use p256::SecretKey;
+use p256::ecdsa::SigningKey;
+use p256::elliptic_curve::Generate;
+use sd_jwt_vc_metadata::ClaimDisplayMetadata;
+use sd_jwt_vc_metadata::ClaimMetadata;
+use sd_jwt_vc_metadata::ClaimSelectiveDisclosureMetadata;
+use sd_jwt_vc_metadata::TypeMetadata;
+use sd_jwt_vc_metadata::TypeMetadataDocuments;
+use sd_jwt_vc_metadata::UncheckedTypeMetadata;
+use token_status_list::status_list_service::ObtainClaimError;
+use token_status_list::status_list_service::StatusListService;
+use token_status_list::status_list_service::mock::generate_status_claims;
+use tokio::task::AbortHandle;
+use url::Url;
+use utils::date_time_seconds::DateTimeSeconds;
+use utils::generator::Generator;
+use utils::generator::TimeGenerator;
+use utils::vec_at_least::VecNonEmpty;
+use utils::vec_nonempty;
+use uuid::Uuid;
+
+use crate::authorization::VciAuthorizationRequest;
+use crate::authorization_code_flow::AuthorizationCodeFlow;
+use crate::authorization_code_flow::AuthorizeOutcome;
+use crate::authorization_code_flow::WalletAuthorizationContext;
+use crate::authorizing_issuer::AuthorizingIssuer;
+use crate::credential_configurations::CredentialConfiguration;
+use crate::credential_configurations::CredentialConfigurationFormat;
+use crate::credential_configurations::CredentialConfigurationTypeMetadata;
+use crate::credential_configurations::CredentialConfigurations;
+use crate::issuable_document::IssuableDocument;
+use crate::issuer::IssuanceData;
+use crate::issuer::Issuer;
+use crate::mock::MOCK_WALLET_CLIENT_ID;
+use crate::nonce::memory_store::MemoryNonceStore;
+use crate::server_state::MemorySessionStore;
+use crate::store::MemoryStore;
+
+pub const MOCK_ATTESTATION_TYPES: [&str; 2] = ["com.example.pid", "com.example.address"];
+pub const MOCK_ATTRS: [(&str, &str); 2] = [("first_name", "John"), ("family_name", "Doe")];
+
+pub type MockIssuer<G = TimeGenerator> =
+    Issuer<SigningKey, MockObtainingStatusListService, MemorySessionStore<IssuanceData, G>, MemoryNonceStore>;
+
+pub type MockAuthorizingIssuer<G = TimeGenerator> = AuthorizingIssuer<
+    SigningKey,
+    MockObtainingStatusListService,
+    MemorySessionStore<IssuanceData, G>,
+    MemoryNonceStore,
+    MemoryStore<String, VciAuthorizationRequest>,
+    StaticAuthorizingFlow,
+>;
+
+fn mock_claims(required_attr: &str) -> Vec<ClaimMetadata> {
+    MOCK_ATTRS
+        .iter()
+        .map(|(key, _)| ClaimMetadata {
+            path: vec_nonempty![ClaimPath::SelectByKey(key.to_string())],
+            display: vec![ClaimDisplayMetadata {
+                locale: "en".to_string(),
+                label: key.to_string(),
+                description: None,
+            }],
+            sd: ClaimSelectiveDisclosureMetadata::Allowed,
+            mandatory: *key == required_attr,
+            svg_id: None,
+        })
+        .collect()
+}
+
+pub fn mock_type_metadata(vct: &str) -> TypeMetadata {
+    TypeMetadata::try_new(UncheckedTypeMetadata {
+        vct: vct.to_string(),
+        claims: mock_claims(""),
+        ..UncheckedTypeMetadata::empty_example()
+    })
+    .unwrap()
+}
+
+/// Like [`mock_type_metadata`], but with a JSON schema that marks `required_attr` as a required
+/// property; the other [`MOCK_ATTRS`] stay optional. Issuing a document that lacks `required_attr`
+/// then fails schema validation at credential issuance.
+pub fn mock_type_metadata_with_required_attr(vct: &str, required_attr: &str) -> TypeMetadata {
+    TypeMetadata::try_new(UncheckedTypeMetadata {
+        vct: vct.to_string(),
+        claims: mock_claims(required_attr),
+        ..UncheckedTypeMetadata::empty_example()
+    })
+    .unwrap()
+}
+
+/// A single mock document for `attestation_type` carrying exactly the given attributes
+/// (typically a subset of [`MOCK_ATTRS`]). For an mdoc, the attributes are namespaced under
+/// `attestation_type`, matching [`CredentialMetadata::new_mdoc_example`].
+pub fn mock_issuable_document_with_attrs(
+    format: Format,
+    attestation_type: &str,
+    attrs: &[(&str, &str)],
+) -> IssuableDocument {
+    let flat_attrs = IndexMap::from_iter(
+        attrs
+            .iter()
+            .map(|(key, val)| (key.to_string(), Attribute::Text(val.to_string()))),
+    );
+
+    let attributes = match format {
+        Format::MsoMdoc => IndexMap::from([(attestation_type.to_string(), Attribute::Object(flat_attrs))]),
+        Format::SdJwt => flat_attrs,
+    };
+
+    IssuableDocument::try_new_with_random_id(
+        CredentialKind::new(format, attestation_type.to_string()),
+        attributes.into(),
+    )
+    .unwrap()
+}
+
+pub fn mock_issuable_documents(document_count: NonZeroUsize) -> VecNonEmpty<IssuableDocument> {
+    (0..document_count.get())
+        .map(|i| mock_issuable_document_with_attrs(Format::SdJwt, MOCK_ATTESTATION_TYPES[i], &MOCK_ATTRS))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
+}
+
+/// Test-only implementation of [`AuthorizationCodeFlow`] for the auth-code path. `authorize` either returns
+/// [`AuthorizeOutcome::Authorized`] with the preconfigured documents, so the `openid4vc` layer immediately writes the
+/// `AuthCodeIssued` session and redirects the user-agent straight back to the wallet with the issuer-generated code, or
+/// it returns an error that converts to [`AuthorizationErrorCode`], which is also encoded in a redirect back to the
+/// wallet.
+#[derive(derive_more::Constructor)]
+pub struct StaticAuthorizingFlow {
+    authorize_result: Result<VecNonEmpty<IssuableDocument>, AuthorizationErrorCode>,
+}
+
+#[derive(Debug, thiserror::Error, Constructor)]
+#[error("StaticAuthorizingFlowError")]
+pub struct StaticAuthorizingFlowError(AuthorizationErrorCode);
+
+impl ErrorWithCode for StaticAuthorizingFlowError {
+    type ErrorCode = AuthorizationErrorCode;
+
+    fn error_code(&self) -> Self::ErrorCode {
+        let Self(inner) = self;
+
+        inner.clone()
+    }
+}
+
+impl AuthorizationCodeFlow for StaticAuthorizingFlow {
+    type Error = StaticAuthorizingFlowError;
+
+    async fn authorize(&self, context: WalletAuthorizationContext) -> Result<AuthorizeOutcome, Self::Error> {
+        let documents = self.authorize_result.clone().map_err(StaticAuthorizingFlowError)?;
+
+        let outcome = AuthorizeOutcome::Authorized(documents.clone(), Box::new(context));
+
+        Ok(outcome)
+    }
+}
+
+/// Mock implementation of [`StatusListService`] on which only `obtain_status_claims()` is meant to be called. This will
+/// return a `ObtainClaimError::BatchIdExists` error when a status claim was previously obtained for a particular
+/// `batch_id`.
+#[derive(Debug)]
+pub struct MockObtainingStatusListService {
+    uri: Url,
+    claimed_batch_ids: Mutex<HashSet<Uuid>>,
+}
+
+impl MockObtainingStatusListService {
+    pub fn new(uri: Url) -> Self {
+        Self {
+            uri,
+            claimed_batch_ids: Mutex::new(HashSet::new()),
+        }
+    }
+}
+
+impl StatusListService for MockObtainingStatusListService {
+    type Error = Infallible;
+
+    async fn obtain_status_claims(
+        &self,
+        batch_id: Uuid,
+        _expires: Option<DateTimeSeconds>,
+        copies: NonZeroUsize,
+    ) -> Result<VecNonEmpty<StatusClaim>, ObtainClaimError<Self::Error>> {
+        let mut claimed_batch_ids = self.claimed_batch_ids.lock().unwrap();
+
+        if claimed_batch_ids.contains(&batch_id) {
+            return Err(ObtainClaimError::BatchIdExists(batch_id));
+        }
+
+        claimed_batch_ids.insert(batch_id);
+
+        Ok(generate_status_claims(&self.uri, copies))
+    }
+
+    fn start_refresh_job(&self) -> AbortHandle {
+        tokio::task::spawn(async {}).abort_handle()
+    }
+
+    async fn republish_all(&self, _force: bool) -> Result<(), Self::Error> {
+        unimplemented!("republish_all() should not be called in tests");
+    }
+
+    async fn revoke_attestation_batches(&self, _batch_ids: Vec<Uuid>) -> Result<(), Self::Error> {
+        unimplemented!("revoke_attestation_batches() should not be called in tests");
+    }
+}
+
+/// Create a mock [`Issuer`] based on an [`IssuerIdentifier`] with a shared session store and some default credential
+/// configurations.
+pub fn setup_mock_issuer<G>(
+    issuer_identifier: IssuerIdentifier,
+    attestation_count: NonZeroUsize,
+    sessions: Arc<MemorySessionStore<IssuanceData, G>>,
+) -> (
+    MockIssuer<G>,
+    TrustAnchors,
+    Ca,
+    MockCertificateCrlVerifier,
+    MockRegistrationCertificate,
+)
+where
+    G: Generator<DateTime<Utc>> + Send + Sync + 'static,
+{
+    let type_metadata = MOCK_ATTESTATION_TYPES[..attestation_count.get()]
+        .iter()
+        .map(|attestation_type| mock_type_metadata(attestation_type))
+        .collect();
+
+    setup_mock_issuer_from_sd_jwt_metadata(issuer_identifier, type_metadata, sessions)
+}
+
+/// Create a mock [`Issuer`] based on an [`IssuerIdentifier`] and a shared session store. Its credential configurations
+/// are are all in SD-JWT format and based on a single SD-JWT VC Type Metadata document.
+pub fn setup_mock_issuer_from_sd_jwt_metadata<G>(
+    issuer_identifier: IssuerIdentifier,
+    metadata: Vec<TypeMetadata>,
+    sessions: Arc<MemorySessionStore<IssuanceData, G>>,
+) -> (
+    MockIssuer<G>,
+    TrustAnchors,
+    Ca,
+    MockCertificateCrlVerifier,
+    MockRegistrationCertificate,
+)
+where
+    G: Generator<DateTime<Utc>> + Send + Sync + 'static,
+{
+    let attestations = metadata
+        .into_iter()
+        .map(|metadata| {
+            let (attestation_type, _, metadata_documents) = TypeMetadataDocuments::from_single_example(metadata);
+
+            CredentialConfigurationFormat::new_sd_jwt_type_metadata(
+                CredentialConfigurationTypeMetadata::try_new(&attestation_type, metadata_documents)
+                    .expect("example type metadata should verify"),
+            )
+        })
+        .collect();
+
+    setup_mock_issuer_with_metadata(issuer_identifier, attestations, true, sessions)
+}
+
+/// Create a mock [`Issuer`] whose credential configurations are described explicitly by the provided metadata.
+pub fn setup_mock_issuer_with_metadata<G>(
+    issuer_identifier: IssuerIdentifier,
+    attestations: Vec<CredentialConfigurationFormat>,
+    credential_preview_endpoint: bool,
+    sessions: Arc<MemorySessionStore<IssuanceData, G>>,
+) -> (
+    MockIssuer<G>,
+    TrustAnchors,
+    Ca,
+    MockCertificateCrlVerifier,
+    MockRegistrationCertificate,
+)
+where
+    G: Generator<DateTime<Utc>> + Send + Sync + 'static,
+{
+    let issuer_ca = Ca::generate_issuer_mock_ca().unwrap();
+    let issuer_trust_anchors = issuer_ca.to_trust_anchors();
+    let metadata_keypair = issuer_ca.generate_wrpac_issuer_mock_with_crl().unwrap();
+    let issuance_keypair = issuer_ca.generate_issuer_mock().unwrap();
+
+    let wptl_ca = Ca::generate_wptl_mock_ca().unwrap();
+    let wptl_trust_anchors = wptl_ca.to_trust_anchors();
+
+    let registration_certificate = MockRegistrationCertificate::new_issuer(
+        metadata_keypair.certificate(),
+        attestations.iter().map(CredentialConfigurationFormat::credential_kind),
+    );
+
+    let credential_configs = CredentialConfigurations::try_new(
+        attestations
+            .into_iter()
+            .map(|format| {
+                let config_id = format!("{}_{}", format.attestation_type(), format.format());
+
+                let status_list_uri_path = config_id.replace(':', "-");
+                let status_list = MockObtainingStatusListService::new(
+                    format!("https://tsl.example.com/{status_list_uri_path}")
+                        .parse()
+                        .unwrap(),
+                );
+
+                let config = CredentialConfiguration {
+                    scope: config_id.parse().unwrap(),
+                    format,
+                    key_pair: KeyPair::new_from_signing_key(
+                        issuance_keypair.private_key().clone(),
+                        issuance_keypair.certificate().clone(),
+                    )
+                    .unwrap(),
+                    valid_days: Days::new(365),
+                    status_list,
+                };
+
+                (config_id.into(), config)
+            })
+            .collect(),
+    )
+    .unwrap();
+
+    let issuer = MockIssuer::new(
+        issuer_identifier,
+        metadata_keypair,
+        RegistrationCertificateEnvelope::from_slice(registration_certificate.certificate.as_slice()).unwrap(),
+        SecretKey::generate(),
+        NonZeroU8::new(4).unwrap(),
+        HashSet::from([MOCK_WALLET_CLIENT_ID.to_string()]),
+        credential_configs,
+        credential_preview_endpoint,
+        wptl_trust_anchors,
+        sessions,
+        MemoryNonceStore::new(),
+    );
+
+    let crl_verifier = MockCertificateCrlVerifier::new_for_ca(&issuer_ca);
+
+    (
+        issuer,
+        issuer_trust_anchors,
+        wptl_ca,
+        crl_verifier,
+        registration_certificate,
+    )
+}
+
+/// Create a mock [`AuthorizingIssuer`] based on an [`IssuerIdentifier`] and a shared session store. Its credential
+/// configurations are are all in SD-JWT format and based on a single SD-JWT VC Type Metadata document.
+pub fn setup_mock_authorizing_issuer_from_sd_jwt_metadata<G>(
+    issuer_identifier: IssuerIdentifier,
+    type_metadata: Vec<TypeMetadata>,
+    sessions: Arc<MemorySessionStore<IssuanceData, G>>,
+    flow: StaticAuthorizingFlow,
+    wallet_redirect_uris: VecNonEmpty<Url>,
+) -> (
+    MockAuthorizingIssuer<G>,
+    TrustAnchors,
+    Ca,
+    MockCertificateCrlVerifier,
+    MockRegistrationCertificate,
+)
+where
+    G: Generator<DateTime<Utc>> + Send + Sync + 'static,
+{
+    let par_store = MemoryStore::new(PAR_TTL);
+    let (issuer, trust_anchors, wptl_ca, crl_verifier, registration_certificate) =
+        setup_mock_issuer_from_sd_jwt_metadata(issuer_identifier, type_metadata, sessions);
+    let authorizing_issuer = AuthorizingIssuer::new(Arc::new(issuer), par_store, flow, wallet_redirect_uris);
+
+    (
+        authorizing_issuer,
+        trust_anchors,
+        wptl_ca,
+        crl_verifier,
+        registration_certificate,
+    )
+}

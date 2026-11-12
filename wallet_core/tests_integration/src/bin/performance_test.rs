@@ -1,32 +1,34 @@
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
+use crypto::kid::VerifyingKeyWithKid;
 use ctor::ctor;
-use reqwest::StatusCode;
-use tracing::instrument;
-use url::Url;
-
-use dcql::Query;
-use http_utils::reqwest::default_reqwest_client_builder;
-use http_utils::tls::pinning::TlsPinningConfig;
+use http_utils::client::TlsPinningConfig;
 use openid4vc::disclosure_session::VpDisclosureClient;
-use openid4vc::issuance_session::HttpIssuanceSession;
 use openid4vc::verifier::SessionType;
 use openid4vc::verifier::StatusResponse;
+use openid4vc::wallet_issuance::discovery::HttpIssuanceDiscovery;
 use openid4vc_server::verifier::StartDisclosureRequest;
 use openid4vc_server::verifier::StartDisclosureResponse;
 use openid4vc_server::verifier::StatusParams;
 use platform_support::attested_key::mock::MockHardwareAttestedKeyHolder;
+use reqwest::Certificate;
+use reqwest::StatusCode;
 use tests_integration::default;
 use tests_integration::fake_digid::fake_digid_auth;
 use tests_integration::logging::init_logging;
+use tests_integration::test_credential::new_mock_mdoc_pid_example;
+use tracing::instrument;
+use url::Url;
 use wallet::DisclosureUriSource;
+use wallet::PidIssuancePurpose;
+use wallet::Pin;
 use wallet::Wallet;
 use wallet::WalletClients;
+use wallet::WalletRepositories;
 use wallet::test::HttpAccountProviderClient;
 use wallet::test::HttpConfigurationRepository;
-use wallet::test::HttpDigidClient;
 use wallet::test::MockHardwareDatabaseStorage;
-use wallet::test::Repository;
 use wallet::test::UpdatePolicyRepository;
-use wallet::test::UpdateableRepository;
 use wallet::test::default_config_server_config;
 use wallet::test::default_wallet_config;
 
@@ -41,8 +43,7 @@ type PerformanceTestWallet = Wallet<
     MockHardwareDatabaseStorage,
     MockHardwareAttestedKeyHolder,
     HttpAccountProviderClient,
-    HttpDigidClient,
-    HttpIssuanceSession,
+    HttpIssuanceDiscovery,
     VpDisclosureClient,
 >;
 
@@ -53,64 +54,65 @@ async fn main() {
     let temp_path = temp_dir.path();
 
     let relying_party_url = option_env!("RELYING_PARTY_URL").unwrap_or("http://localhost:3004/");
-    let public_verification_server_url =
-        option_env!("PUBLIC_VERIFICATION_SERVER_URL").unwrap_or("http://localhost:3005/");
+    let verification_server_url = option_env!("VERIFICATION_SERVER_URL").unwrap_or("http://localhost:3005/");
     let internal_verification_server_url =
         option_env!("INTERNAL_VERIFICATION_SERVER_URL").unwrap_or("http://localhost:3006/");
+    let digid_trust_anchors: Vec<Certificate> = option_env!("DIGID_TRUST_ANCHORS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            Certificate::from_der(BASE64_STANDARD.decode(s).unwrap().as_slice()).expect("Could not parse trust anchor")
+        })
+        .collect();
 
     let config_server_config = default_config_server_config();
     let wallet_config = default_wallet_config();
 
     let config_repository = HttpConfigurationRepository::new(
-        config_server_config.signing_public_key.as_inner().into(),
-        temp_path.to_path_buf(),
+        VerifyingKeyWithKid {
+            kid: config_server_config.signing_key_id,
+            public_key: config_server_config.signing_public_key,
+        },
+        temp_path.join("config.etag"),
         wallet_config,
-    )
-    .await
-    .unwrap();
-    config_repository
-        .fetch(&config_server_config.http_config)
-        .await
-        .unwrap();
-    let pid_issuance_config = &config_repository.get().pid_issuance;
+    );
+
     let update_policy_repository = UpdatePolicyRepository::init();
-    let wallet_clients = WalletClients::new_http(default_reqwest_client_builder()).unwrap();
+    let wallet_clients = WalletClients::new().unwrap();
 
     let storage = MockHardwareDatabaseStorage::open_in_memory().await;
 
     let mut wallet: PerformanceTestWallet = Wallet::init_registration(
-        config_repository,
-        update_policy_repository,
         storage,
         MockHardwareAttestedKeyHolder::new_apple_mock(default::attestation_environment(), default::app_identifier()),
+        WalletRepositories {
+            config_repository,
+            update_policy_repository,
+        },
         wallet_clients,
     )
     .await
     .expect("Could not create test wallet");
 
-    let pin = "123344";
+    let pin: Pin = "123344".into();
 
-    wallet.register(pin).await.expect("Could not register wallet");
+    wallet.register(pin.clone()).await.expect("Could not register wallet");
 
     let authorization_url = wallet
-        .create_pid_issuance_auth_url()
+        .create_pid_issuance_auth_url(PidIssuancePurpose::Enrollment)
         .await
         .expect("Could not create pid issuance auth url");
 
-    let redirect_url = fake_digid_auth(
-        authorization_url,
-        pid_issuance_config.digid_http_config.clone(),
-        "999991772",
-    )
-    .await;
+    let redirect_url = fake_digid_auth(authorization_url, digid_trust_anchors, "999991772").await;
 
     let _attestations = wallet
-        .continue_pid_issuance(redirect_url)
+        .continue_issuance(redirect_url)
         .await
         .expect("Could not continue pid issuance");
 
     wallet
-        .accept_issuance(pin.to_owned())
+        .accept_issuance(pin.clone())
         .await
         .expect("Could not accept pid issuance");
 
@@ -118,12 +120,12 @@ async fn main() {
 
     let start_request = StartDisclosureRequest {
         usecase: "xyz_bank_mdoc".to_owned(),
-        dcql_query: Some(Query::new_mock_mdoc_pid_example()),
+        dcql_query: Some(new_mock_mdoc_pid_example()),
         return_url_template: Some(relying_party_url.parse().unwrap()),
     };
 
     let internal_demo_rp_url: Url = internal_verification_server_url.parse().unwrap();
-    let public_demo_rp_url: Url = public_verification_server_url.parse().unwrap();
+    let demo_rp_url: Url = verification_server_url.parse().unwrap();
 
     let response = client
         .post(
@@ -139,10 +141,10 @@ async fn main() {
 
     let StartDisclosureResponse { session_token } = response.json::<StartDisclosureResponse>().await.unwrap();
 
-    let mut status_url = public_demo_rp_url
+    let mut status_url = demo_rp_url
         .join(&format!("disclosure/sessions/{session_token}"))
         .unwrap();
-    let status_query = serde_urlencoded::to_string(StatusParams {
+    let status_query = serde_qs::to_string(&StatusParams {
         session_type: Some(SessionType::SameDevice),
     })
     .unwrap();
@@ -165,11 +167,11 @@ async fn main() {
     assert_eq!(proposal.attestation_options.len().get(), 1);
 
     let return_url = wallet
-        .accept_disclosure(&[0], pin.to_owned())
+        .accept_disclosure(&[0], pin)
         .await
         .expect("Could not accept disclosure");
 
-    assert!(return_url.unwrap().to_string().starts_with(relying_party_url));
+    assert!(return_url.unwrap().as_str().starts_with(relying_party_url));
 
     // Explicit drop to ensure temp dir is not moved earlier
     drop(temp_dir)

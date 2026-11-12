@@ -1,9 +1,8 @@
 use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
-use crate::compressed_blob::CompressedBlob;
-
 use super::attestation;
+use crate::compressed_blob::CompressedBlob;
 
 #[derive(Clone, Debug, Eq, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "attestation_copy")]
@@ -13,17 +12,10 @@ pub struct Model {
     pub disclosure_count: u32,
     pub attestation_id: Uuid,
     pub key_identifier: String,
-    pub attestation_format: AttestationFormat,
+    pub status_list_url: Option<String>,
+    pub status_list_index: Option<u32>,
+    pub revocation_status: Option<String>,
     pub attestation: CompressedBlob,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumIter, DeriveActiveEnum)]
-#[sea_orm(rs_type = "String", db_type = "String(StringLen::None)")]
-pub enum AttestationFormat {
-    #[sea_orm(string_value = "dc+sd-jwt")]
-    SdJwt,
-    #[sea_orm(string_value = "mso_mdoc")]
-    Mdoc,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter)]

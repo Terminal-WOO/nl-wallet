@@ -1,0 +1,139 @@
+package feature.revocation
+
+import helper.OrganizationMetadataHelper
+import helper.RevocationHelper
+import helper.TasDataHelper
+import helper.TestBase
+import navigator.OnboardingNavigator
+import navigator.screen.OnboardingNavigatorScreen
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.MethodOrderer
+import org.junit.jupiter.api.TestInfo
+import org.junit.jupiter.api.TestMethodOrder
+import org.junitpioneer.jupiter.RetryingTest
+import screen.card.CardDataScreen
+import screen.card.CardDetailScreen
+import screen.dashboard.DashboardScreen
+import screen.error.AttributesMissingErrorScreen
+import screen.issuance.CardIssuanceScreen
+import screen.issuance.DisclosureIssuanceScreen
+import screen.menu.MenuScreen
+import screen.security.PinScreen
+import screen.web.demo.DemoIndexWebPage
+import screen.web.demo.issuer.IssuerWebPage
+
+@TestMethodOrder(MethodOrderer.DisplayName::class)
+@DisplayName("Card revocations")
+class RevokeCardTests : TestBase() {
+
+    private lateinit var indexWebPage: DemoIndexWebPage
+    private lateinit var issuerWebPage: IssuerWebPage
+    private lateinit var disclosureForIssuanceScreen: DisclosureIssuanceScreen
+    private lateinit var cardIssuanceScreen: CardIssuanceScreen
+    private lateinit var pinScreen: PinScreen
+    private lateinit var organizationAuthMetadata: OrganizationMetadataHelper
+    private lateinit var dashboardScreen: DashboardScreen
+    private lateinit var attributesMissingErrorScreen: AttributesMissingErrorScreen
+    private lateinit var revocationHelper: RevocationHelper
+    private lateinit var tasData: TasDataHelper
+    private lateinit var cardDetailScreen: CardDetailScreen
+    private lateinit var cardDataScreen: CardDataScreen
+
+    fun setUp(testInfo: TestInfo) {
+        startDriver(testInfo)
+
+        indexWebPage = DemoIndexWebPage()
+        issuerWebPage = IssuerWebPage()
+        pinScreen = PinScreen()
+        organizationAuthMetadata = OrganizationMetadataHelper()
+        disclosureForIssuanceScreen = DisclosureIssuanceScreen()
+        cardIssuanceScreen = CardIssuanceScreen()
+        dashboardScreen = DashboardScreen()
+        attributesMissingErrorScreen = AttributesMissingErrorScreen()
+        revocationHelper = RevocationHelper()
+        cardDetailScreen = CardDetailScreen()
+        cardDataScreen = CardDataScreen()
+        tasData = TasDataHelper()
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC67 LTC71 Revoke PID card")
+    fun verifyPidRevocation(testInfo: TestInfo) {
+        setUp(testInfo)
+        OnboardingNavigator().toScreen(OnboardingNavigatorScreen.Dashboard)
+        dashboardScreen.closeApp()
+        revocationHelper.revokeAllNonRevokedPids()
+        dashboardScreen.openApp()
+        pinScreen.enterPin(DEFAULT_PIN)
+        assertTrue(dashboardScreen.cardRevocationVisible(tasData.getPidDisplayName()), "Card revocation not visible")
+        dashboardScreen.captureA11ySnapshot("DashboardCardRevoked")
+
+        dashboardScreen.clickCard(tasData.getPidDisplayName())
+        cardDetailScreen.clickCardDataButton()
+        assertTrue(cardDataScreen.revocationMessageVisible(), "Card revocation not visible")
+        cardDataScreen.captureA11ySnapshot("CardDataRevoked")
+
+        cardDataScreen.clickBottomBackButton()
+        cardDetailScreen.clickBottomBackButton()
+        dashboardScreen.tapRevocationNotification(tasData.getPidDisplayName())
+        assertTrue(cardDetailScreen.pidCardVisible(), "Card detail screen for PID issuer not visible")
+
+        cardDetailScreen.clickBottomBackButton()
+        dashboardScreen.clickMenuButton()
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickHollandUniversityMdocButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        disclosureForIssuanceScreen.switchToNativeContext()
+        assertTrue(
+            attributesMissingErrorScreen.attributesMissingMessageVisible(),
+            "Error screen is not visible"
+        )
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC68 Revoke EEA Card")
+    fun verifyEeaCardRevocation(testInfo: TestInfo) {
+        setUp(testInfo)
+        OnboardingNavigator().toScreen(OnboardingNavigatorScreen.Dashboard)
+        dashboardScreen.clickMenuButton()
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickHollandUniversitySdJwtButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        disclosureForIssuanceScreen.switchToNativeContext()
+        disclosureForIssuanceScreen.share()
+        pinScreen.enterPin(DEFAULT_PIN)
+        cardIssuanceScreen.clickAdd2CardsButton()
+        pinScreen.enterPin(DEFAULT_PIN)
+        cardIssuanceScreen.clickToDashboardButton()
+
+        dashboardScreen.closeApp()
+        revocationHelper.revokeAllNonRevokedEeaCards()
+        dashboardScreen.openApp()
+        pinScreen.enterPin(DEFAULT_PIN)
+        assertTrue(dashboardScreen.cardRevocationVisible(tasData.getDiplomaDisplayName()))
+
+        dashboardScreen.clickCard(tasData.getDiplomaDisplayName())
+        cardDetailScreen.clickCardDataButton()
+        assertTrue(cardDataScreen.revocationMessageVisible())
+
+        cardDataScreen.clickBottomBackButton()
+        cardDetailScreen.clickBottomBackButton()
+        dashboardScreen.tapRevocationNotification(tasData.getDiplomaDisplayName())
+        assertTrue(cardDetailScreen.visible(), "Card detail screen not visible")
+
+        cardDetailScreen.clickBottomBackButton()
+        dashboardScreen.clickMenuButton()
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickJobFinderButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        disclosureForIssuanceScreen.switchToNativeContext()
+        assertTrue(
+            attributesMissingErrorScreen.attributesMissingMessageVisible(),
+            "Error screen is not visible"
+        )
+    }
+}

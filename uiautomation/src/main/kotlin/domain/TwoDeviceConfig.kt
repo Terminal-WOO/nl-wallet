@@ -1,0 +1,15 @@
+package domain
+
+data class TwoDeviceConfig(
+    val source: DeviceCapabilities,
+    val destination: DeviceCapabilities,
+)
+
+data class DeviceCapabilities(
+    val deviceName: String,
+    val platform: Platform,
+    val platformVersion: String,
+    val appName: String,
+    val appPath: String,
+    val udid: String = "",
+)

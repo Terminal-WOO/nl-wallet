@@ -7,12 +7,11 @@ import org.junit.jupiter.api.Assertions.assertAll
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Tag
-import org.junit.jupiter.api.Tags
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.TestMethodOrder
 import org.junitpioneer.jupiter.RetryingTest
 import screen.dashboard.DashboardScreen
+import screen.help.HelpAndInfoScreen
 import screen.introduction.AppTourScreen
 import screen.introduction.VideoPlayer
 import screen.menu.MenuScreen
@@ -25,6 +24,7 @@ class AppTourVideoTests : TestBase() {
     private lateinit var menuScreen: MenuScreen
     private lateinit var appTourScreen: AppTourScreen
     private lateinit var videoPlayer: VideoPlayer
+    private lateinit var helpAndInfoScreen: HelpAndInfoScreen
 
     fun setUp(testInfo: TestInfo) {
         startDriver(testInfo)
@@ -33,44 +33,47 @@ class AppTourVideoTests : TestBase() {
         menuScreen = MenuScreen()
         appTourScreen = AppTourScreen()
         videoPlayer = VideoPlayer()
+        helpAndInfoScreen = HelpAndInfoScreen()
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC16 User views app tour")
-    @Tags(Tag("a11yBatch1"))
+    @DisplayName("LTC14 User views app tour")
     fun verifyVideoTour(testInfo: TestInfo) {
         setUp(testInfo)
         assertTrue(dashboardScreen.appTourBannerVisible(), "app tour banner is not visible")
 
         dashboardScreen.clickMenuButton()
-        menuScreen.clickAppTourVideoButton()
+        menuScreen.clickHelpAndInfoButton()
+        helpAndInfoScreen.clickAppTourVideoButton()
         assertAll(
             { assertTrue(appTourScreen.headlineVisible(), "Headline is not visible") },
             { assertTrue(appTourScreen.descriptionVisible(), "Description is not visible") },
             { assertTrue(appTourScreen.videoTitleVisible(), "video title is not visible") },
             { assertTrue(appTourScreen.videoPlayButtonVisible(), "Play button is not visible") },
         )
+        appTourScreen.captureA11ySnapshot("AppTour")
 
-        appTourScreen.playVideo()
-        assertAll(
-            { assertTrue(videoPlayer.visible(), "Video player is not visible") },
-            { assertTrue(videoPlayer.closeButtonVisible(), "close button is not visible") },
-            { assertTrue(videoPlayer.subtitlesOnToggleVisible(), "subtitle on toggle is not visible") },
-            { assertTrue(videoPlayer.soundOffToggleVisible(), "sound toggle is not visible") },
-        )
-        // This sleep is needed (in combination with find element timeout) to ensure that the first video "intro" has finished.
-        // This will break when the first video becomes longer
-        Thread.sleep(8000)
-        assertAll(
-            { assertTrue(videoPlayer.subtitlesOnToggleVisible(), "subtitle on toggle is not visible") },
-            { assertTrue(videoPlayer.soundOffToggleVisible(), "sound toggle is not visible") },
-            { assertTrue(videoPlayer.closeButtonVisible(), "Close button is not visible") },
-            { assertTrue(videoPlayer.replayButtonVisible(), "Replay button is not visible") },
-        )
+        videoPlayer.withoutWaitForIdle {
+            appTourScreen.playVideo()
+            assertAll(
+                { assertTrue(videoPlayer.visible(), "Video player is not visible") },
+                { assertTrue(videoPlayer.closeButtonVisible(), "close button is not visible") },
+                { assertTrue(videoPlayer.subtitlesOnToggleVisible(), "subtitle on toggle is not visible") },
+                { assertTrue(videoPlayer.soundOffToggleVisible(), "sound toggle is not visible") },
+            )
+            videoPlayer.captureA11ySnapshot("AppTourVideoPlayer")
+            // This sleep is needed (in combination with find element timeout) to ensure that the first video "intro" has finished.
+            // This will break when the first video becomes longer
+            Thread.sleep(8000)
+            assertAll(
+                { assertTrue(videoPlayer.closeButtonVisible(), "Close button is not visible") },
+                { assertTrue(videoPlayer.replayButtonVisible(), "Replay button is not visible") },
+            )
 
-        videoPlayer.close()
+            videoPlayer.close()
+        }
         assertTrue(appTourScreen.headlineVisible(), "Headline is not visible")
         appTourScreen.clickBackButton()
-        assertTrue(menuScreen.menuListButtonsVisible(), "Menu is not visible")
+        assertTrue(helpAndInfoScreen.visible(), "Help menu is not visible")
     }
 }

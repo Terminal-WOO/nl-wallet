@@ -11,7 +11,7 @@ workspace = true
 doctest = false
 
 [features]
-# Allow the disclosure return URL and its prefix to use http://
+# Allow the disclosure return URL to use http://
 allow_insecure_url = ["openid4vc/allow_insecure_url"]
 # Generate typescript bindings for wallet_web
 ts_rs = []
@@ -20,33 +20,22 @@ ts_rs = []
 anyhow.workspace = true
 askama.workspace = true
 askama_web = { workspace = true, features = ["axum-0.8"] }
-axum = { workspace = true, features = ["http1", "query", "tokio", "tower-log", "tracing"] }
+axum = { workspace = true, features = ["json"] }
 base64.workspace = true
-ciborium.workspace = true
-config = { workspace = true, features = ["preserve_order", "toml"] }
-futures = { workspace = true, features = ["std"] }
+config = { workspace = true, features = ["toml"] }
+futures.workspace = true
 http.workspace = true
-indexmap.workspace = true
 itertools.workspace = true
-reqwest = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+reqwest.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-serde_urlencoded.workspace = true
+serde_qs.workspace = true
 strum = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["parking_lot", "rt-multi-thread", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
 tower.workspace = true
 tower-http = { workspace = true, features = ["trace", "fs"] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = [
-    "std",
-    "fmt",
-    "tracing-log",
-    "smallvec",
-    "parking_lot",
-    "env-filter",
-    "json",
-    "ansi",
-] }
+tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "json"] }
 url = { workspace = true, features = ["serde"] }
 
 attestation_data.path = "../../lib/attestation_data"
@@ -58,6 +47,10 @@ openid4vc.path = "../../lib/openid4vc"
 openid4vc_server = { path = "../../lib/openid4vc_server", features = ["disclosure"] }
 server_utils.path = "../../wallet_server/server_utils"
 utils = { path = "../../lib/utils" }
+web_utils.path = "../../lib/web_utils"
+
+[build-dependencies]
+web_utils = { path = "../../lib/web_utils", features = ["build"] }
 
 [dev-dependencies]
 ts-rs.workspace = true

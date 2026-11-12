@@ -1,36 +1,22 @@
-import 'package:equatable/equatable.dart';
-import 'package:flutter/foundation.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
 
-@immutable
-class IssuanceScreenArgument extends Equatable {
-  static const _kSessionIdKey = 'sessionId';
-  static const _kIsRefreshFlowKey = 'isRefreshFlow';
-  static const _kUriKey = 'uri';
-  static const _kIsQrCodeKey = 'qrCode';
+import 'issuance_type.dart';
+export 'issuance_type.dart';
 
-  final String? mockSessionId;
-  final bool isQrCode;
-  final bool isRefreshFlow;
-  final String? uri;
+part 'issuance_screen_argument.freezed.dart';
 
-  const IssuanceScreenArgument({this.mockSessionId, required this.isQrCode, this.isRefreshFlow = false, this.uri})
-    : assert(mockSessionId != null || uri != null, 'Either a mockSessionId of a uri is needed to start issuance');
+part 'issuance_screen_argument.g.dart';
 
-  Map<String, dynamic> toMap() {
-    return {
-      _kSessionIdKey: mockSessionId,
-      _kIsRefreshFlowKey: isRefreshFlow,
-      _kUriKey: uri,
-      _kIsQrCodeKey: isQrCode,
-    };
-  }
+@freezed
+abstract class IssuanceScreenArgument with _$IssuanceScreenArgument {
+  @Assert('mockSessionId != null || uri != null', 'Either a mockSessionId or a uri is needed to start issuance')
+  const factory IssuanceScreenArgument({
+    String? mockSessionId,
+    required bool isQrCode,
+    @Default(false) bool isRefreshFlow,
+    String? uri,
+    required IssuanceType issuanceType,
+  }) = _IssuanceScreenArgument;
 
-  IssuanceScreenArgument.fromMap(Map<String, dynamic> map)
-    : mockSessionId = map[_kSessionIdKey],
-      isRefreshFlow = map[_kIsRefreshFlowKey],
-      isQrCode = map[_kIsQrCodeKey],
-      uri = map[_kUriKey];
-
-  @override
-  List<Object?> get props => [uri, isQrCode, isRefreshFlow, uri];
+  factory IssuanceScreenArgument.fromJson(Map<String, dynamic> json) => _$IssuanceScreenArgumentFromJson(json);
 }

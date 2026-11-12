@@ -1,111 +1,136 @@
 use std::collections::HashSet;
+use std::slice::from_ref;
 
-use p256::ecdsa::SigningKey;
-use rand_core::OsRng;
-use uuid::Uuid;
-
+use crypto::kid::Kid;
+use crypto::utils::random_string;
+use db_test::DbSetup;
 use hsm::model::wrapped_key::WrappedKey;
+use p256::ecdsa::SigningKey;
+use p256::elliptic_curve::Generate;
+use uuid::Uuid;
+use wallet_provider_domain::model::wallet_user::WalletId;
 use wallet_provider_domain::model::wallet_user::WalletUserKey;
 use wallet_provider_domain::model::wallet_user::WalletUserKeys;
-use wallet_provider_persistence::wallet_user_key::create_keys;
-use wallet_provider_persistence::wallet_user_key::find_keys_by_identifiers;
+use wallet_provider_domain::model::wallet_user::WithKid;
+use wallet_provider_persistence::test::WalletDeviceVendor;
+use wallet_provider_persistence::test::create_wallet_user_with_random_keys;
+use wallet_provider_persistence::test::db_from_setup;
+use wallet_provider_persistence::wallet_user_key::delete_blocked_keys_in_same_batch;
+use wallet_provider_persistence::wallet_user_key::delete_keys;
+use wallet_provider_persistence::wallet_user_key::find_active_keys_by_identifiers;
+use wallet_provider_persistence::wallet_user_key::is_blocked_key;
 use wallet_provider_persistence::wallet_user_key::move_keys;
+use wallet_provider_persistence::wallet_user_key::persist_keys;
+use wallet_provider_persistence::wallet_user_key::unblock_blocked_keys_in_same_batch;
 
 pub mod common;
 
-#[tokio::test]
+fn test_wallet_user_key() -> WalletUserKey {
+    let privkey = SigningKey::generate();
+    let key = WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key());
+    WalletUserKey {
+        wallet_user_key_id: Uuid::new_v4(),
+        key: WithKid {
+            value: key,
+            kid: Kid::try_from("0").unwrap(),
+        },
+        is_blocked: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_create_keys() {
-    let db = common::db_from_env().await.expect("Could not connect to database");
+    let db_setup = DbSetup::create().await;
+    let db = db_from_setup(&db_setup).await;
 
-    let privkey = SigningKey::random(&mut OsRng);
     let key1 = WalletUserKey {
-        wallet_user_key_id: Uuid::new_v4(),
-        key_identifier: "key1".to_string(),
-        key: WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+        is_blocked: false,
+        ..test_wallet_user_key()
     };
-    let privkey = SigningKey::random(&mut OsRng);
     let key2 = WalletUserKey {
-        wallet_user_key_id: Uuid::new_v4(),
-        key_identifier: "key2".to_string(),
-        key: WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+        is_blocked: false,
+        ..test_wallet_user_key()
     };
 
-    let wallet_id = Uuid::new_v4().to_string();
+    let wallet_id: WalletId = random_string(32).into();
 
-    let wallet_user_id = common::create_wallet_user_with_random_keys(&db, wallet_id.clone()).await;
+    let wallet_user_id = create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, wallet_id.clone()).await;
 
-    create_keys(
+    persist_keys(
         &db,
         WalletUserKeys {
             wallet_user_id,
+            batch_id: Uuid::new_v4(),
             keys: vec![key1.clone(), key2.clone()],
         },
     )
     .await
     .unwrap();
 
-    let mut persisted_keys = find_keys_by_identifiers(&db, wallet_user_id, &["key1".to_string(), "key2".to_string()])
-        .await
-        .unwrap()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut persisted_keys = find_active_keys_by_identifiers(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<Vec<_>>();
     persisted_keys.sort_by_key(|(key, _)| key.clone());
     let keys = persisted_keys
         .iter()
-        .map(|(_, key)| key.wrapped_private_key())
-        .collect::<Vec<_>>();
+        .map(|(_, key)| key.value.wrapped_private_key())
+        .collect::<HashSet<_>>();
 
-    let key1 = key1.key.wrapped_private_key();
-    let key2 = key2.key.wrapped_private_key();
-    assert_eq!(vec![key1, key2], keys);
+    let key1 = key1.key.value.wrapped_private_key();
+    let key2 = key2.key.value.wrapped_private_key();
+    assert_eq!(HashSet::from_iter([key1, key2]), keys);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_move_keys() {
-    let db = common::db_from_env().await.expect("Could not connect to database");
+    let db_setup = DbSetup::create().await;
+    let db = db_from_setup(&db_setup).await;
 
-    let privkey = SigningKey::random(&mut OsRng);
     let source_key1 = WalletUserKey {
-        wallet_user_key_id: Uuid::new_v4(),
-        key_identifier: "source_key1".to_string(),
-        key: WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+        is_blocked: false,
+        ..test_wallet_user_key()
     };
-    let privkey = SigningKey::random(&mut OsRng);
     let source_key2 = WalletUserKey {
-        wallet_user_key_id: Uuid::new_v4(),
-        key_identifier: "source_key2".to_string(),
-        key: WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+        is_blocked: false,
+        ..test_wallet_user_key()
     };
-    let privkey = SigningKey::random(&mut OsRng);
     let destination_key1 = WalletUserKey {
-        wallet_user_key_id: Uuid::new_v4(),
-        key_identifier: "destination_key1".to_string(),
-        key: WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+        is_blocked: false,
+        ..test_wallet_user_key()
     };
 
-    let source_wallet_id = Uuid::new_v4();
-    let source_wallet_user_id = common::create_wallet_user_with_random_keys(&db, source_wallet_id.to_string()).await;
+    let source_wallet_id: WalletId = random_string(32).into();
+    let source_wallet_user_id =
+        create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, source_wallet_id).await;
 
-    let destination_wallet_id = Uuid::new_v4();
+    let destination_wallet_id: WalletId = random_string(32).into();
     let destination_wallet_user_id =
-        common::create_wallet_user_with_random_keys(&db, destination_wallet_id.to_string()).await;
+        create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Google, destination_wallet_id).await;
 
     // Create example keys in source and destination wallets
 
-    create_keys(
+    persist_keys(
         &db,
         WalletUserKeys {
             wallet_user_id: source_wallet_user_id,
+            batch_id: Uuid::new_v4(),
             keys: vec![source_key1.clone(), source_key2.clone()],
         },
     )
     .await
     .unwrap();
 
-    create_keys(
+    persist_keys(
         &db,
         WalletUserKeys {
             wallet_user_id: destination_wallet_user_id,
+            batch_id: Uuid::new_v4(),
             keys: vec![destination_key1.clone()],
         },
     )
@@ -114,10 +139,10 @@ async fn test_move_keys() {
 
     // Verify the keys are persisted correctly
 
-    let persisted_source_keys = find_keys_by_identifiers(
+    let persisted_source_keys = find_active_keys_by_identifiers(
         &db,
         source_wallet_user_id,
-        &["source_key1".to_string(), "source_key2".to_string()],
+        &[source_key1.sha256_fingerprint(), source_key2.sha256_fingerprint()],
     )
     .await
     .unwrap()
@@ -125,19 +150,22 @@ async fn test_move_keys() {
     .collect::<HashSet<_>>();
 
     assert_eq!(
-        HashSet::from([String::from("source_key1"), String::from("source_key2")]),
+        HashSet::from([source_key1.sha256_fingerprint(), source_key2.sha256_fingerprint()]),
         persisted_source_keys
     );
 
-    let persisted_destination_keys =
-        find_keys_by_identifiers(&db, destination_wallet_user_id, &["destination_key1".to_string()])
-            .await
-            .unwrap()
-            .into_keys()
-            .collect::<HashSet<_>>();
+    let persisted_destination_keys = find_active_keys_by_identifiers(
+        &db,
+        destination_wallet_user_id,
+        from_ref(&destination_key1.sha256_fingerprint()),
+    )
+    .await
+    .unwrap()
+    .into_keys()
+    .collect::<HashSet<_>>();
 
     assert_eq!(
-        HashSet::from([String::from("destination_key1")]),
+        HashSet::from([destination_key1.sha256_fingerprint()]),
         persisted_destination_keys
     );
 
@@ -149,21 +177,19 @@ async fn test_move_keys() {
 
     // Verify that the keys are moved correctly
 
-    let persisted_source_keys = find_keys_by_identifiers(
+    let persisted_source_keys = find_active_keys_by_identifiers(
         &db,
         source_wallet_user_id,
-        &["source_key1".to_string(), "source_key2".to_string()],
+        &[source_key1.sha256_fingerprint(), source_key2.sha256_fingerprint()],
     )
     .await
-    .unwrap()
-    .into_iter()
-    .collect::<HashSet<_>>();
+    .unwrap();
     assert!(persisted_source_keys.is_empty());
 
-    let persisted_destination_keys = find_keys_by_identifiers(
+    let persisted_destination_keys = find_active_keys_by_identifiers(
         &db,
         destination_wallet_user_id,
-        &["source_key1".to_string(), "source_key2".to_string()],
+        &[source_key1.sha256_fingerprint(), source_key2.sha256_fingerprint()],
     )
     .await
     .unwrap()
@@ -171,7 +197,241 @@ async fn test_move_keys() {
     .collect::<HashSet<_>>();
 
     assert_eq!(
-        HashSet::from([String::from("source_key1"), String::from("source_key2")]),
+        HashSet::from([source_key1.sha256_fingerprint(), source_key2.sha256_fingerprint()]),
         persisted_destination_keys
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_create_blocked_keys() {
+    let db_setup = DbSetup::create().await;
+    let db = db_from_setup(&db_setup).await;
+
+    let key1 = WalletUserKey {
+        is_blocked: true,
+        ..test_wallet_user_key()
+    };
+    let key2 = WalletUserKey {
+        is_blocked: true,
+        ..test_wallet_user_key()
+    };
+
+    let wallet_id: WalletId = random_string(32).into();
+
+    let wallet_user_id = create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, wallet_id).await;
+
+    let batch_id = Uuid::new_v4();
+
+    persist_keys(
+        &db,
+        WalletUserKeys {
+            wallet_user_id,
+            batch_id,
+            keys: vec![key1.clone(), key2.clone()],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Blocked keys should not be retrieved by `find_active_keys_by_identifiers`
+    let active_keys = find_active_keys_by_identifiers(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+    assert!(active_keys.is_empty());
+
+    // Check whether both keys are blocked
+    for key in [&key1, &key2] {
+        assert!(
+            is_blocked_key(&db, wallet_user_id, *key.key.value.public_key())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+
+    // Unblock keys
+    unblock_blocked_keys_in_same_batch(&db, wallet_user_id, *key1.key.value.public_key())
+        .await
+        .unwrap();
+
+    // Keys should be active now
+    let active_keys = find_active_keys_by_identifiers(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(active_keys.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_delete_blocked_keys() {
+    let db_setup = DbSetup::create().await;
+    let db = db_from_setup(&db_setup).await;
+
+    let key1 = WalletUserKey {
+        is_blocked: true,
+        ..test_wallet_user_key()
+    };
+    let key2 = WalletUserKey {
+        is_blocked: true,
+        ..test_wallet_user_key()
+    };
+
+    let wallet_id: WalletId = random_string(32).into();
+
+    let wallet_user_id = create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, wallet_id.clone()).await;
+
+    let batch_id = Uuid::new_v4();
+
+    persist_keys(
+        &db,
+        WalletUserKeys {
+            wallet_user_id,
+            batch_id,
+            keys: vec![key1.clone(), key2.clone()],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Blocked keys should not be retrieved by `find_active_keys_by_identifiers`
+    let active_keys = find_active_keys_by_identifiers(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+    assert!(active_keys.is_empty());
+
+    // Delete the blocked keys
+    delete_blocked_keys_in_same_batch(&db, wallet_user_id, *key1.key.value.public_key())
+        .await
+        .unwrap();
+
+    // Keys should no longer be found
+    for key in [&key1, &key2] {
+        assert!(
+            is_blocked_key(&db, wallet_user_id, *key.key.value.public_key())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    // Try to unblock keys
+    unblock_blocked_keys_in_same_batch(&db, wallet_user_id, *key1.key.value.public_key())
+        .await
+        .unwrap();
+
+    // Keys should not be found
+    let active_keys = find_active_keys_by_identifiers(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+    assert!(active_keys.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_delete_keys() {
+    let db_setup = DbSetup::create().await;
+    let db = db_from_setup(&db_setup).await;
+
+    let key1 = test_wallet_user_key();
+    let key2 = test_wallet_user_key();
+    let key3 = test_wallet_user_key();
+
+    let wallet_user_id =
+        create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, random_string(32).into()).await;
+
+    persist_keys(
+        &db,
+        WalletUserKeys {
+            wallet_user_id,
+            batch_id: Uuid::new_v4(),
+            keys: vec![key1.clone(), key2.clone(), key3.clone()],
+        },
+    )
+    .await
+    .unwrap();
+
+    // Delete key1 and key2 by identifier
+    delete_keys(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+
+    // key1 and key2 should no longer be found
+    let active_keys = find_active_keys_by_identifiers(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+    assert!(active_keys.is_empty());
+
+    // key3 should still exist
+    let active_keys = find_active_keys_by_identifiers(&db, wallet_user_id, &[key3.sha256_fingerprint()])
+        .await
+        .unwrap();
+    assert_eq!(active_keys.len(), 1);
+
+    // Deleting keys is idempotent; try deleting key1 and key2 again
+    delete_keys(
+        &db,
+        wallet_user_id,
+        &[key1.sha256_fingerprint(), key2.sha256_fingerprint()],
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn test_delete_keys_of_other_user() {
+    let db_setup = DbSetup::create().await;
+    let db = db_from_setup(&db_setup).await;
+
+    let key1 = test_wallet_user_key();
+    let key2 = test_wallet_user_key();
+
+    let user1 = create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, random_string(32).into()).await;
+    let user2 = create_wallet_user_with_random_keys(&db, WalletDeviceVendor::Apple, random_string(32).into()).await;
+
+    for (user, key) in [(user1, key1.clone()), (user2, key2.clone())] {
+        persist_keys(
+            &db,
+            WalletUserKeys {
+                wallet_user_id: user,
+                batch_id: Uuid::new_v4(),
+                keys: vec![key],
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // user1 tries to delete both keys
+    delete_keys(&db, user1, &[key1.sha256_fingerprint(), key2.sha256_fingerprint()])
+        .await
+        .unwrap();
+
+    // user2 still has key2
+    let active_keys = find_active_keys_by_identifiers(&db, user2, &[key2.sha256_fingerprint()])
+        .await
+        .unwrap();
+    assert_eq!(active_keys.keys().collect::<Vec<_>>(), vec![&key2.sha256_fingerprint()]);
 }

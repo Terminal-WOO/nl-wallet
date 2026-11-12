@@ -15,17 +15,18 @@ flowchart LR
 INTRODUCE["<a href='use-cases/UC1.1_IntroduceTheApp.html'>1.1 Introduce the app</a>"]
 OPEN["<a href='use-cases/UC1.2_OpenTheApp.html'>1.2 Open the app</a>"]
 
-SETUP_PIN["<a href='use-cases/UC2.1_SetupRemotePinAndBiometricsUnlock.html'>2.1 Setup PIN & biometrics</a>"]
+SETUP_PIN["<a href='use-cases/UC2.1_SecureTheAppWithPinAndBiometrics.html'>2.1 Secure the app</a>"]
 UNLOCK["<a href='use-cases/UC2.3_UnlockTheApp.html'>2.3 Unlock the app</a>"]
+RECOVER_PIN["<a href='use-cases/UC2.3.2_RecoverPIN.html'>2.3.2 Recover PIN</a>"]
 
 OBTAIN_PID["<a href='use-cases/UC3.1_ObtainPidFromProvider.html'>3.1 Obtain PID</a>"]
+WIPE["<a href='use-cases/UC9.4_WipeAllAppData.html'>9.4 Wipe app data</a>"]
 
-ALL_CARDS["<a href='use-cases/UC7.1_ShowAllAvailableCards.html'>7.1 Show all cards</a>"]
+ALL_CARDS["<a href='use-cases/UC7.1_AppOverview.html'>7.1 App overview</a>"]
 TRANSFER["<a href='use-cases/UC9.10_TransferWallet.html'>9.10 Transfer wallet</a>"]
 END((" "))
 
 APP_INFO["<a href='use-cases/UC9.2_GetAppInformation.html'>9.2 Get app info</a>"]
-WIPE["<a href='use-cases/UC9.4_WipeAllAppData.html'>9.4 Wipe app data</a>"]
 
 OPEN --> UNLOCK
 OPEN --> INTRODUCE
@@ -33,16 +34,19 @@ OPEN --> INTRODUCE
 UNLOCK --> ALL_CARDS
 UNLOCK --> OBTAIN_PID
 UNLOCK --> APP_INFO
-UNLOCK --> WIPE
+UNLOCK --> RECOVER_PIN
 
 INTRODUCE --> SETUP_PIN
 
 OBTAIN_PID --> ALL_CARDS
 OBTAIN_PID --> TRANSFER
+OBTAIN_PID --> WIPE
+
+WIPE --> INTRODUCE
 
 TRANSFER --> END
 
-WIPE --> INTRODUCE
+RECOVER_PIN --> ALL_CARDS
 
 SETUP_PIN --> OBTAIN_PID
 SETUP_PIN --> APP_INFO
@@ -69,37 +73,57 @@ ALL_HISTORY["<a href='use-cases/UC6.1_ShowCompleteUsageAndManagementHistory.html
 CARD_HISTORY["<a href='use-cases/UC6.2_ShowUsageAndManagementHistoryOfCard.html'>6.2 Browse card activity</a>"]
 HISTORY_EVENT["<a href='use-cases/UC6.3_ShowHistoryEvent.html'>6.3 View activity details</a>"]
 
-ALL_CARDS["<a href='use-cases/UC7.1_ShowAllAvailableCards.html'>7.1 Show all cards</a>"]
+ALL_CARDS["<a href='use-cases/UC7.1_AppOverview.html'>7.1 App overview</a>"]
 CARD["<a href='use-cases/UC7.2_ShowCardDetails.html'>7.2 View card Details</a>"]
 
 MENU["<a href='use-cases/UC9.1_ShowAppMenu.html'>9.1 View app menu</a>"]
 APP_INFO["<a href='use-cases/UC9.2_GetAppInformation.html'>9.2 Get app info</a>"]
-QR["<a href='use-cases/UC9.9_ScanQR.html'>9.9 Scan QR</a>"]
+SCAN_QR["<a href='use-cases/UC9.9_ScanQR.html'>9.9 Scan QR</a>"]
+SHOW_QR["<a href='use-cases/UC5.3_ShowQR.html'>5.3 SHOW QR</a>"]
+TRANSFER["<a href='use-cases/UC9.10_TransferWallet.html'>9.10 Transfer wallet</a>"]
+
+RECOVER_PIN["<a href='use-cases/UC2.3.2_RecoverPIN.html'>2.3.2 Recover PIN</a>"]
+RENEW_PID["<a href='use-cases/UC3.2_RenewPid.html'>3.3 Renew PID</a>"]
+DELETE_CARD["<a href='use-cases/UC7.4_DeleteEAACard.html'>7.4 Delete EAA card</a>"]
 
 START --> ALL_CARDS
 
 ALL_CARDS --> APP_TOUR
 ALL_CARDS --> MENU
-ALL_CARDS --> QR
+ALL_CARDS --> SCAN_QR
+ALL_CARDS --> SHOW_QR
 ALL_CARDS --> ALL_HISTORY
 ALL_CARDS --> CARD
 ALL_CARDS --> APP_INFO
 
 OBTAIN_CARDS --> END
+OBTAIN_CARDS --> RECOVER_PIN
 
 SHARE --> END
+SHARE --> RECOVER_PIN
 
 LOGIN --> END
+LOGIN --> RECOVER_PIN
 
-QR --> OBTAIN_CARDS
-QR --> SHARE
-QR --> LOGIN
+RECOVER_PIN --> END
+
+SCAN_QR --> OBTAIN_CARDS
+SCAN_QR --> SHARE
+SCAN_QR --> LOGIN
+SCAN_QR --> TRANSFER
+
+SHOW_QR --> SHARE
 
 ALL_HISTORY --> HISTORY_EVENT
 
 CARD_HISTORY --> HISTORY_EVENT
 
 CARD --> CARD_HISTORY
+CARD --> RENEW_PID
+CARD --> DELETE_CARD
+
+RENEW_PID --> END
+RENEW_PID --> RECOVER_PIN
 
 ```
 
@@ -133,6 +157,7 @@ WIPE["<a href='use-cases/UC9.4_WipeAllAppData.html'>9.4 Wipe app data</a>"]
 HELP["<a href='use-cases/UC9.6_GetHelp.html'>9.6 Get help</a>"]
 LOGOUT["<a href='use-cases/UC9.7_LogoutOffTheApp.html'>9.7 Logout of app</a>"]
 QR["<a href='use-cases/UC9.9_ScanQR.html'>9.9 Scan QR</a>"]
+TRANSFER["<a href='use-cases/UC9.10_TransferWallet.html'>9.10 Transfer wallet</a>"]
 
 WIPE --> INTRODUCE
 
@@ -145,6 +170,7 @@ LOGIN --> ELLIP3
 QR --> OBTAIN_CARDS
 QR --> SHARE
 QR --> LOGIN
+QR --> TRANSFER
 
 MENU --> APP_TOUR
 MENU --> QR

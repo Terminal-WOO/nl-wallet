@@ -1,19 +1,15 @@
 use std::hash::Hash;
-use std::io;
-use std::io::Write;
 
 use http::StatusCode;
-use http::header::CONTENT_ENCODING;
-use http::header::CONTENT_TYPE;
+use http_utils::client::TlsPinningConfig;
+use http_utils::error::HttpJsonErrorBody;
+use http_utils::reqwest::IntoReqwestClient;
+use http_utils::reqwest::ReqwestClientUrl;
+use http_utils::reqwest::parse_content_type;
 use reqwest::RequestBuilder;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-
-use http_utils::error::HttpJsonErrorBody;
-use http_utils::reqwest::IntoPinnedReqwestClient;
-use http_utils::reqwest::ReqwestClientUrl;
-use http_utils::reqwest::parse_content_type;
-use http_utils::tls::pinning::TlsPinningConfig;
+use wallet_account::RevocationCode;
 use wallet_account::messages::errors::AccountError;
 use wallet_account::messages::errors::AccountErrorType;
 use wallet_account::messages::instructions::HwSignedInstruction;
@@ -28,11 +24,10 @@ use wallet_account::messages::registration::Registration;
 use wallet_account::messages::registration::WalletCertificate;
 use wallet_account::signed::ChallengeResponse;
 
-use crate::reqwest::CachedReqwestClient;
-
 use super::AccountProviderClient;
 use super::AccountProviderError;
 use super::AccountProviderResponseError;
+use crate::reqwest::CachedReqwestClient;
 
 impl AccountProviderResponseError {
     fn from_json_body(status: StatusCode, body: String) -> Self {
@@ -60,7 +55,7 @@ impl<C> HttpAccountProviderClient<C> {
 
 impl<C> HttpAccountProviderClient<C>
 where
-    C: IntoPinnedReqwestClient + Clone + Hash,
+    C: IntoReqwestClient + Clone + Hash,
 {
     async fn send_post_request<T>(&self, http_config: &C, path: &str) -> Result<T, AccountProviderError>
     where
@@ -75,30 +70,13 @@ where
         http_config: &C,
         path: &str,
         payload: &S,
-        should_compress: bool,
     ) -> Result<T, AccountProviderError>
     where
         S: Serialize,
         T: DeserializeOwned,
     {
-        let compressed_data = if should_compress {
-            let json_bytes = serde_json::to_vec(&payload).map_err(AccountProviderError::PayloadSerialization)?;
-            Some(compress_bytes(&json_bytes).map_err(AccountProviderError::PayloadCompression)?)
-        } else {
-            None
-        };
-
-        self.send_custom_post_request(http_config, path, |request| {
-            if let Some(compressed_data) = compressed_data {
-                request
-                    .header(CONTENT_ENCODING, "zstd")
-                    .header(CONTENT_TYPE, "application/json")
-                    .body(compressed_data)
-            } else {
-                request.json(payload)
-            }
-        })
-        .await
+        self.send_custom_post_request(http_config, path, |request| request.json(payload))
+            .await
     }
 
     async fn send_custom_post_request<T, F>(
@@ -113,7 +91,7 @@ where
     {
         let http_client = self
             .http_client
-            .get_or_try_init(http_config, IntoPinnedReqwestClient::try_into_json_client)?;
+            .get_or_try_init(http_config, IntoReqwestClient::try_into_json_client)?;
         let response = http_client
             .send_custom_post(ReqwestClientUrl::Relative(path), request_adapter)
             .await?;
@@ -181,12 +159,15 @@ impl AccountProviderClient for HttpAccountProviderClient<TlsPinningConfig> {
         &self,
         client_config: &TlsPinningConfig,
         registration_message: ChallengeResponse<Registration>,
-    ) -> Result<WalletCertificate, AccountProviderError> {
-        let cert: Certificate = self
-            .send_json_post_request(client_config, "createwallet", &registration_message, false)
+    ) -> Result<(WalletCertificate, RevocationCode), AccountProviderError> {
+        let Certificate {
+            certificate,
+            revocation_code,
+        } = self
+            .send_json_post_request(client_config, "createwallet", &registration_message)
             .await?;
 
-        Ok(cert.certificate)
+        Ok((certificate, revocation_code))
     }
 
     async fn instruction_challenge(
@@ -195,7 +176,7 @@ impl AccountProviderClient for HttpAccountProviderClient<TlsPinningConfig> {
         challenge_request: InstructionChallengeRequest,
     ) -> Result<Vec<u8>, AccountProviderError> {
         let challenge: Challenge = self
-            .send_json_post_request(client_config, "instructions/challenge", &challenge_request, false)
+            .send_json_post_request(client_config, "instructions/challenge", &challenge_request)
             .await?;
 
         Ok(challenge.challenge)
@@ -210,12 +191,7 @@ impl AccountProviderClient for HttpAccountProviderClient<TlsPinningConfig> {
         I: InstructionAndResult,
     {
         let message: InstructionResultMessage<I::Result> = self
-            .send_json_post_request(
-                client_config,
-                &format!("instructions/{}", I::NAME),
-                &instruction,
-                I::COMPRESS,
-            )
+            .send_json_post_request(client_config, &format!("instructions/{}", I::NAME), &instruction)
             .await?;
 
         Ok(message.result)
@@ -234,18 +210,11 @@ impl AccountProviderClient for HttpAccountProviderClient<TlsPinningConfig> {
                 client_config,
                 &format!("instructions/hw_signed/{}", I::NAME),
                 &instruction,
-                I::COMPRESS,
             )
             .await?;
 
         Ok(message.result)
     }
-}
-
-fn compress_bytes(bytes: &[u8]) -> Result<Vec<u8>, io::Error> {
-    let mut encoder = zstd::Encoder::new(Vec::new(), 3)?;
-    encoder.write_all(bytes)?;
-    encoder.finish()
 }
 
 #[cfg(test)]
@@ -255,23 +224,17 @@ fn compress_bytes(bytes: &[u8]) -> Result<Vec<u8>, io::Error> {
 /// Its goal is mostly to validate that HTTP error responses get converted to the right variant
 /// of `RemoteAccountServerClient` and `AccountServerResponseError`.
 mod tests {
-    use assert_matches::assert_matches;
-    use http::HeaderValue;
+    use std::assert_matches;
+
     use http::header;
+    use http_utils::reqwest::IntoReqwestClient;
+    use httpmock::Method::POST;
+    use httpmock::MockServer;
     use reqwest::StatusCode;
     use serde::Deserialize;
     use serde::Serialize;
     use serde_json::Value;
     use serde_json::json;
-    use wiremock::Mock;
-    use wiremock::MockServer;
-    use wiremock::ResponseTemplate;
-    use wiremock::matchers::method;
-    use wiremock::matchers::path;
-
-    use http_utils::reqwest::IntoPinnedReqwestClient;
-    use http_utils::tls::insecure::InsecureHttpConfig;
-    use http_utils::urls::BaseUrl;
 
     use super::*;
 
@@ -281,84 +244,104 @@ mod tests {
         pub bar: u64,
     }
 
-    async fn create_mock_server() -> (MockServer, BaseUrl) {
-        let server = MockServer::start().await;
-        let base_url = server.uri().parse().unwrap();
-
-        (server, base_url)
-    }
-
     async fn post_example_request<C>(
         client: &HttpAccountProviderClient<C>,
         path: &str,
         http_config: &C,
     ) -> Result<ExampleBody, AccountProviderError>
     where
-        C: IntoPinnedReqwestClient + Clone + Hash,
+        C: IntoReqwestClient + Clone + Hash,
     {
         client.send_post_request(http_config, path).await
     }
 
     #[tokio::test]
     async fn test_http_account_server_client_send_json_request_ok() {
-        let (server, base_url) = create_mock_server().await;
+        let server = MockServer::start_async().await;
+        let base_url = server.base_url().parse().unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/foobar"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ExampleBody {
-                foo: "blah".to_string(),
-                bar: 1234,
-            }))
-            .expect(1)
-            .mount(&server)
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/foobar");
+
+                then.status(200)
+                    .header(header::CONTENT_TYPE.as_str(), mime::APPLICATION_JSON.as_ref())
+                    .json_body(
+                        serde_json::to_value(ExampleBody {
+                            foo: "blah".to_string(),
+                            bar: 1234,
+                        })
+                        .unwrap(),
+                    );
+            })
             .await;
 
         let client = HttpAccountProviderClient::new();
-        let body = post_example_request(&client, "foobar", &InsecureHttpConfig::new(base_url))
-            .await
-            .expect("Could not get succesful response from server");
+        let body = post_example_request(
+            &client,
+            "foobar",
+            &TlsPinningConfig::try_new_httpmock(base_url).unwrap(),
+        )
+        .await
+        .expect("Could not get succesful response from server");
 
         assert_eq!(body.foo, "blah");
         assert_eq!(body.bar, 1234);
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_http_account_server_client_send_json_request_error_status() {
-        let (server, base_url) = create_mock_server().await;
+        let server = MockServer::start_async().await;
+        let base_url = server.base_url().parse().unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/foobar_404"))
-            .respond_with(ResponseTemplate::new(404))
-            .expect(1)
-            .mount(&server)
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/foobar_404");
+
+                then.status(404);
+            })
             .await;
 
         let client = HttpAccountProviderClient::new();
-        let error = post_example_request(&client, "foobar_404", &InsecureHttpConfig::new(base_url))
-            .await
-            .expect_err("No error received from server");
+        let error = post_example_request(
+            &client,
+            "foobar_404",
+            &TlsPinningConfig::try_new_httpmock(base_url).unwrap(),
+        )
+        .await
+        .expect_err("No error received from server");
 
         assert_matches!(
             error,
             AccountProviderError::Response(AccountProviderResponseError::Status(StatusCode::NOT_FOUND))
         );
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_http_account_server_client_send_json_request_error_text() {
-        let (server, base_url) = create_mock_server().await;
+        let server = MockServer::start_async().await;
+        let base_url = server.base_url().parse().unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/foobar_502"))
-            .respond_with(ResponseTemplate::new(502).set_body_string("Your gateway is bad and you should feel bad!"))
-            .expect(1)
-            .mount(&server)
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/foobar_502");
+
+                then.status(502)
+                    .header(header::CONTENT_TYPE.as_str(), mime::TEXT_PLAIN.as_ref())
+                    .body("Your gateway is bad and you should feel bad!");
+            })
             .await;
 
         let client = HttpAccountProviderClient::new();
-        let error = post_example_request(&client, "foobar_502", &InsecureHttpConfig::new(base_url))
-            .await
-            .expect_err("No error received from server");
+        let error = post_example_request(
+            &client,
+            "foobar_502",
+            &TlsPinningConfig::try_new_httpmock(base_url).unwrap(),
+        )
+        .await
+        .expect_err("No error received from server");
 
         assert_matches!(
             error,
@@ -366,36 +349,35 @@ mod tests {
                 AccountProviderResponseError::Text(StatusCode::BAD_GATEWAY, body)
             ) if body == "Your gateway is bad and you should feel bad!"
         );
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_http_account_server_client_send_json_request_error_type() {
-        let (server, base_url) = create_mock_server().await;
+        let server = MockServer::start_async().await;
+        let base_url = server.base_url().parse().unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/foobar_400"))
-            .respond_with(
-                ResponseTemplate::new(400)
-                    .insert_header(
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_str("application/problem+json").unwrap(),
-                    )
-                    .set_body_bytes(
-                        serde_json::to_vec(&json!({
-                            "type": "challenge_validation",
-                            "detail": "Error description.",
-                        }))
-                        .unwrap(),
-                    ),
-            )
-            .expect(1)
-            .mount(&server)
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/foobar_400");
+
+                then.status(400)
+                    .header(header::CONTENT_TYPE.as_str(), "application/problem+json")
+                    .json_body(json!({
+                        "type": "challenge_validation",
+                        "detail": "Error description.",
+                    }));
+            })
             .await;
 
         let client = HttpAccountProviderClient::new();
-        let error = post_example_request(&client, "foobar_400", &InsecureHttpConfig::new(base_url))
-            .await
-            .expect_err("No error received from server");
+        let error = post_example_request(
+            &client,
+            "foobar_400",
+            &TlsPinningConfig::try_new_httpmock(base_url).unwrap(),
+        )
+        .await
+        .expect_err("No error received from server");
 
         assert_matches!(
             error,
@@ -403,26 +385,35 @@ mod tests {
                 AccountProviderResponseError::Account(AccountError::ChallengeValidation, detail)
             ) if detail == Some("Error description.".to_string())
         );
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_http_account_server_client_send_json_request_other_json() {
-        let (server, base_url) = create_mock_server().await;
+        let server = MockServer::start_async().await;
+        let base_url = server.base_url().parse().unwrap();
 
-        Mock::given(method("POST"))
-            .and(path("/foobar_503"))
-            .respond_with(ResponseTemplate::new(503).set_body_json(json!({
-                "status": "503",
-                "text": "Service Unavailable",
-            })))
-            .expect(1)
-            .mount(&server)
+        let mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/foobar_503");
+
+                then.status(503)
+                    .header(header::CONTENT_TYPE.as_str(), mime::APPLICATION_JSON.as_ref())
+                    .json_body(json!({
+                        "status": "503",
+                        "text": "Service Unavailable",
+                    }));
+            })
             .await;
 
         let client = HttpAccountProviderClient::new();
-        let error = post_example_request(&client, "foobar_503", &InsecureHttpConfig::new(base_url))
-            .await
-            .expect_err("No error received from server");
+        let error = post_example_request(
+            &client,
+            "foobar_503",
+            &TlsPinningConfig::try_new_httpmock(base_url).unwrap(),
+        )
+        .await
+        .expect_err("No error received from server");
 
         let expected_json = json!({
             "status": "503",
@@ -438,5 +429,6 @@ mod tests {
             }
             _ => panic!("should have received expected error"),
         }
+        mock.assert_async().await;
     }
 }

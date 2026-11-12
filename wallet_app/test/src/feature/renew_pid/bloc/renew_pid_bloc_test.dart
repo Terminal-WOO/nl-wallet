@@ -12,23 +12,23 @@ import '../../../mocks/wallet_mocks.dart';
 void main() {
   late MockGetPidRenewalUrlUseCase getPidRenewalUrlUseCase;
   late MockContinuePidIssuanceUseCase continuePidIssuanceUseCase;
-  late MockCancelPidIssuanceUseCase cancelPidIssuanceUseCase;
+  late MockCancelSessionUseCase cancelActiveSessionUseCase;
   late MockGetPidCardsUseCase getPidCardsUseCase;
 
   setUp(() {
     // Create mock usecases
     getPidRenewalUrlUseCase = MockGetPidRenewalUrlUseCase();
     continuePidIssuanceUseCase = MockContinuePidIssuanceUseCase();
-    cancelPidIssuanceUseCase = MockCancelPidIssuanceUseCase();
+    cancelActiveSessionUseCase = MockCancelSessionUseCase();
     getPidCardsUseCase = MockGetPidCardsUseCase();
   });
 
   group('RenewPidBloc', () {
-    test('initial state is RenewPidInitial when continueFromDigiD is false', () {
+    test('ltc66 initial state is RenewPidInitial when continueFromDigiD is false', () {
       final bloc = RenewPidBloc(
         getPidRenewalUrlUseCase,
         continuePidIssuanceUseCase,
-        cancelPidIssuanceUseCase,
+        cancelActiveSessionUseCase,
         getPidCardsUseCase,
         continueFromDigiD: false,
       );
@@ -36,11 +36,11 @@ void main() {
       expect(bloc.state, const RenewPidInitial());
     });
 
-    test('initial state is RenewPidVerifyingDigidAuthentication when continueFromDigiD is true', () {
+    test('ltc66 initial state is RenewPidVerifyingDigidAuthentication when continueFromDigiD is true', () {
       final bloc = RenewPidBloc(
         getPidRenewalUrlUseCase,
         continuePidIssuanceUseCase,
-        cancelPidIssuanceUseCase,
+        cancelActiveSessionUseCase,
         getPidCardsUseCase,
         continueFromDigiD: true,
       );
@@ -49,18 +49,18 @@ void main() {
     });
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'happy path: login with DigiD, confirm attributes, confirm pin, succeed',
+      'ltc66 happy path: login with DigiD, confirm attributes, confirm pin, succeed',
       build: () {
         when(getPidRenewalUrlUseCase.invoke()).thenAnswer((_) async => const Result.success('mock_auth_url'));
         when(
           continuePidIssuanceUseCase.invoke('mock_auth_url'),
         ).thenAnswer((_) async => Result.success([WalletMockData.textDataAttribute]));
         when(getPidCardsUseCase.invoke()).thenAnswer((_) async => Result.success([WalletMockData.card]));
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -86,11 +86,11 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'emits RenewPidInitial when RenewPidAttributesRejected is added',
+      'ltc66 emits RenewPidInitial when RenewPidAttributesRejected is added',
       build: () => RenewPidBloc(
         getPidRenewalUrlUseCase,
         continuePidIssuanceUseCase,
-        cancelPidIssuanceUseCase,
+        cancelActiveSessionUseCase,
         getPidCardsUseCase,
         continueFromDigiD: false,
       ),
@@ -100,11 +100,11 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'handles back navigation from RenewPidConfirmPin',
+      'ltc66 handles back navigation from RenewPidConfirmPin',
       build: () => RenewPidBloc(
         getPidRenewalUrlUseCase,
         continuePidIssuanceUseCase,
-        cancelPidIssuanceUseCase,
+        cancelActiveSessionUseCase,
         getPidCardsUseCase,
         continueFromDigiD: false,
       ),
@@ -119,16 +119,16 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'handles network error when getting DigiD URL',
+      'ltc66 handles network error when getting DigiD URL',
       build: () {
         when(
           getPidRenewalUrlUseCase.invoke(),
         ).thenAnswer((_) async => const Result.error(NetworkError(hasInternet: false, sourceError: 'test')));
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -136,21 +136,21 @@ void main() {
       act: (bloc) => bloc.add(const RenewPidLoginWithDigidClicked()),
       expect: () => [
         const RenewPidLoadingDigidUrl(),
-        isA<RenewPidNetworkError>(),
+        isA<RenewPidError>().having((it) => it.error, 'network', isA<NetworkError>()),
       ],
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'handles generic error when getting DigiD URL',
+      'ltc66 handles generic error when getting DigiD URL',
       build: () {
         when(
           getPidRenewalUrlUseCase.invoke(),
         ).thenAnswer((_) async => const Result.error(GenericError('some error', sourceError: 'ex')));
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -158,36 +158,36 @@ void main() {
       act: (bloc) => bloc.add(const RenewPidLoginWithDigidClicked()),
       expect: () => [
         const RenewPidLoadingDigidUrl(),
-        isA<RenewPidGenericError>(),
+        isA<RenewPidError>(),
       ],
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'handles RenewPidPinConfirmationFailed by exposing the contained error',
+      'ltc66 handles RenewPidPinConfirmationFailed by exposing the contained error',
       build: () {
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
       },
       act: (bloc) => bloc.add(const RenewPidPinConfirmationFailed(error: GenericError('fail', sourceError: 'fail'))),
       expect: () => [
-        isA<RenewPidGenericError>().having((it) => it.error.sourceError, 'Source error should match', 'fail'),
+        isA<RenewPidError>().having((it) => it.error.sourceError, 'Source error should match', 'fail'),
       ],
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'emits RenewPidDigidLoginCancelled when DigiD reports user cancellation through RedirectUriError',
+      'ltc66 emits RenewPidDigidLoginCancelled when DigiD reports user cancellation through RedirectUriError',
       build: () {
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -201,13 +201,13 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'emits RenewPidDigidLoginCancelled when RenewPidLoginWithDigidFailed event is added with cancelledByUser = true',
+      'ltc66 emits RenewPidDigidLoginCancelled when RenewPidLoginWithDigidFailed event is added with cancelledByUser = true',
       build: () {
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -222,16 +222,16 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'emits RenewPidDigidMismatch when a WrongDigidError is received',
+      'ltc66 emits RenewPidDigidMismatch when a WrongDigidError is received',
       build: () {
         when(
           continuePidIssuanceUseCase.invoke(any),
         ).thenAnswer((_) async => const Result.error(WrongDigidError(sourceError: 'test')));
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -244,16 +244,16 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'emits RenewPidDigidLoginCancelled when a DeniedDigidError is received',
+      'ltc66 emits RenewPidDigidLoginCancelled when a DeniedDigidError is received',
       build: () {
         when(
           continuePidIssuanceUseCase.invoke(any),
         ).thenAnswer((_) async => const Result.error(DeniedDigidError(sourceError: 'test')));
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );
@@ -266,11 +266,11 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'emits RenewPidStopped on stop',
+      'ltc66 emits RenewPidStopped on stop',
       build: () => RenewPidBloc(
         getPidRenewalUrlUseCase,
         continuePidIssuanceUseCase,
-        cancelPidIssuanceUseCase,
+        cancelActiveSessionUseCase,
         getPidCardsUseCase,
         continueFromDigiD: false,
       ),
@@ -279,14 +279,14 @@ void main() {
     );
 
     blocTest<RenewPidBloc, RenewPidState>(
-      'retry: RenewPidRetryPressed triggers RenewPidLoginWithDigidClicked flow',
+      'ltc66 retry: RenewPidRetryPressed triggers RenewPidLoginWithDigidClicked flow',
       build: () {
         when(getPidRenewalUrlUseCase.invoke()).thenAnswer((_) async => const Result.success('mock_auth_url'));
-        when(cancelPidIssuanceUseCase.invoke()).thenAnswer((_) async => const Result.success(true));
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(null));
         return RenewPidBloc(
           getPidRenewalUrlUseCase,
           continuePidIssuanceUseCase,
-          cancelPidIssuanceUseCase,
+          cancelActiveSessionUseCase,
           getPidCardsUseCase,
           continueFromDigiD: false,
         );

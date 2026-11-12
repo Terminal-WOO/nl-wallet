@@ -1,86 +1,137 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use axum::Router;
-use p256::ecdsa::VerifyingKey;
-use tokio::net::TcpListener;
-
-use hsm::service::Pkcs11Hsm;
-use issuer_settings::settings::IssuerSettings;
-use openid4vc::issuer::AttributeService;
-use openid4vc::issuer::Issuer;
-use openid4vc::issuer::WuaConfig;
-use openid4vc::server_state::SessionStore;
+use http_utils::health::HealthChecker;
+use http_utils::health::create_health_router;
+use issuer_common::nonce_store::ProofNonceStore;
+use issuer_common::par_store::IssuerParStore;
+use itertools::Itertools;
+use openid4vc::authorizing_issuer::AuthorizingIssuer;
+use openid4vc::cleanup::CLEANUP_INTERVAL;
+use openid4vc::cleanup::start_cleanup_task;
+use openid4vc::issuer::IssuanceData;
+use openid4vc_server::issuer::create_authorization_router;
 use openid4vc_server::issuer::create_issuance_router;
+use server_utils::keys::PrivateKeyVariant;
+use server_utils::server::add_cache_control_no_store_layer;
+use server_utils::server::create_internal_listener;
 use server_utils::server::create_wallet_listener;
-use server_utils::server::decorate_router;
 use server_utils::server::listen;
-use token_status_list::status_list_service::StatusListService;
+use server_utils::server::secure_internal_router;
+use server_utils::settings::Settings;
+use server_utils::store::SessionStoreVariant;
+use status_lists::postgres::NoRevokeAll;
+use status_lists::postgres::PostgresStatusListService;
+use status_lists::revoke::create_revocation_router;
+use status_lists::serve::create_serve_router;
+use tokio::net::TcpListener;
+use utils::vec_at_least::VecNonEmpty;
 
-#[expect(clippy::too_many_arguments, reason = "Setup function")]
-pub async fn serve<A, C, IS>(
-    attr_service: A,
-    settings: IssuerSettings,
-    hsm: Option<Pkcs11Hsm>,
-    issuance_sessions: Arc<IS>,
-    wua_issuer_pubkey: VerifyingKey,
-    status_list_service: C,
-    status_list_router: Option<Router>,
-) -> Result<()>
-where
-    A: AttributeService + Send + Sync + 'static,
-    C: StatusListService + Send + Sync + 'static,
-    IS: SessionStore<openid4vc::issuer::IssuanceData> + Send + Sync + 'static,
-{
-    let listener = create_wallet_listener(&settings.server_settings.wallet_server).await?;
-    serve_with_listener(
-        listener,
-        attr_service,
-        settings,
-        hsm,
-        issuance_sessions,
-        wua_issuer_pubkey,
-        status_list_service,
-        status_list_router,
+use crate::pid::auth_code_flow::UpstreamOidcAuthorizationCodeFlow;
+use crate::pid::brp::client::BrpClient;
+use crate::pid::brp::client::HttpBrpClient;
+use crate::pid::digid::DigidClient;
+use crate::pid::digid::HttpDigidClient;
+use crate::pid::digid_mock::MockLoginState;
+
+pub type PidIssuer<B = HttpBrpClient, O = HttpDigidClient> = AuthorizingIssuer<
+    PrivateKeyVariant,
+    PostgresStatusListService<PrivateKeyVariant, NoRevokeAll>,
+    SessionStoreVariant<IssuanceData>,
+    ProofNonceStore,
+    IssuerParStore,
+    UpstreamOidcAuthorizationCodeFlow<B, O>,
+>;
+
+pub async fn serve(
+    authorizing_issuer: Arc<PidIssuer>,
+    server_settings: Settings,
+    serve_status_lists: bool,
+    health_checkers: impl IntoIterator<Item = Box<dyn HealthChecker + Send + Sync>>,
+    mock_login: Option<MockLoginState>,
+) -> Result<()> {
+    serve_with_listeners(
+        create_wallet_listener(&server_settings.wallet_server).await?,
+        create_internal_listener(&server_settings.internal_server).await?,
+        authorizing_issuer,
+        server_settings,
+        serve_status_lists,
+        health_checkers,
+        mock_login,
     )
     .await
 }
 
-#[expect(clippy::too_many_arguments, reason = "Setup function")]
-pub async fn serve_with_listener<A, C, IS>(
-    listener: TcpListener,
-    attr_service: A,
-    settings: IssuerSettings,
-    hsm: Option<Pkcs11Hsm>,
-    issuance_sessions: Arc<IS>,
-    wua_issuer_pubkey: VerifyingKey,
-    status_list_service: C,
-    status_list_router: Option<Router>,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "server wiring, including the optional mock login page"
+)]
+pub async fn serve_with_listeners<B, O>(
+    wallet_listener: TcpListener,
+    internal_listener: Option<TcpListener>,
+    authorizing_issuer: Arc<PidIssuer<B, O>>,
+    server_settings: Settings,
+    serve_status_lists: bool,
+    health_checkers: impl IntoIterator<Item = Box<dyn HealthChecker + Send + Sync>>,
+    mock_login: Option<MockLoginState>,
 ) -> Result<()>
 where
-    A: AttributeService + Send + Sync + 'static,
-    C: StatusListService + Send + Sync + 'static,
-    IS: SessionStore<openid4vc::issuer::IssuanceData> + Send + Sync + 'static,
+    B: BrpClient + Send + Sync + 'static,
+    O: DigidClient + Send + Sync + 'static,
 {
-    let log_requests = settings.server_settings.log_requests;
+    let status_list_services =
+        VecNonEmpty::try_from(authorizing_issuer.issuer().status_lists().cloned().collect_vec())?;
 
-    let attestation_config = settings.attestation_settings.parse(&hsm, &settings.metadata).await?;
+    // Periodically remove expired PAR requests, state-bridge entries, sessions and proof nonces for
+    // as long as the server runs; the guard aborts the task when this function returns.
+    let _cleanup_task = start_cleanup_task(CLEANUP_INTERVAL, Arc::clone(&authorizing_issuer));
 
-    let wallet_issuance_router = create_issuance_router(Arc::new(Issuer::new(
-        issuance_sessions,
-        attr_service,
-        attestation_config,
-        &settings.server_settings.public_url,
-        settings.wallet_client_ids,
-        Some(WuaConfig {
-            wua_issuer_pubkey: (&wua_issuer_pubkey).into(),
-        }),
-        status_list_service,
-    )));
+    let issuance_router = create_issuance_router(Arc::clone(authorizing_issuer.issuer()));
+    let authorization_router = create_authorization_router(Arc::clone(&authorizing_issuer));
+    let callback_router = UpstreamOidcAuthorizationCodeFlow::callback_router(Arc::clone(&authorizing_issuer));
 
-    let mut router = Router::new().nest("/issuance", decorate_router(wallet_issuance_router, log_requests));
-    if let Some(status_list_router) = status_list_router {
+    let mut wallet_router = issuance_router.merge(authorization_router).merge(callback_router);
+
+    if let Some(mock_login) = mock_login {
+        wallet_router = wallet_router.merge(mock_login.router());
+    }
+
+    let mut router = add_cache_control_no_store_layer(wallet_router);
+
+    if serve_status_lists {
+        let status_list_router = create_serve_router(
+            status_list_services
+                .iter()
+                .map(|service| service.config().to_route_source()),
+        )?;
+
         router = router.merge(status_list_router);
     }
-    listen(listener, router).await
+
+    let (internal_router, internal_openapi) = create_revocation_router(status_list_services);
+
+    #[cfg(feature = "test_internal_ui")]
+    let mut internal_router = internal_router.merge(
+        utoipa_swagger_ui::SwaggerUi::new("/api-docs")
+            .config(utoipa_swagger_ui::Config::default().validator_url("none"))
+            .url("/openapi.json", internal_openapi),
+    );
+
+    #[cfg(not(feature = "test_internal_ui"))]
+    let mut internal_router = internal_router.route("/openapi.json", axum::routing::get(axum::Json(internal_openapi)));
+
+    internal_router = secure_internal_router(&server_settings.internal_server, internal_router);
+    internal_router = add_cache_control_no_store_layer(internal_router);
+
+    let health_router = create_health_router(health_checkers);
+
+    listen(
+        wallet_listener,
+        internal_listener,
+        router,
+        internal_router,
+        health_router,
+        server_settings.log_requests,
+    )
+    .await
 }

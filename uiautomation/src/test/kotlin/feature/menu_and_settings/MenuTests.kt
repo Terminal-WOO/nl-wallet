@@ -7,14 +7,13 @@ import org.junit.jupiter.api.Assertions.assertAll
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Tag
-import org.junit.jupiter.api.Tags
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.TestMethodOrder
 import org.junitpioneer.jupiter.RetryingTest
 import screen.history.HistoryOverviewScreen
 import screen.menu.MenuScreen
 import screen.settings.SettingsScreen
+import util.MobileActions.Companion.SCREEN_TRANSITION_MILLIS
 
 @TestMethodOrder(MethodOrderer.DisplayName::class)
 @DisplayName("UC 9.1 Show app menu")
@@ -34,31 +33,32 @@ class MenuTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC34 LTC35 Show app & Settings menu")
-    @Tags(Tag("a11yBatch2"))
+    @DisplayName("LTC26 LTC27 Show app & Settings menu")
     fun verifyMenuScreen(testInfo: TestInfo) {
         setUp(testInfo)
         assertTrue(menuScreen.menuListButtonsVisible(), "menu screen is not visible")
+        menuScreen.captureA11ySnapshot("Menu")
 
-        menuScreen.clickHelpButton()
+        menuScreen.clickHelpAndInfoButton()
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
         menuScreen.clickBottomBackButton()
         menuScreen.clickHistoryButton()
 
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
         historyOverviewScreen.clickBottomBackButton()
         menuScreen.clickSettingsButton()
         assertTrue(settingsScreen.settingsButtonsVisible(), "settings buttons are not visible")
+        settingsScreen.captureA11ySnapshot("Settings")
 
-        menuScreen.clickBottomBackButton()
-
-        menuScreen.clickFeedbackButton()
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
         menuScreen.clickBottomBackButton()
 
         menuScreen.clickAboutButton()
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
         menuScreen.clickBottomBackButton()
 
         assertAll(
-            { assertTrue(menuScreen.menuListButtonsVisible(), "menu list buttons are not visible") },
-            { assertTrue(menuScreen.logoutButtonVisible(), "logout button is notvisible") },
+            { assertTrue(menuScreen.logoutButtonVisible(), "logout button is not visible") },
         )
     }
 }

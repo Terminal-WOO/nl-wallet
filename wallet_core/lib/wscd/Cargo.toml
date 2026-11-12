@@ -11,30 +11,39 @@ workspace = true
 doctest = false
 
 [features]
-# Include examples from the ISO specification
-examples = ["crypto/examples"]
-# Include MockRemoteEcdsaKey type and MockRemoteWscd implementation of Wscd for testing
-mock = ["attestation_types/mock", "crypto/mock", "dep:chrono", "dep:parking_lot", "dep:rand_core"]
+mock = [
+    "chrono/now",
+    "attestation_types/mock",
+    "crypto/mock",
+    "crypto/generate",
+    "utils/mock_time",
+] # Include the IssuanceMockRemoteWscd and MockWiaClient types.
 
 [dependencies]
-attestation_types = { path = "../attestation_types", optional = true }
-chrono = { workspace = true, optional = true }
-derive_more = { workspace = true, features = ["as_ref", "from", "constructor"] }
-futures = { workspace = true, features = ["std"] }
+chrono.workspace = true
+derive_more = { workspace = true, features = ["constructor"] }
+futures.workspace = true
 itertools.workspace = true
-parking_lot = { workspace = true, optional = true }
-p256 = { workspace = true, features = ["ecdsa"] }
-rand_core = { workspace = true, optional = true }
+p256.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_with.workspace = true
+strum.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
 
-crypto = { path = "../crypto/", features = ["mock"] }
+attestation_types.path = "../attestation_types"
+crypto.path = "../crypto"
+error_category.path = "../error_category"
 jwt.path = "../jwt"
-utils.path = "../utils/"
+utils.path = "../utils"
 
 [dev-dependencies]
-assert_matches.workspace = true
-parking_lot.workspace = true
-rand_core.workspace = true
+chrono = { workspace = true, features = ["now"] }
+derive_more = { workspace = true, features = ["as_ref"] }
 rstest.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+serde_json.workspace = true
+
+attestation_types = { path = "../attestation_types", features = ["mock"] }
+crypto = { path = "../crypto", features = ["mock", "generate"] }
+utils = { path = "../utils", features = ["mock_time"] }

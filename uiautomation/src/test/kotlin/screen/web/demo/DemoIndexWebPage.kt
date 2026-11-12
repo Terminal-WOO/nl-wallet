@@ -5,7 +5,7 @@ import util.MobileActions
 
 class DemoIndexWebPage : MobileActions() {
 
-    private val headerTextLocator = By.xpath("//h1[text()='NL Wallet demo']")
+    private val headerTextLocator = By.xpath("//h1[contains(., 'NL Wallet')]")
 
     private val amsterdamMdocButtonLocator = By.xpath("//a[@id='mijn_amsterdam_mdoc']")
     private val amsterdamSdJwtButtonLocator = By.xpath("//a[@id='mijn_amsterdam_sd_jwt']")
@@ -20,41 +20,66 @@ class DemoIndexWebPage : MobileActions() {
 
     private val insuranceButtonLocator = By.xpath("//a[@id='insurance']")
     private val jobFinderButtonLocator = By.xpath("//a[@id='job_finder']")
+    private val loyaltyButtonLocator = By.xpath("//a[@id='loyalty']")
+    private val museumMaandkaartButtonLocator = By.xpath("//a[@id='museum_maandkaart']")
+    private val drivingLicenseButtonLocator = By.id("mdl")
+    private val registrationCertificateButtonLocator = By.id("mvc")
 
+    fun switchToIndexPage() = switchToWebViewWindowContaining(headerTextLocator)
 
     fun visible() = isWebElementVisible(findWebElement(headerTextLocator))
 
-    fun clickAmsterdamMdocButton() = clickWebElement(findWebElement(amsterdamMdocButtonLocator))
+    fun clickAmsterdamMdocButton() = clickWebElementWithMouseEvent(findWebElement(amsterdamMdocButtonLocator))
 
-    fun clickAmsterdamSdJwtButton() = clickWebElement(findWebElement(amsterdamSdJwtButtonLocator))
+    fun clickAmsterdamSdJwtButton() = clickWebElementWithMouseEvent(findWebElement(amsterdamSdJwtButtonLocator))
 
-    fun clickXyzBankMdocButton() = clickWebElement(findWebElement(xyzBankMdocButtonLocator))
+    fun clickXyzBankMdocButton() = clickWebElementWithMouseEvent(findWebElement(xyzBankMdocButtonLocator))
 
-    fun clickXyzBankSdJwtButton() = clickWebElement(findWebElement(xyzBankSdJwtButtonLocator))
+    fun clickXyzBankSdJwtButton() = clickWebElementWithMouseEvent(findWebElement(xyzBankSdJwtButtonLocator))
 
-    fun clickXyzBankSdJwtEuPidButton() = clickWebElement(findWebElement(xyzBankSdJwtEuPidButtonLocator))
+    fun clickXyzBankSdJwtEuPidButton() = clickWebElementWithMouseEvent(findWebElement(xyzBankSdJwtEuPidButtonLocator))
 
-    fun clickMarketplaceButton() = clickWebElement(findWebElement(marketplaceButtonLocator))
+    fun clickMarketplaceButton() = clickWebElementWithMouseEvent(findWebElement(marketplaceButtonLocator))
 
-    fun clickMonkeyBikeButton() = clickWebElement(findWebElement(monkeyBikeButtonLocator))
+    fun clickMonkeyBikeButton() = clickWebElementWithMouseEvent(findWebElement(monkeyBikeButtonLocator))
 
     fun clickHollandUniversityMdocButton() {
         scrollToWebElement(hollandUniversityMdocButtonLocator)
-        clickWebElement(findWebElement(hollandUniversityMdocButtonLocator))
+        clickWebElementWithMouseEvent(findWebElement(hollandUniversityMdocButtonLocator))
     }
 
     fun clickHollandUniversitySdJwtButton() {
         scrollToWebElement(hollandUniversitySdJwtButtonLocator)
-        clickWebElement(findWebElement(hollandUniversitySdJwtButtonLocator))
+        clickWebElementWithMouseEvent(findWebElement(hollandUniversitySdJwtButtonLocator))
     }
 
     fun clickInsuranceButton() {
         scrollToWebElement(insuranceButtonLocator)
-        clickWebElement(findWebElement(insuranceButtonLocator))
+        clickWebElementWithMouseEvent(findWebElement(insuranceButtonLocator))
     }
 
     fun clickJobFinderButton() {
         scrollToWebElement(jobFinderButtonLocator)
-        clickWebElement(findWebElement(jobFinderButtonLocator))
+        clickWebElementWithMouseEvent(findWebElement(jobFinderButtonLocator))
+    }
+
+    fun clickLoyaltyButton() {
+        scrollToWebElement(loyaltyButtonLocator)
+        clickWebElementWithMouseEvent(findWebElement(loyaltyButtonLocator))
+    }
+
+    fun clickMuseumMaandkaartButton() {
+        scrollToWebElement(museumMaandkaartButtonLocator)
+        clickWebElementWithMouseEvent(findWebElement(museumMaandkaartButtonLocator))
+    }
+
+    fun clickDrivingLicenseButton() {
+        scrollToWebElement(drivingLicenseButtonLocator)
+        clickWebElementWithMouseEvent(findWebElement(drivingLicenseButtonLocator))
+    }
+
+    fun clickRegistrationCertificateButton() {
+        scrollToWebElement(registrationCertificateButtonLocator)
+        clickWebElementWithMouseEvent(findWebElement(registrationCertificateButtonLocator))
     }
 }

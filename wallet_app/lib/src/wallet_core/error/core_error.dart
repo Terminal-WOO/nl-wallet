@@ -1,5 +1,11 @@
 import 'package:equatable/equatable.dart';
-import 'package:wallet_core/core.dart';
+
+import 'data/redirect/redirect_error.dart';
+import 'data/revocation/revocation_data.dart';
+
+export 'data/redirect/redirect_error.dart';
+export 'data/revocation/revocation_data.dart';
+export 'data/session/session_type.dart';
 
 sealed class CoreError extends Equatable {
   final String? description;
@@ -32,10 +38,13 @@ class CoreRedirectUriError extends CoreError {
   List<Object?> get props => [redirectError, ...super.props];
 }
 
-enum RedirectError { accessDenied, serverError, loginRequired, unknown }
-
 class CoreHardwareKeyUnsupportedError extends CoreError {
   const CoreHardwareKeyUnsupportedError(super.description, {super.data});
+}
+
+/// Key and/or app attestation failed during registration; the device could not be verified.
+class CoreAttestationError extends CoreError {
+  const CoreAttestationError(super.description, {super.data});
 }
 
 class CoreDisclosureSourceMismatchError extends CoreError {
@@ -56,8 +65,16 @@ class CoreExpiredSessionError extends CoreError {
   List<Object?> get props => [canRetry, ...super.props];
 }
 
+class CorePreAuthorizedCodeExpired extends CoreError {
+  const CorePreAuthorizedCodeExpired(super.description, {super.data});
+}
+
 class CoreCancelledSessionError extends CoreError {
   const CoreCancelledSessionError(super.description, {super.data});
+}
+
+class CoreCloseProximityDisconnectedError extends CoreError {
+  const CoreCloseProximityDisconnectedError(super.description, {super.data});
 }
 
 class CoreWrongDigidError extends CoreError {
@@ -69,11 +86,26 @@ class CoreDeniedDigidError extends CoreError {
 }
 
 class CoreRelyingPartyError extends CoreError {
-  final List<LocalizedString>? organizationName;
+  final String? organizationName;
 
   CoreRelyingPartyError(super.description, {super.data, this.organizationName})
     : assert(organizationName == null || organizationName.isNotEmpty, 'Do not provide an empty org. name');
 
   @override
   List<Object?> get props => [organizationName, ...super.props];
+}
+
+class CoreAccountRevokedError extends CoreError {
+  final RevocationData revocationData;
+
+  bool get canRegisterNewAccount => revocationData.canRegisterNewAccount;
+
+  const CoreAccountRevokedError(
+    super.description, {
+    super.data,
+    required this.revocationData,
+  });
+
+  @override
+  List<Object?> get props => [revocationData, ...super.props];
 }

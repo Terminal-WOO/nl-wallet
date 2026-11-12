@@ -21,6 +21,7 @@ sealed class DisclosureState extends Equatable {
   List<Object?> get props => [showStopConfirmation, canGoBack, didGoBack, stepperProgress];
 }
 
+/// Initial state where the session is being initialized and loading is shown.
 class DisclosureInitial extends DisclosureState {
   @override
   bool get showStopConfirmation => true;
@@ -28,6 +29,7 @@ class DisclosureInitial extends DisclosureState {
   const DisclosureInitial();
 }
 
+/// State indicating that session details are being loaded or attributes are being verified.
 class DisclosureLoadInProgress extends DisclosureState {
   @override
   bool get showStopConfirmation => true;
@@ -38,7 +40,7 @@ class DisclosureLoadInProgress extends DisclosureState {
   const DisclosureLoadInProgress(this.stepperProgress);
 }
 
-/// This [ErrorState] is emitted when the user scanned a Disclosure QR with an external app (e.g. the built-in camera)
+/// Error state triggered when a disclosure QR code is scanned using an external camera app.
 class DisclosureExternalScannerError extends DisclosureState implements ErrorState {
   @override
   final ApplicationError error;
@@ -52,7 +54,8 @@ class DisclosureExternalScannerError extends DisclosureState implements ErrorSta
   List<Object?> get props => [error, ...super.props];
 }
 
-class DisclosureGenericError extends DisclosureState implements ErrorState {
+/// State representing an error that occurred during the disclosure process.
+class DisclosureError extends DisclosureState implements ErrorState {
   @override
   final ApplicationError error;
 
@@ -61,27 +64,13 @@ class DisclosureGenericError extends DisclosureState implements ErrorState {
   @override
   bool get showStopConfirmation => false;
 
-  const DisclosureGenericError({required this.error, this.returnUrl});
+  const DisclosureError({required this.error, this.returnUrl});
 
   @override
   List<Object?> get props => [error, ...super.props];
 }
 
-class DisclosureRelyingPartyError extends DisclosureState implements ErrorState {
-  @override
-  final ApplicationError error;
-
-  final LocalizedText? organizationName;
-
-  @override
-  bool get showStopConfirmation => false;
-
-  const DisclosureRelyingPartyError({required this.error, this.organizationName});
-
-  @override
-  List<Object?> get props => [error, organizationName, ...super.props];
-}
-
+/// Error state shown when the disclosure session has timed out and needs to be restarted.
 class DisclosureSessionExpired extends DisclosureState implements ErrorState {
   @override
   final ApplicationError error;
@@ -106,52 +95,8 @@ class DisclosureSessionExpired extends DisclosureState implements ErrorState {
   List<Object?> get props => [error, canRetry, isCrossDevice, returnUrl, ...super.props];
 }
 
-/// State that is exposed when the session has been stopped remotely (e.g. the user pressed stop in wallet_web)
-class DisclosureSessionCancelled extends DisclosureState implements ErrorState {
-  final Organization? relyingParty;
-  final String? returnUrl;
-
-  @override
-  final ApplicationError error;
-
-  @override
-  bool get showStopConfirmation => false;
-
-  const DisclosureSessionCancelled({
-    required this.error,
-    this.relyingParty,
-    this.returnUrl,
-  });
-
-  @override
-  List<Object?> get props => [error, relyingParty, returnUrl, ...super.props];
-}
-
-class DisclosureNetworkError extends DisclosureState implements NetworkErrorState {
-  @override
-  bool get showStopConfirmation => false;
-
-  @override
-  final bool hasInternet;
-
-  @override
-  final ApplicationError error;
-
-  @override
-  final int? statusCode;
-
-  const DisclosureNetworkError({
-    this.statusCode,
-    required this.error,
-    this.hasInternet = true,
-  });
-
-  @override
-  List<Object?> get props => [hasInternet, statusCode, error, ...super.props];
-}
-
+/// State where the user is requested to double check url origin for fraud prevention.
 class DisclosureCheckUrl extends DisclosureState {
-  final String originUrl;
   final bool afterBackPressed;
 
   @override
@@ -162,26 +107,17 @@ class DisclosureCheckUrl extends DisclosureState {
   bool get didGoBack => afterBackPressed;
 
   const DisclosureCheckUrl({
-    required this.originUrl,
     this.afterBackPressed = false,
   });
-
-  @override
-  List<Object?> get props => [originUrl, ...super.props];
 }
 
+/// State prompting the user to approve the organization for a login request.
 class DisclosureCheckOrganizationForLogin extends DisclosureState {
   /// The organization requesting attributes for the login session.
   final Organization relyingParty;
 
-  /// The URL origin of the login request.
-  final String originUrl;
-
   /// List of card requests for the user to choose which card to disclose.
   final List<DiscloseCardRequest> cardRequests;
-
-  /// The policy document outlining how the relying party handles disclosed data.
-  final Policy policy;
 
   /// Type of session (i.e., cross-device or regular).
   final DisclosureSessionType sessionType;
@@ -205,9 +141,7 @@ class DisclosureCheckOrganizationForLogin extends DisclosureState {
 
   const DisclosureCheckOrganizationForLogin({
     required this.relyingParty,
-    required this.originUrl,
     required this.sessionType,
-    required this.policy,
     required this.cardRequests,
     required this.sharedDataWithOrganizationBefore,
     this.afterBackPressed = false,
@@ -216,15 +150,14 @@ class DisclosureCheckOrganizationForLogin extends DisclosureState {
   @override
   List<Object?> get props => [
     relyingParty,
-    originUrl,
     sessionType,
-    policy,
     cardRequests,
     sharedDataWithOrganizationBefore,
     ...super.props,
   ];
 }
 
+/// State indicating that the user does not possess the required attributes to satisfy the request.
 class DisclosureMissingAttributes extends DisclosureState {
   final Organization relyingParty;
   final List<MissingAttribute> missingAttributes;
@@ -255,6 +188,7 @@ class DisclosureMissingAttributes extends DisclosureState {
   ];
 }
 
+/// State for user selection and confirmation of the specific attributes to be shared.
 class DisclosureConfirmDataAttributes extends DisclosureState {
   /// The organization requesting access to the user's wallet data.
   final Organization relyingParty;
@@ -264,9 +198,6 @@ class DisclosureConfirmDataAttributes extends DisclosureState {
 
   /// A list of card disclosure requests, each allowing the user to select which card to share.
   final List<DiscloseCardRequest> cardRequests;
-
-  /// The relying party's policy document outlining data handling practices.
-  final Policy policy;
 
   /// Indicates if this state was reached by pressing the back button.
   final bool afterBackPressed;
@@ -289,7 +220,6 @@ class DisclosureConfirmDataAttributes extends DisclosureState {
     required this.relyingParty,
     required this.requestPurpose,
     required this.cardRequests,
-    required this.policy,
     required this.sessionType,
     this.afterBackPressed = false,
   });
@@ -298,7 +228,6 @@ class DisclosureConfirmDataAttributes extends DisclosureState {
     Organization? relyingParty,
     LocalizedText? requestPurpose,
     List<DiscloseCardRequest>? cardRequests,
-    Policy? policy,
     DisclosureSessionType? sessionType,
     bool? afterBackPressed,
   }) {
@@ -306,7 +235,6 @@ class DisclosureConfirmDataAttributes extends DisclosureState {
       relyingParty: relyingParty ?? this.relyingParty,
       requestPurpose: requestPurpose ?? this.requestPurpose,
       cardRequests: cardRequests ?? this.cardRequests,
-      policy: policy ?? this.policy,
       sessionType: sessionType ?? this.sessionType,
       afterBackPressed: afterBackPressed ?? this.afterBackPressed,
     );
@@ -323,12 +251,12 @@ class DisclosureConfirmDataAttributes extends DisclosureState {
     relyingParty,
     requestPurpose,
     cardRequests,
-    policy,
     sessionType,
     ...super.props,
   ];
 }
 
+/// State prompting the user for their PIN to authorize and complete the data disclosure.
 class DisclosureConfirmPin extends DisclosureState {
   final Organization relyingParty;
   final bool isLoginFlow;
@@ -358,11 +286,12 @@ class DisclosureConfirmPin extends DisclosureState {
   List<Object?> get props => [relyingParty, isLoginFlow, selectedIndices, ...super.props];
 }
 
+/// State indicating that the disclosure was successfully completed and the data was shared.
 class DisclosureSuccess extends DisclosureState {
   final Organization relyingParty;
   final WalletEvent? event;
   final String? returnUrl;
-  final bool isLoginFlow;
+  final SuccessStyle style;
 
   @override
   final FlowProgress stepperProgress;
@@ -380,14 +309,18 @@ class DisclosureSuccess extends DisclosureState {
     required this.relyingParty,
     this.event,
     this.returnUrl,
-    this.isLoginFlow = false,
+    this.style = .regular,
     required bool isCrossDevice,
   }) : stepperProgress = _calculateStepperProgress(isCrossDevice: isCrossDevice);
 
   @override
-  List<Object?> get props => [relyingParty, returnUrl, isLoginFlow, ...super.props];
+  List<Object?> get props => [relyingParty, returnUrl, style, ...super.props];
 }
 
+/// Defines the visual style and messaging variant to be used on the success page.
+enum SuccessStyle { regular, login, closeProximity, sameDeviceNoReturnUrl }
+
+/// State shown when the user has intentionally stopped or cancelled the disclosure session.
 class DisclosureStopped extends DisclosureState {
   final Organization organization;
   final bool isLoginFlow;
@@ -402,6 +335,7 @@ class DisclosureStopped extends DisclosureState {
   List<Object?> get props => [organization, isLoginFlow, returnUrl, ...super.props];
 }
 
+/// State representing that the user has submitted feedback or a report after stopping the flow.
 class DisclosureLeftFeedback extends DisclosureState {
   @override
   bool get showStopConfirmation => false;
@@ -409,4 +343,17 @@ class DisclosureLeftFeedback extends DisclosureState {
   final String? returnUrl;
 
   const DisclosureLeftFeedback({this.returnUrl});
+}
+
+/// Error state emitted when a close-proximity connection is lost during the disclosure.
+class DisclosureCloseProximityDisconnected extends DisclosureState {
+  final bool isLoginFlow;
+
+  @override
+  bool get showStopConfirmation => false;
+
+  const DisclosureCloseProximityDisconnected({required this.isLoginFlow});
+
+  @override
+  List<Object?> get props => [isLoginFlow, ...super.props];
 }

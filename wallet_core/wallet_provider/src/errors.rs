@@ -1,27 +1,32 @@
+use std::borrow::Cow;
+
 use axum::response::IntoResponse;
 use axum::response::Response;
 use derive_more::AsRef;
 use derive_more::Display;
 use derive_more::From;
 use derive_more::FromStr;
-use http::StatusCode;
-
 use hsm::service::HsmError;
+use http::StatusCode;
 use http_utils::error::HttpJsonError;
 use http_utils::error::HttpJsonErrorType;
+use metrics::counter;
 use wallet_account::messages::errors::AccountError;
 use wallet_account::messages::errors::AccountErrorType;
+use wallet_account::messages::errors::AccountRevokedData;
+use wallet_account::messages::errors::RevocationReason;
+use wallet_account::messages::errors::RevocationReason::WalletSolutionCompromised;
 use wallet_provider_service::account_server::ChallengeError;
 use wallet_provider_service::account_server::InstructionError;
+use wallet_provider_service::account_server::InstructionValidationError;
 use wallet_provider_service::account_server::RegistrationError;
 use wallet_provider_service::account_server::WalletCertificateError;
-use wallet_provider_service::wua_issuer::HsmWuaIssuerError;
 
 // Make a newtype to circumvent the orphan rule.
 #[derive(Debug, Clone, From, AsRef, Display, FromStr)]
 pub struct WalletProviderErrorType(AccountErrorType);
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
 pub enum WalletProviderError {
     #[error("{0}")]
     Challenge(#[from] ChallengeError),
@@ -31,13 +36,11 @@ pub enum WalletProviderError {
     Instruction(#[from] InstructionError),
     #[error("{0}")]
     Hsm(#[from] HsmError),
-    #[error("{0}")]
-    Wua(#[from] HsmWuaIssuerError),
 }
 
 impl HttpJsonErrorType for WalletProviderErrorType {
-    fn title(&self) -> String {
-        let title = match self.as_ref() {
+    fn title(&self) -> &'static str {
+        match self.as_ref() {
             AccountErrorType::Unexpected => "An unexpected error occurred",
             AccountErrorType::ChallengeValidation => "Could not validate registration challenge",
             AccountErrorType::AttestationValidation => "Could not validate key / app attestation",
@@ -46,9 +49,8 @@ impl HttpJsonErrorType for WalletProviderErrorType {
             AccountErrorType::PinTimeout => "PIN checking is currently in timeout",
             AccountErrorType::AccountBlocked => "The requested account is blocked",
             AccountErrorType::InstructionValidation => "Could not validate instruction",
-        };
-
-        title.to_string()
+            AccountErrorType::AccountRevoked => "Account has been revoked",
+        }
     }
 
     fn status_code(&self) -> StatusCode {
@@ -61,6 +63,7 @@ impl HttpJsonErrorType for WalletProviderErrorType {
             AccountErrorType::PinTimeout => StatusCode::FORBIDDEN,
             AccountErrorType::AccountBlocked => StatusCode::UNAUTHORIZED,
             AccountErrorType::InstructionValidation => StatusCode::FORBIDDEN,
+            AccountErrorType::AccountRevoked => StatusCode::UNAUTHORIZED,
         }
     }
 }
@@ -70,11 +73,19 @@ impl From<WalletProviderError> for AccountError {
         match value {
             WalletProviderError::Challenge(error) => match error {
                 ChallengeError::WalletCertificate(WalletCertificateError::UserBlocked) => Self::AccountBlocked,
+                ChallengeError::AccountIsRevoked(data) => Self::AccountRevoked(data),
                 ChallengeError::WalletCertificate(_) => Self::ChallengeValidation,
+                ChallengeError::WalletSolutionRevoked => Self::AccountRevoked({
+                    AccountRevokedData {
+                        revocation_reason: WalletSolutionCompromised,
+                        can_register_new_account: false,
+                    }
+                }),
                 _ => Self::ChallengeValidation,
             },
             WalletProviderError::Registration(error) => match error {
                 RegistrationError::ChallengeDecoding(_) => Self::ChallengeValidation,
+                RegistrationError::ChallengeParsing(_) => Self::ChallengeValidation,
                 RegistrationError::ChallengeValidation(_) => Self::ChallengeValidation,
                 RegistrationError::AppleAttestation(_) => Self::AttestationValidation,
                 RegistrationError::AndroidKeyAttestation(_) => Self::AttestationValidation,
@@ -86,11 +97,30 @@ impl From<WalletProviderError> for AccountError {
                 RegistrationError::CertificateStorage(_) => Self::Unexpected,
                 RegistrationError::WalletCertificate(_) => Self::Unexpected,
                 RegistrationError::HsmError(_) => Self::Unexpected,
+                RegistrationError::WalletSolutionRevoked => Self::AccountRevoked({
+                    AccountRevokedData {
+                        revocation_reason: WalletSolutionCompromised,
+                        can_register_new_account: false,
+                    }
+                }),
             },
             WalletProviderError::Instruction(error) => match error {
                 InstructionError::IncorrectPin(data) => Self::IncorrectPin(data),
                 InstructionError::PinTimeout(data) => Self::PinTimeout(data),
                 InstructionError::AccountBlocked => Self::AccountBlocked,
+                InstructionError::Validation(InstructionValidationError::AccountRevoked(data)) => {
+                    Self::AccountRevoked(data)
+                }
+                InstructionError::RecoveryCodeIsDenied(_) => Self::AccountRevoked(AccountRevokedData {
+                    revocation_reason: RevocationReason::AdminRequest,
+                    can_register_new_account: false,
+                }),
+                InstructionError::WalletSolutionRevoked => Self::AccountRevoked({
+                    AccountRevokedData {
+                        revocation_reason: WalletSolutionCompromised,
+                        can_register_new_account: false,
+                    }
+                }),
                 InstructionError::Validation(_)
                 | InstructionError::NonExistingKey(_)
                 | InstructionError::UnknownPidAttestationType(_)
@@ -109,15 +139,17 @@ impl From<WalletProviderError> for AccountError {
                 InstructionError::Signing(_)
                 | InstructionError::Storage(_)
                 | InstructionError::WalletCertificate(_)
-                | InstructionError::WuaIssuance(_)
+                | InstructionError::WiaIssuance(_)
                 | InstructionError::HsmError(_)
-                | InstructionError::Poa(_)
-                | InstructionError::PopSigning(_)
+                | InstructionError::KeyAttestationSigning(_)
                 | InstructionError::JwkConversion(_)
-                | InstructionError::ObtainStatusClaim(_) => Self::Unexpected,
+                | InstructionError::StatusClaimBatchIdExists(_)
+                | InstructionError::ObtainStatusClaim(_)
+                | InstructionError::SystemRevocationError(_)
+                | InstructionError::UnsupportedHolderPublicKey(_)
+                | InstructionError::UnknownKid(_) => Self::Unexpected,
             },
             WalletProviderError::Hsm(_) => Self::Unexpected,
-            WalletProviderError::Wua(_) => Self::Unexpected,
         }
     }
 }
@@ -137,6 +169,163 @@ impl From<WalletProviderError> for HttpJsonError<WalletProviderErrorType> {
 
 impl IntoResponse for WalletProviderError {
     fn into_response(self) -> Response {
+        register_error_metric(&self);
         HttpJsonError::<WalletProviderErrorType>::from(self).into_response()
+    }
+}
+
+fn register_error_metric(error: &WalletProviderError) {
+    let inner_error: Cow<'static, str> = match error {
+        WalletProviderError::Challenge(inner) => Cow::Borrowed(inner.into()),
+        WalletProviderError::Registration(inner) => Cow::Borrowed(inner.into()),
+        WalletProviderError::Instruction(inner) => {
+            let instruction_error: &'static str = inner.into();
+            match inner {
+                InstructionError::Validation(error) => {
+                    let error: &'static str = error.into();
+                    Cow::Owned(format!("{instruction_error}::{error}"))
+                }
+                InstructionError::WalletCertificate(error) => {
+                    let error: &'static str = error.into();
+                    Cow::Owned(format!("{instruction_error}::{error}"))
+                }
+                _ => Cow::Borrowed(inner.into()),
+            }
+        }
+        WalletProviderError::Hsm(inner) => Cow::Borrowed(inner.into()),
+    };
+
+    let error: &'static str = error.into();
+    counter!(
+        "nlwallet_error_response",
+        "service" => "wallet_provider",
+        "error" => error,
+        "inner_error" => inner_error
+    )
+    .increment(1);
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(clippy::type_complexity)]
+
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use metrics::Counter;
+    use metrics::CounterFn;
+    use metrics::Gauge;
+    use metrics::Histogram;
+    use metrics::Key;
+    use metrics::KeyName;
+    use metrics::Metadata;
+    use metrics::Recorder;
+    use metrics::SharedString;
+    use metrics::Unit;
+    use rstest::rstest;
+    use wallet_account::error::DecodeError;
+    use wallet_provider_service::account_server::InstructionValidationError;
+
+    use super::*;
+
+    struct MockCounter {
+        labels: Vec<(String, String)>,
+        counters: Arc<Mutex<Vec<Vec<(String, String)>>>>,
+    }
+
+    impl CounterFn for MockCounter {
+        fn increment(&self, _value: u64) {
+            self.counters.lock().unwrap().push(self.labels.clone());
+        }
+
+        fn absolute(&self, _value: u64) {
+            unimplemented!()
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct MockRecorder {
+        counters: Arc<Mutex<Vec<Vec<(String, String)>>>>,
+    }
+
+    impl Recorder for MockRecorder {
+        fn describe_counter(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+        fn describe_gauge(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+        fn describe_histogram(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+
+        fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
+            let labels: Vec<_> = key
+                .labels()
+                .map(|label| (label.key().to_string(), label.value().to_string()))
+                .collect();
+
+            Counter::from_arc(Arc::new(MockCounter {
+                labels,
+                counters: Arc::clone(&self.counters),
+            }))
+        }
+
+        fn register_gauge(&self, _key: &Key, _metadata: &Metadata<'_>) -> Gauge {
+            unimplemented!()
+        }
+        fn register_histogram(&self, _key: &Key, _metadata: &Metadata<'_>) -> Histogram {
+            unimplemented!()
+        }
+    }
+
+    #[rstest]
+    #[case::nested_instruction_validation_error(
+        WalletProviderError::Instruction(InstructionError::Validation(
+            InstructionValidationError::SequenceNumberMismatch
+        )),
+        "Instruction",
+        "Validation::SequenceNumberMismatch"
+    )]
+    #[case::deeper_nested_instruction_validation_error(
+        WalletProviderError::Instruction(InstructionError::Validation(
+            InstructionValidationError::VerificationFailed(DecodeError::ChallengeMismatch)
+        )),
+        "Instruction",
+        "Validation::VerificationFailed"
+    )]
+    #[case::nested_wallet_certificate_error(
+        WalletProviderError::Instruction(InstructionError::WalletCertificate(
+            WalletCertificateError::HwPubKeyMismatch
+        )),
+        "Instruction",
+        "WalletCertificate::HwPubKeyMismatch"
+    )]
+    #[case::other_error(
+        WalletProviderError::Registration(RegistrationError::SerialNumberMismatch { expected: 3, received: 2}),
+        "Registration",
+        "SerialNumberMismatch"
+    )]
+    fn test_register_error_metric(
+        #[case] error: WalletProviderError,
+        #[case] expected_error: &str,
+        #[case] expected_inner_error: &str,
+    ) {
+        let recorder = MockRecorder::default();
+
+        metrics::with_local_recorder(&recorder, || {
+            register_error_metric(&error);
+        });
+
+        let counters = recorder.counters.lock().unwrap();
+        assert_eq!(counters.len(), 1);
+
+        let labels = &counters[0];
+        assert!(
+            labels.iter().any(|(key, val)| key == "error" && val == expected_error),
+            "Missing or incorrect error label. Got labels: {:?}",
+            labels
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(key, val)| key == "inner_error" && val == expected_inner_error),
+            "Missing or incorrect inner_error label. Got labels: {:?}",
+            labels
+        );
     }
 }

@@ -23,6 +23,7 @@ use x509_parser::prelude::X509Error;
 use crate::android_crl::RevocationStatusList;
 use crate::attestation_extension::KeyAttestationExtension;
 use crate::attestation_extension::KeyAttestationExtensionError;
+use crate::attestation_extension::key_attestation::KeyAttestation;
 use crate::attestation_extension::key_attestation::KeyAttestationVerificationError;
 use crate::root_public_key::RootPublicKey;
 use crate::sig_alg::ECDSA_P256_SHA256_WITH_NULL_PARAMETERS;
@@ -30,13 +31,13 @@ use crate::sig_alg::ECDSA_P256_SHA256_WITH_NULL_PARAMETERS;
 #[derive(Debug, thiserror::Error)]
 pub enum GoogleKeyAttestationError {
     #[error("invalid trust anchor: {0}")]
-    InvalidTrustAnchor(#[source] webpki::Error),
+    InvalidTrustAnchor(#[source] Box<webpki::Error>),
     #[error("invalid certificate chain: {0}")]
-    InvalidCertificateChain(#[source] webpki::Error),
+    InvalidCertificateChain(#[source] Box<webpki::Error>),
     #[error("could not decode certificate from chain: {0}")]
     CertificateDecode(#[source] x509_parser::nom::Err<X509Error>),
     #[error("could not decode end entity certificate from leaf certificate: {0}")]
-    LeafCertificate(#[source] webpki::Error),
+    LeafCertificate(#[source] Box<webpki::Error>),
     #[error("could not decode public key from root certificate: {0}")]
     RootPublicKey(#[source] X509Error),
     #[error("root CA in certificate chain does not contain any of the configured public keys")]
@@ -56,7 +57,7 @@ pub fn verify_google_key_attestation<'a>(
     root_public_keys: &[RootPublicKey],
     revocation_list: &RevocationStatusList,
     attestation_challenge: &[u8],
-) -> Result<X509Certificate<'a>, GoogleKeyAttestationError> {
+) -> Result<(X509Certificate<'a>, KeyAttestation), GoogleKeyAttestationError> {
     let supported_sig_algs = vec![
         ECDSA_P256_SHA256,
         ECDSA_P256_SHA256_WITH_NULL_PARAMETERS,
@@ -99,7 +100,7 @@ pub fn verify_google_key_attestation_with_params<'a>(
     attestation_challenge: &[u8],
     supported_sig_algs: &[&'a dyn SignatureVerificationAlgorithm],
     time: DateTime<Utc>,
-) -> Result<X509Certificate<'a>, GoogleKeyAttestationError> {
+) -> Result<(X509Certificate<'a>, KeyAttestation), GoogleKeyAttestationError> {
     assert!(certificate_chain.len() >= 2);
 
     let timestamp = time
@@ -170,7 +171,7 @@ pub fn verify_google_key_attestation_with_params<'a>(
     //    of values that you expect the hardware-backed key to contain.
     key_attestation.verify(attestation_challenge)?;
 
-    Ok(x509_certificates.pop().unwrap())
+    Ok((x509_certificates.pop().unwrap(), key_attestation))
 }
 
 fn verify_google_attestation_certificate_chain<'a>(
@@ -191,21 +192,33 @@ fn verify_google_attestation_certificate_chain<'a>(
         .map_err(GoogleKeyAttestationError::RootPublicKey)?;
 
     // Verify that the root public certificate is trustworthy.
-    if !root_public_keys.iter().any(|public_key| root_public_key == *public_key) {
-        return Err(GoogleKeyAttestationError::RootPublicKeyMismatch);
+    let root_public_key_is_trusted = root_public_keys.iter().any(|public_key| root_public_key == *public_key);
+    cfg_select! {
+        feature = "skip_root_key_check" => {
+            // Allow any security level on the emulator.
+            tracing::warn!(
+                "Assume root key of chain is trusted [actual: {}]",
+                root_public_key_is_trusted
+            );
+        }
+        _ => {
+            if !root_public_key_is_trusted {
+                return Err(GoogleKeyAttestationError::RootPublicKeyMismatch);
+            }
+        }
     }
 
     // Take the root certificate in the list as trust anchor. This is a hack which allows us to use
     // `EndEntityCert::verify_for_usage` to verify the certificate chain. This hack is safe, because we have verified
-    // the public key of the root certificate to be trustworthy.
+    // (or assumed) the public key of the root certificate to be trustworthy.
     let trust_anchor = webpki::anchor_from_trusted_cert(root_certificate_der)
-        .map_err(GoogleKeyAttestationError::InvalidTrustAnchor)?;
+        .map_err(|error| GoogleKeyAttestationError::InvalidTrustAnchor(Box::new(error)))?;
     let trust_anchors = vec![trust_anchor];
 
     // EndEntityCert is the first certificate in the list.
     // `unwrap` is safe because of guard that verifies the certificate chain is not empty.
     let end_certificate = EndEntityCert::try_from(certificate_chain.first().unwrap())
-        .map_err(GoogleKeyAttestationError::LeafCertificate)?;
+        .map_err(|error| GoogleKeyAttestationError::LeafCertificate(Box::new(error)))?;
 
     // Verify that each certificate signs the next certificate in the chain.
     let _verified_path = end_certificate
@@ -218,7 +231,7 @@ fn verify_google_attestation_certificate_chain<'a>(
             None,
             None,
         )
-        .map_err(GoogleKeyAttestationError::InvalidCertificateChain)?;
+        .map_err(|error| GoogleKeyAttestationError::InvalidCertificateChain(Box::new(error)))?;
 
     Ok(root_certificate)
 }

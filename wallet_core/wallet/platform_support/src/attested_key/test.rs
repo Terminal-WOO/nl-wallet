@@ -2,10 +2,6 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::mem;
 
-use p256::ecdsa::signature::Verifier;
-use rustls_pki_types::CertificateDer;
-use rustls_pki_types::TrustAnchor;
-
 use android_attest::android_crl::RevocationStatusList;
 use android_attest::certificate_chain::verify_google_key_attestation;
 use android_attest::root_public_key::RootPublicKey;
@@ -16,6 +12,9 @@ use apple_app_attest::ClientData;
 use apple_app_attest::VerifiedAssertion;
 use apple_app_attest::VerifiedAttestation;
 use crypto::keys::EcdsaKey;
+use p256::ecdsa::signature::Verifier;
+use rustls_pki_types::CertificateDer;
+use rustls_pki_types::TrustAnchor;
 
 use super::AppleAttestedKey;
 use super::AttestedKey;
@@ -56,6 +55,7 @@ pub struct AppleTestData<'a> {
 
 pub struct AndroidTestData {
     pub root_public_keys: Vec<RootPublicKey>,
+    pub google_cloud_project_number: u64,
 }
 
 pub enum TestData<'a> {
@@ -79,9 +79,17 @@ pub async fn create_and_verify_attested_key<'a, H>(
         .await
         .expect("could not generate attested key identifier");
 
+    let google_cloud_project_number = match test_data {
+        TestData::Android(AndroidTestData {
+            google_cloud_project_number,
+            ..
+        }) => google_cloud_project_number,
+        _ => 0,
+    };
+
     // Perform key / app attestation. Note that this requires a network connection.
     let key_with_attestation = holder
-        .attest(identifier.clone(), challenge.clone(), 123456789)
+        .attest(identifier.clone(), challenge.clone(), google_cloud_project_number)
         .await
         .expect("could not perform key/app attestation");
 
@@ -180,13 +188,15 @@ pub async fn create_and_verify_attested_key<'a, H>(
             };
 
             log::info!("Invoke verify_google_key_attestation");
-            verify_google_key_attestation(
+            let (_leaf_cert, key_attestation) = verify_google_key_attestation(
                 &der_certificate_chain,
                 &android_test_data.root_public_keys,
                 &revocation_list,
                 &challenge,
             )
             .expect("could not verify attestation key certificate chain");
+
+            assert_eq!(key_attestation.attestation_challenge, challenge);
 
             log::info!("Sign payload with google key");
             let signature1 = key.try_sign(&payload).await.expect("could not sign payload");

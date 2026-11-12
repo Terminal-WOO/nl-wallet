@@ -3,13 +3,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mockito/mockito.dart';
 import 'package:rxdart/rxdart.dart';
+import 'package:wallet/src/data/service/announcement_service.dart';
 import 'package:wallet/src/domain/model/attribute/attribute.dart';
 import 'package:wallet/src/domain/model/flow_progress.dart';
 import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/domain/usecase/pid/accept_offered_pid_usecase.dart';
+import 'package:wallet/src/domain/usecase/wallet/observe_wallet_locked_usecase.dart';
 import 'package:wallet/src/feature/common/page/generic_loading_page.dart';
 import 'package:wallet/src/feature/common/page/terminal_page.dart';
+import 'package:wallet/src/feature/common/widget/loading_indicator.dart';
 import 'package:wallet/src/feature/error/error_page.dart';
 import 'package:wallet/src/feature/pin/bloc/pin_bloc.dart';
 import 'package:wallet/src/feature/wallet/personalize/bloc/wallet_personalize_bloc.dart';
@@ -19,7 +23,6 @@ import 'package:wallet/src/feature/wallet/personalize/page/wallet_personalize_in
 import 'package:wallet/src/feature/wallet/personalize/page/wallet_personalize_success_page.dart';
 import 'package:wallet/src/feature/wallet/personalize/wallet_personalize_screen.dart';
 import 'package:wallet/src/navigation/wallet_routes.dart';
-import 'package:wallet/src/util/extension/string_extension.dart';
 
 import '../../../../wallet_app_test_widget.dart';
 import '../../../mocks/wallet_mock_data.dart';
@@ -97,57 +100,72 @@ void main() {
   ];
 
   group('goldens', () {
-    testGoldens('WalletPersonalizeInitial Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeInitial Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeInitial(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/initial.light');
     });
 
-    testGoldens('WalletPersonalizeLoadingIssuanceUrl Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeLoadingIssuanceUrl Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeLoadingIssuanceUrl(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/loading_issuance_url.light');
     });
 
-    testGoldens('WalletPersonalizeLoadInProgress Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeLoadInProgress Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeLoadInProgress(FlowProgress(currentStep: 1, totalSteps: 2)),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/load_in_progress.light');
     });
 
-    testGoldens('WalletPersonalizeAddingCards Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeAddingCards Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeAddingCards(FlowProgress(currentStep: 8, totalSteps: 9)),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/adding_cards.light');
     });
 
-    testGoldens('WalletPersonalizeAuthenticating Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeAuthenticating Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeAuthenticating(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/authenticating.light');
     });
 
-    testGoldens('WalletPersonalizeConnectDigid Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeConnectDigid Light', (tester) async {
       const mockUrl = 'https://digid_login';
       bool mockUrlIsOpened = false;
 
@@ -165,6 +183,9 @@ void main() {
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeConnectDigid(mockUrl),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/connect_digid.light');
 
@@ -173,13 +194,16 @@ void main() {
     });
 
     testGoldens(
-      'WalletPersonalizeAuthenticating - Cancel Dialog - Light',
+      'ltc1 WalletPersonalizeAuthenticating - Cancel Dialog - Light',
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
           const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
             MockWalletPersonalizeBloc(),
             const WalletPersonalizeAuthenticating(),
           ),
+          providers: [
+            RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+          ],
         );
         final l10n = await TestUtils.englishLocalizations;
         final cancelButtonFinder = find.text(l10n.walletPersonalizeScreenDigidLoadingStopCta);
@@ -189,86 +213,94 @@ void main() {
       },
     );
 
-    testGoldens('WalletPersonalizeConfirmPin Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeConfirmPin Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
-        RepositoryProvider<AcceptOfferedPidUseCase>.value(
-          value: Mocks.create<AcceptOfferedPidUseCase>(),
-          child: const WalletPersonalizeScreen()
-              .withState<WalletPersonalizeBloc, WalletPersonalizeState>(
-                MockWalletPersonalizeBloc(),
-                const WalletPersonalizeConfirmPin([]),
-              )
-              .withState<PinBloc, PinState>(
-                MockPinBloc(),
-                const PinEntryInProgress(0),
-              ),
-        ),
+        const WalletPersonalizeScreen()
+            .withState<WalletPersonalizeBloc, WalletPersonalizeState>(
+              MockWalletPersonalizeBloc(),
+              const WalletPersonalizeConfirmPin([]),
+            )
+            .withState<PinBloc, PinState>(
+              MockPinBloc(),
+              const PinEntryInProgress(0),
+            ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+          RepositoryProvider<AcceptOfferedPidUseCase>(
+            create: (_) => Mocks.create<AcceptOfferedPidUseCase>(),
+          ),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/confirm_pin.light');
     });
 
-    testGoldens('WalletPersonalizeCheckData Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeCheckData Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeCheckData(availableAttributes: sampleMaleAttributes),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/check_data.light');
     });
 
-    testGoldens('WalletPersonalizeSuccess Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeSuccess Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeSuccess(addedCards: [WalletMockData.card, WalletMockData.altCard], userCanTransfer: false),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/success.light');
     });
 
-    testGoldens('WalletPersonalizeSuccess Dark', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeSuccess Dark', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeSuccess(addedCards: [WalletMockData.card, WalletMockData.altCard], userCanTransfer: false),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
         brightness: Brightness.dark,
       );
       await screenMatchesGolden('wallet_personalize/success.dark');
     });
 
-    testGoldens('WalletPersonalizeFailure Light', (tester) async {
-      await tester.pumpWidgetWithAppWrapper(
-        const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
-          MockWalletPersonalizeBloc(),
-          WalletPersonalizeFailure(),
-        ),
-      );
-      await screenMatchesGolden('wallet_personalize/failure.light');
-    });
-
-    testGoldens('WalletPersonalizeDigidFailure Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeDigidFailure Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeDigidFailure(error: GenericError('', sourceError: 'test')),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/digid_failure.light');
     });
 
-    testGoldens('WalletPersonalizeDigidCancelled Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeDigidCancelled Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          WalletPersonalizeDigidCancelled(),
+          const WalletPersonalizeDigidCancelled(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/digid_cancelled.light');
     });
 
-    testGoldens('WalletPersonalizeDigidFailure Light Portrait', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeDigidFailure Light Portrait', (tester) async {
       /// This test verifies that the image scaling is correct when rendered in portrait mode, as the
       /// test above (WalletPersonalizeDigidFailure Light) is treated as landscape.
       await tester.pumpWidgetWithAppWrapper(
@@ -276,58 +308,72 @@ void main() {
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeDigidFailure(error: GenericError('', sourceError: 'test')),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/digid_failure.portrait.light');
     });
 
-    testGoldens('WalletPersonalizeGenericError Light', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeError (GenericError) Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeGenericError(error: GenericError('test', sourceError: 'sourceError')),
+          const WalletPersonalizeError(error: GenericError('test', sourceError: 'sourceError')),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/generic_error.light');
     });
 
-    testGoldens('WalletPersonalizeRelyingPartyError Light - Relying Party X', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeError (RelyingPartyError) Light - Relying Party X', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          WalletPersonalizeRelyingPartyError(
-            organizationName: 'Relying Party X'.untranslated,
-            error: const RelyingPartyError(sourceError: ''),
+          const WalletPersonalizeError(
+            error: RelyingPartyError(sourceError: '', organizationName: 'Relying Party X'),
           ),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/relying_party_error.light');
     });
 
-    testGoldens('WalletPersonalizeRelyingPartyError Dark - Unknown relying party', (tester) async {
+    testGoldens('ltc1 WalletPersonalizeError (RelyingPartyError) Dark - Unknown relying party', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeRelyingPartyError(organizationName: null, error: RelyingPartyError(sourceError: '')),
+          const WalletPersonalizeError(error: RelyingPartyError(sourceError: '', organizationName: null)),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       await screenMatchesGolden('wallet_personalize/relying_party_error.party_unknown.dark');
     });
   });
 
   group('widgets', () {
-    testWidgets('continue button is shown on the success page', (tester) async {
+    testWidgets('ltc1 continue button is shown on the success page', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeSuccess(addedCards: [WalletMockData.card], userCanTransfer: false),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       final l10n = await TestUtils.englishLocalizations;
       expect(find.text(l10n.walletPersonalizeSuccessPageContinueCta), findsOneWidget);
     });
 
     testWidgets(
-      'cancel dialog is dismissed if digid result comes in while it is shown',
+      'ltc1 cancel dialog is dismissed if digid result comes in while it is shown',
       (tester) async {
         // Configure the bloc with a state where the cancel button is visible
         final mockBloc = MockWalletPersonalizeBloc();
@@ -340,6 +386,9 @@ void main() {
             create: (c) => mockBloc,
             child: Builder(builder: (context) => const WalletPersonalizeScreen()),
           ),
+          providers: [
+            RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+          ],
         );
 
         // Find the cancel button and tap it
@@ -363,16 +412,18 @@ void main() {
     );
 
     testWidgets(
-      'WalletPersonalizeScreen shows the no internet error for WalletPersonalizeNetworkError(hasInternet=false)',
+      'ltc1 WalletPersonalizeScreen shows the no internet error for WalletPersonalizeNetworkError(hasInternet=false)',
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
           const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
             MockWalletPersonalizeBloc(),
-            const WalletPersonalizeNetworkError(
+            const WalletPersonalizeError(
               error: NetworkError(hasInternet: false, sourceError: 'test'),
-              hasInternet: false,
             ),
           ),
+          providers: [
+            RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+          ],
         );
 
         await tester.pumpAndSettle();
@@ -394,16 +445,18 @@ void main() {
     );
 
     testWidgets(
-      'WalletPersonalizeScreen shows the no internet error for WalletPersonalizeNetworkError(hasInternet=true)',
+      'ltc1 WalletPersonalizeScreen shows the no internet error for WalletPersonalizeNetworkError(hasInternet=true)',
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
           const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
             MockWalletPersonalizeBloc(),
-            const WalletPersonalizeNetworkError(
+            const WalletPersonalizeError(
               error: NetworkError(hasInternet: true, sourceError: 'test'),
-              hasInternet: true,
             ),
           ),
+          providers: [
+            RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+          ],
         );
 
         await tester.pumpAndSettle();
@@ -424,14 +477,19 @@ void main() {
       },
     );
 
-    testWidgets('WalletPersonalizeScreen shows the generic error for SetupSecurityGenericError state', (tester) async {
+    testWidgets('ltc1 WalletPersonalizeScreen shows the generic error for SetupSecurityGenericError state', (
+      tester,
+    ) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeGenericError(
+          const WalletPersonalizeError(
             error: GenericError('generic', sourceError: 'test'),
           ),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
 
       await tester.pumpAndSettle();
@@ -451,16 +509,19 @@ void main() {
       expect(showDetailsCtaFinder, findsOneWidget);
     });
 
-    testWidgets('WalletPersonalizeScreen shows session expired for WalletPersonalizeSessionExpired state', (
+    testWidgets('ltc1 WalletPersonalizeScreen shows session expired for WalletPersonalizeSessionExpired state', (
       tester,
     ) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeSessionExpired(
+          const WalletPersonalizeError(
             error: SessionError(state: SessionState.expired, sourceError: 'test'),
           ),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
 
       await tester.pumpAndSettle();
@@ -480,73 +541,137 @@ void main() {
       expect(showDetailsCtaFinder, findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeInitial shows WalletPersonalizeIntroPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeInitial shows WalletPersonalizeIntroPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeInitial(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(WalletPersonalizeIntroPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeLoadingIssuanceUrl shows GenericLoadingPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeLoadingIssuanceUrl shows GenericLoadingPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeLoadingIssuanceUrl(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(GenericLoadingPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeConnectDigid shows GenericLoadingPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeConnectDigid shows GenericLoadingPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeConnectDigid('auth_url'),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(GenericLoadingPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeAuthenticating shows GenericLoadingPage', (tester) async {
+    testWidgets('ltc1 WalletPersonalizeConnectDigid exposes the status as a single heading above a loader', (
+      tester,
+    ) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
+          MockWalletPersonalizeBloc(),
+          const WalletPersonalizeConnectDigid('auth_url'),
+        ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
+      );
+
+      final l10n = await TestUtils.englishLocalizations;
+      final titleFinder = find.text(l10n.walletPersonalizeScreenAwaitingUserAuthTitle);
+      expect(titleFinder, findsOneWidget);
+      expect(
+        tester.getSemantics(titleFinder),
+        matchesSemantics(label: l10n.walletPersonalizeScreenAwaitingUserAuthTitle, isHeader: true),
+      );
+      expect(find.byType(LoadingIndicator), findsOneWidget);
+    });
+
+    testWidgets('ltc1 WalletPersonalizeConnectDigid announces the new status once when DigiD is opened', (
+      tester,
+    ) async {
+      final announcementService = MockAnnouncementService();
+      await tester.pumpWidgetWithAppWrapper(
+        const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
+          MockWalletPersonalizeBloc(),
+          const WalletPersonalizeLoadingIssuanceUrl(),
+          streamStates: [const WalletPersonalizeConnectDigid('auth_url')],
+        ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+          RepositoryProvider<AnnouncementService>.value(value: announcementService),
+        ],
+      );
+      await tester.pumpAndSettle();
+
+      final l10n = await TestUtils.englishLocalizations;
+      verify(announcementService.announce(l10n.walletPersonalizeScreenAwaitingUserAuthTitle)).called(1);
+      verifyNever(announcementService.announce(l10n.walletPersonalizeScreenLoadingDigiDUrlTitle));
+    });
+
+    testWidgets('ltc1 Verify WalletPersonalizeAuthenticating shows GenericLoadingPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeAuthenticating(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(GenericLoadingPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeLoadInProgress shows GenericLoadingPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeLoadInProgress shows GenericLoadingPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeLoadInProgress(FlowProgress(totalSteps: 5, currentStep: 1)),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(GenericLoadingPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeCheckData shows y', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeCheckData shows y', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeCheckData(availableAttributes: sampleMaleAttributes),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(WalletPersonalizeCheckDataOfferingPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeConfirmPin shows WalletPersonalizeConfirmPinPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeConfirmPin shows WalletPersonalizeConfirmPinPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeConfirmPin(sampleMaleAttributes),
         ),
         providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
           RepositoryProvider<PinBloc>(create: (_) => MockPinBloc()),
           RepositoryProvider<AcceptOfferedPidUseCase>(create: (_) => MockAcceptOfferedPidUseCase()),
         ],
@@ -554,17 +679,20 @@ void main() {
       expect(find.byType(WalletPersonalizeConfirmPinPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeSuccess shows success page', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeSuccess shows success page', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           WalletPersonalizeSuccess(addedCards: [WalletMockData.card, WalletMockData.altCard], userCanTransfer: false),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(WalletPersonalizeSuccessPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeSuccess with userCanTransfer = true pushes WalletTransferTargetScreen', (
+    testWidgets('ltc1 Verify WalletPersonalizeSuccess with userCanTransfer = true pushes WalletTransferTargetScreen', (
       tester,
     ) async {
       await tester.pumpWidgetWithAppWrapper(
@@ -575,91 +703,114 @@ void main() {
             WalletPersonalizeSuccess(addedCards: [WalletMockData.card, WalletMockData.altCard], userCanTransfer: true),
           ],
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
 
       // Verify if navigation occurred by checking for the route name (rendered by our test route navigator)
       expect(find.text(WalletRoutes.walletTransferTargetRoute), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeFailure shows TerminalPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeError shows ErrorPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          WalletPersonalizeFailure(),
+          const WalletPersonalizeError(error: GenericError('test', sourceError: 'test')),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
-      expect(find.byType(TerminalPage), findsOneWidget);
+      expect(find.byType(ErrorPage), findsOneWidget);
       final l10n = await TestUtils.englishLocalizations;
-      expect(find.text(l10n.walletPersonalizeScreenErrorTitle), findsAtLeast(1));
+      expect(find.text(l10n.errorScreenGenericHeadline), findsAtLeast(1));
     });
 
-    testWidgets('Verify WalletPersonalizeDigidCancelled shows WalletPersonalizeDigidErrorPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeDigidCancelled shows WalletPersonalizeDigidErrorPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          WalletPersonalizeDigidCancelled(),
+          const WalletPersonalizeDigidCancelled(),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       final l10n = await TestUtils.englishLocalizations;
       expect(find.byType(TerminalPage), findsOneWidget);
       expect(find.text(l10n.walletPersonalizeDigidCancelledPageTitle), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeDigidFailure shows WalletPersonalizeDigidErrorPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeDigidFailure shows WalletPersonalizeDigidErrorPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeDigidFailure(error: GenericError('', sourceError: 'test')),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       final l10n = await TestUtils.englishLocalizations;
       expect(find.byType(TerminalPage), findsOneWidget);
       expect(find.text(l10n.walletPersonalizeDigidErrorPageTitle), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeNetworkError shows ErrorPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeError (NetworkError) shows server related ErrorPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeNetworkError(
+          const WalletPersonalizeError(
             error: NetworkError(hasInternet: true, sourceError: 'test'),
-            hasInternet: true,
           ),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(ErrorPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeGenericError shows ErrorPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeGenericError shows ErrorPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeGenericError(error: GenericError('generic', sourceError: 'test')),
+          const WalletPersonalizeError(error: GenericError('generic', sourceError: 'test')),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(ErrorPage), findsOneWidget);
     });
 
-    testWidgets('Verify WalletPersonalizeSessionExpired shows ErrorPage', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeSessionExpired shows ErrorPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
-          const WalletPersonalizeSessionExpired(
+          const WalletPersonalizeError(
             error: SessionError(state: SessionState.expired, sourceError: 'test'),
           ),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       expect(find.byType(ErrorPage), findsOneWidget);
       final l10n = await TestUtils.englishLocalizations;
       expect(find.text(l10n.errorScreenSessionExpiredHeadline), findsAtLeast(1));
     });
 
-    testWidgets('Verify WalletPersonalizeAddingCards shows dedicated loading message', (tester) async {
+    testWidgets('ltc1 Verify WalletPersonalizeAddingCards shows dedicated loading message', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const WalletPersonalizeScreen().withState<WalletPersonalizeBloc, WalletPersonalizeState>(
           MockWalletPersonalizeBloc(),
           const WalletPersonalizeAddingCards(FlowProgress(currentStep: 8, totalSteps: 9)),
         ),
+        providers: [
+          RepositoryProvider<ObserveWalletLockedUseCase>(create: (_) => MockObserveWalletLockedUseCase()),
+        ],
       );
       final l10n = await TestUtils.englishLocalizations;
       expect(find.text(l10n.walletPersonalizeScreenAddingCardsSubtitle), findsOneWidget);

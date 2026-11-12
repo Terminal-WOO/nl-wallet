@@ -1,6 +1,7 @@
 name: wallet_mock
 description: A package that holds all mock implementations for the wallet_app
 version: 1.0.0
+resolution: workspace
 
 # Prevent accidental publishing to pub.dev.
 publish_to: 'none'
@@ -11,6 +12,7 @@ environment:
 dependencies:
   wallet_core:
     path: ../wallet_core
+  flutter_rust_bridge: 2.12.0
   rxdart: ^0.28.0
   collection: ^1.19.1
   clock: ^1.1.2

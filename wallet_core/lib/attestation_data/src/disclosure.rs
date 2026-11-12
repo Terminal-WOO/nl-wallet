@@ -1,56 +1,40 @@
 use std::collections::HashSet;
 
-use chrono::DateTime;
-use chrono::Utc;
-use indexmap::IndexMap;
-use serde::Deserialize;
-use serde::Serialize;
-
 use attestation_types::claim_path::ClaimPath;
-use attestation_types::qualification::AttestationQualification;
-use crypto::x509::CertificateError;
-use dcql::CredentialFormat;
+use attestation_types::credential_format::Format;
+use attestation_types::credential_kind::CredentialKind;
+use crypto::x509::CertificateNameError;
+use crypto::x509::KeyIdentifier;
 use dcql::CredentialQueryIdentifier;
 use dcql::disclosure::DisclosedCredential;
+use dcql::normalized::NormalizedCredentialRequest;
 use dcql::unique_id_vec::MayHaveUniqueId;
-use http_utils::urls::HttpsUri;
+use indexmap::IndexMap;
+use itertools::Itertools;
 use mdoc::DataElementIdentifier;
 use mdoc::DataElementValue;
+use mdoc::ItemsRequest;
 use mdoc::NameSpace;
 use mdoc::holder::disclosure::claim_path_to_mdoc_path;
 use mdoc::verifier::DisclosedDocument;
 use sd_jwt::sd_jwt::VerifiedSdJwtPresentation;
+use serde::Deserialize;
+use serde::Serialize;
 use token_status_list::verification::verifier::RevocationStatus;
+use utils::vec_at_least::IntoNonEmptyIterator;
+use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
+use utils::vec_nonempty;
 
-use crate::attributes::AttributeValue;
+use crate::attributes::Attribute;
 use crate::attributes::Attributes;
 use crate::attributes::AttributesError;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ValidityInfo {
-    pub signed: DateTime<Utc>,
-    pub valid_from: Option<DateTime<Utc>>,
-    pub valid_until: Option<DateTime<Utc>>,
-}
-
-impl TryFrom<&mdoc::iso::ValidityInfo> for ValidityInfo {
-    type Error = chrono::ParseError;
-
-    fn try_from(value: &mdoc::iso::ValidityInfo) -> Result<Self, Self::Error> {
-        Ok(Self {
-            signed: (&value.signed).try_into()?,
-            valid_from: Some((&value.valid_from).try_into()?),
-            valid_until: Some((&value.valid_until).try_into()?),
-        })
-    }
-}
+use crate::validity::IssuanceValidity;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "format", content = "attributes", rename_all = "snake_case")]
 pub enum DisclosedAttributes {
-    MsoMdoc(IndexMap<NameSpace, IndexMap<String, AttributeValue>>),
+    MsoMdoc(IndexMap<NameSpace, IndexMap<String, Attribute>>),
     #[serde(rename = "dc+sd-jwt")]
     SdJwt(Attributes),
 }
@@ -112,21 +96,21 @@ impl TryFrom<IndexMap<NameSpace, IndexMap<DataElementIdentifier, DataElementValu
     }
 }
 
-/// Attestation that was disclosed; consisting of attributes, validity information, issuer URI and the issuer CA's
-/// common name.
+/// Attestation that was disclosed; consisting of attributes, validity information and the issuer CA's common name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DisclosedAttestation {
     pub attestation_type: String,
     #[serde(flatten)]
     pub attributes: DisclosedAttributes,
-    pub issuer_uri: HttpsUri,
-    pub attestation_qualification: AttestationQualification,
 
     /// The issuer CA's common name
     pub ca: String,
-    pub validity_info: ValidityInfo,
+    pub issuance_validity: IssuanceValidity,
     pub revocation_status: Option<RevocationStatus>,
+
+    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
+    pub aki: Vec<KeyIdentifier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,11 +134,10 @@ impl TryFrom<DisclosedDocument> for DisclosedAttestation {
         Ok(DisclosedAttestation {
             attestation_type: doc.doc_type,
             attributes: doc.attributes.try_into()?,
-            issuer_uri: doc.issuer_uri,
-            attestation_qualification: doc.attestation_qualification,
             ca: doc.ca,
-            validity_info: (&doc.validity_info).try_into()?,
+            issuance_validity: (&doc.validity_info).try_into()?,
             revocation_status: doc.revocation_status,
+            aki: doc.aki,
         })
     }
 }
@@ -165,7 +148,7 @@ impl TryFrom<VerifiedSdJwtPresentation> for DisclosedAttestation {
     fn try_from(sd_jwt_presentation: VerifiedSdJwtPresentation) -> Result<Self, Self::Error> {
         let attributes = DisclosedAttributes::SdJwt(sd_jwt_presentation.sd_jwt().decoded_claims()?.try_into()?);
         let ca = sd_jwt_presentation
-            .issuer_certificate()
+            .issuer_leaf_certificate()
             .issuer_common_names()?
             .first()
             .ok_or(DisclosedAttestationError::EmptyIssuerCommonName)?
@@ -173,27 +156,28 @@ impl TryFrom<VerifiedSdJwtPresentation> for DisclosedAttestation {
 
         let revocation_status = sd_jwt_presentation.revocation_status();
 
+        let aki = sd_jwt_presentation
+            .sd_jwt()
+            .issuer_certificate_chain()
+            .into_nonempty_iter()
+            .filter_map(|cert| cert.authority_key_id())
+            .collect_vec();
+
         let claims = sd_jwt_presentation.into_claims();
 
-        // Manually parse the attestation qualification from the SD-JWT claims.
-        let attestation_qualification = claims
-            .attestation_qualification
-            .ok_or(DisclosedAttestationError::MissingAttestationQualification)?;
-
-        let validity_info = ValidityInfo {
-            signed: claims.iat.into(),
-            valid_from: claims.nbf.map(Into::into),
-            valid_until: claims.exp.map(Into::into),
-        };
+        let issuance_validity = IssuanceValidity::new(
+            claims.iat.into(),
+            claims.nbf.map(Into::into),
+            claims.exp.map(Into::into),
+        );
 
         Ok(DisclosedAttestation {
             attestation_type: claims.vct,
             attributes,
-            issuer_uri: claims.iss,
-            attestation_qualification,
             ca,
-            validity_info,
+            issuance_validity,
             revocation_status,
+            aki,
         })
     }
 }
@@ -206,32 +190,33 @@ pub enum DisclosedAttestationError {
     #[error("parse error while converting validity_info: {0}")]
     ParseError(#[from] chrono::ParseError),
 
-    #[error("missing attestation qualification in SD JWT")]
-    MissingAttestationQualification,
-
     #[error("error converting SD JWT to disclosed object: {0}")]
     DisclosedObjectConversion(#[from] sd_jwt::error::DecoderError),
 
     #[error("missing issuer certificate in SD JWT")]
     MissingIssuerCertificate,
 
-    #[error("issuer common name in SD JWT issuer certificate is not a string")]
-    IssuerCommonNameNotAString(#[from] CertificateError),
+    #[error("error reading issuer certificate: {0}")]
+    CertificateNameError(#[from] CertificateNameError),
 
     #[error("empty issuer common name in SD JWT issuer certificate")]
     EmptyIssuerCommonName,
 }
 
 impl DisclosedCredential for DisclosedAttestation {
-    fn format(&self) -> CredentialFormat {
+    fn format(&self) -> Format {
         match &self.attributes {
-            DisclosedAttributes::MsoMdoc(_) => CredentialFormat::MsoMdoc,
-            DisclosedAttributes::SdJwt(_) => CredentialFormat::SdJwt,
+            DisclosedAttributes::MsoMdoc(_) => Format::MsoMdoc,
+            DisclosedAttributes::SdJwt(_) => Format::SdJwt,
         }
     }
 
     fn credential_type(&self) -> &str {
         &self.attestation_type
+    }
+
+    fn aki(&self) -> &[KeyIdentifier] {
+        &self.aki
     }
 
     fn missing_claim_paths<'a, 'b>(
@@ -245,32 +230,101 @@ impl DisclosedCredential for DisclosedAttestation {
     }
 }
 
+pub trait AttestationRequest {
+    fn format(&self) -> Format;
+    fn credential_types(&self) -> impl NonEmptyIterator<Item = String>;
+    fn claim_paths(&self) -> impl Iterator<Item = VecNonEmpty<ClaimPath>>;
+    fn aki(&self) -> &[KeyIdentifier];
+
+    /// The requested attestation types, each combined with the single format the request is made in.
+    fn credential_kinds(&self) -> HashSet<CredentialKind> {
+        let format = self.format();
+
+        self.credential_types()
+            .map(|attestation_type| CredentialKind::new(format, attestation_type))
+            .collect()
+    }
+}
+
+impl AttestationRequest for NormalizedCredentialRequest {
+    fn format(&self) -> Format {
+        self.format()
+    }
+
+    fn credential_types(&self) -> impl NonEmptyIterator<Item = String> {
+        match self.clone() {
+            Self::MsoMdoc { doctype_value, .. } => vec_nonempty![doctype_value].into_nonempty_iter(),
+            Self::SdJwt { vct_values, .. } => vct_values.into_nonempty_iter(),
+        }
+    }
+
+    fn claim_paths(&self) -> impl Iterator<Item = VecNonEmpty<ClaimPath>> {
+        self.claim_paths().cloned()
+    }
+
+    fn aki(&self) -> &[KeyIdentifier] {
+        self.aki()
+    }
+}
+
+impl AttestationRequest for ItemsRequest {
+    fn format(&self) -> Format {
+        Format::MsoMdoc
+    }
+
+    fn credential_types(&self) -> impl NonEmptyIterator<Item = String> {
+        vec_nonempty![self.doc_type.clone()].into_nonempty_iter()
+    }
+
+    fn claim_paths(&self) -> impl Iterator<Item = VecNonEmpty<ClaimPath>> {
+        self.claims()
+    }
+
+    fn aki(&self) -> &[KeyIdentifier] {
+        &[]
+    }
+}
+
+impl<T: AttestationRequest> AttestationRequest for &T {
+    fn format(&self) -> Format {
+        (*self).format()
+    }
+
+    fn credential_types(&self) -> impl NonEmptyIterator<Item = String> {
+        (*self).credential_types()
+    }
+
+    fn claim_paths(&self) -> impl Iterator<Item = VecNonEmpty<ClaimPath>> {
+        (*self).claim_paths()
+    }
+
+    fn aki(&self) -> &[KeyIdentifier] {
+        (*self).aki()
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use attestation_types::claim_path::ClaimPath;
+    use attestation_types::credential_format::Format;
     use chrono::Utc;
+    use dcql::disclosure::DisclosedCredential;
     use indexmap::IndexMap;
     use itertools::Itertools;
-    use rstest::rstest;
-    use serde_json::json;
-
-    use attestation_types::claim_path::ClaimPath;
-    use attestation_types::qualification::AttestationQualification;
-    use dcql::CredentialFormat;
-    use dcql::disclosure::DisclosedCredential;
     use mdoc::examples::EXAMPLE_ATTRIBUTES;
     use mdoc::examples::EXAMPLE_DOC_TYPE;
     use mdoc::examples::EXAMPLE_NAMESPACE;
+    use rstest::rstest;
+    use serde_json::json;
     use token_status_list::verification::verifier::RevocationStatus;
     use utils::vec_at_least::NonEmptyIterator;
     use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
 
-    use crate::attributes::Attribute;
-    use crate::attributes::AttributeValue;
-
     use super::DisclosedAttestation;
     use super::DisclosedAttributes;
-    use super::ValidityInfo;
+    use crate::attributes::Attribute;
+    use crate::validity::IssuanceValidity;
 
     impl DisclosedAttestation {
         fn mdoc_example() -> Self {
@@ -280,18 +334,13 @@ mod test {
                     EXAMPLE_NAMESPACE.to_string(),
                     EXAMPLE_ATTRIBUTES
                         .iter()
-                        .map(|attribute| (attribute.to_string(), AttributeValue::Null))
+                        .map(|attribute| (attribute.to_string(), Attribute::Null))
                         .collect(),
                 )])),
-                issuer_uri: "https://example.com".parse().unwrap(),
-                attestation_qualification: AttestationQualification::default(),
                 ca: "Example CA".to_string(),
-                validity_info: ValidityInfo {
-                    signed: Utc::now(),
-                    valid_from: None,
-                    valid_until: None,
-                },
+                issuance_validity: IssuanceValidity::new(Utc::now(), None, None),
                 revocation_status: Some(RevocationStatus::Valid),
+                aki: vec![],
             }
         }
 
@@ -300,26 +349,18 @@ mod test {
                 attestation_type: EXAMPLE_DOC_TYPE.to_string(),
                 attributes: DisclosedAttributes::SdJwt(
                     IndexMap::from([
-                        ("family_name".to_string(), Attribute::Single(AttributeValue::Null)),
+                        ("family_name".to_string(), Attribute::Null),
                         (
                             "address".to_string(),
-                            Attribute::Nested(IndexMap::from([(
-                                "street".to_string(),
-                                Attribute::Single(AttributeValue::Null),
-                            )])),
+                            Attribute::Object(IndexMap::from([("street".to_string(), Attribute::Null)])),
                         ),
                     ])
                     .into(),
                 ),
-                issuer_uri: "https://example.com".parse().unwrap(),
-                attestation_qualification: AttestationQualification::default(),
                 ca: "Example CA".to_string(),
-                validity_info: ValidityInfo {
-                    signed: Utc::now(),
-                    valid_from: None,
-                    valid_until: None,
-                },
+                issuance_validity: IssuanceValidity::new(Utc::now(), None, None),
                 revocation_status: Some(RevocationStatus::Valid),
+                aki: vec![],
             }
         }
     }
@@ -353,19 +394,16 @@ mod test {
             (
                 "pid".to_string(),
                 IndexMap::from([
-                    ("bsn".to_string(), AttributeValue::Text("123456789".to_string())),
-                    ("given_name".to_string(), AttributeValue::Text("John".to_string())),
-                    ("family_name".to_string(), AttributeValue::Text("Doe".to_string())),
+                    ("bsn".to_string(), Attribute::Text("123456789".to_string())),
+                    ("given_name".to_string(), Attribute::Text("John".to_string())),
+                    ("family_name".to_string(), Attribute::Text("Doe".to_string())),
                 ]),
             ),
             (
                 "address".to_string(),
                 IndexMap::from([
-                    (
-                        "street_address".to_string(),
-                        AttributeValue::Text("Main Street".to_string()),
-                    ),
-                    ("house_number".to_string(), AttributeValue::Text("123".to_string())),
+                    ("street_address".to_string(), Attribute::Text("Main Street".to_string())),
+                    ("house_number".to_string(), Attribute::Text("123".to_string())),
                 ]),
             ),
         ]));
@@ -388,10 +426,8 @@ mod test {
     #[case(json!([
         {
             "attestation_type": "com.example.pid",
-            "issuer_uri": "https://pid.example.com",
-            "attestation_qualification": "EAA",
             "ca": "ca.example.com",
-            "validity_info": {
+            "issuance_validity": {
                 "signed": "2014-11-28 12:00:09 UTC",
                 "validFrom": "2014-11-28 12:00:09 UTC",
                 "validUntil": "2014-11-28 12:00:09 UTC"
@@ -399,16 +435,17 @@ mod test {
             "format": "mso_mdoc",
             "attributes": {
                 "com.example.pid": {
-                    "bsn": "0912345678"
+                    "bsn": {
+                        "type": "text",
+                        "value": "0912345678"
+                    }
                 }
             }
         },
         {
             "attestation_type": "com.example.address",
-            "issuer_uri": "https://pid.example.com",
-            "attestation_qualification": "EAA",
             "ca": "ca.example.com",
-            "validity_info": {
+            "issuance_validity": {
                 "signed": "2014-11-28 12:00:09 UTC",
                 "validFrom": "2014-11-28 12:00:09 UTC",
                 "validUntil": "2014-11-28 12:00:09 UTC"
@@ -416,7 +453,10 @@ mod test {
             "format": "mso_mdoc",
             "attributes": {
                 "com.example.address": {
-                    "street": "Hoofdstraat"
+                    "street": {
+                        "type": "text",
+                        "value": "Hoofdstraat"
+                    }
                 }
             }
         }
@@ -424,10 +464,8 @@ mod test {
     #[case(json!([
         {
             "attestation_type": "com.example.pid",
-            "issuer_uri": "https://pid.example.com",
-            "attestation_qualification": "QEAA",
             "ca": "ca.example.com",
-            "validity_info": {
+            "issuance_validity": {
                 "signed": "2014-11-28 12:00:09 UTC",
                 "validFrom": "2014-11-28 12:00:09 UTC",
                 "validUntil": "2014-11-28 12:00:09 UTC"
@@ -435,16 +473,17 @@ mod test {
             "format": "mso_mdoc",
             "attributes": {
                 "com.example.pid": {
-                    "bsn": "0912345678"
+                    "bsn": {
+                        "type": "text",
+                        "value": "0912345678"
+                    }
                 }
             }
         },
         {
             "attestation_type": "com.example.address",
-            "issuer_uri": "https://pid.example.com",
-            "attestation_qualification": "PuB-EAA",
             "ca": "ca.example.com",
-            "validity_info": {
+            "issuance_validity": {
                 "signed": "2014-11-28 12:00:09 UTC",
                 "validFrom": "2014-11-28 12:00:09 UTC",
                 "validUntil": "2014-11-28 12:00:09 UTC"
@@ -452,11 +491,14 @@ mod test {
             "format": "dc+sd-jwt",
             "attributes": {
                 "address": {
-                    "street": "Main St",
-                    "house_number": 123,
-                    "locality": "Anytown",
-                    "region": "Anystate",
-                    "country": "US"
+                    "type": "object",
+                    "value": {
+                        "street": {"type": "text", "value": "Main St"},
+                        "house_number": {"type": "number", "value": 123},
+                        "locality": {"type": "text", "value": "Anytown"},
+                        "region": {"type": "text", "value": "Anystate"},
+                        "country": {"type": "text", "value": "US"}
+                    }
                 }
             }
         }
@@ -464,26 +506,51 @@ mod test {
     #[case(json!([
         {
             "attestation_type": "com.example.pid",
-            "issuer_uri": "https://pid.example.com",
-            "attestation_qualification": "EAA",
             "ca": "ca.example.com",
-            "validity_info": {
+            "issuance_validity": {
                 "signed": "2014-11-28 12:00:09 UTC",
                 "validFrom": "2014-11-28 12:00:09 UTC",
                 "validUntil": "2014-11-28 12:00:09 UTC"
             },
             "format": "dc+sd-jwt",
             "attributes": {
-                "nationalities": [
-                    "DE",
-                    "NL"
-                ],
-                "is_over_65": true,
+                "nationalities": {
+                    "type": "array",
+                    "value": [
+                        {
+                            "type": "text",
+                            "value": "DE"
+                        },
+                        {
+                            "type": "text",
+                            "value": "NL"
+                        }
+                    ]
+                },
+                "is_over_65": {
+                    "type": "bool",
+                    "value": true
+                },
                 "address": {
-                    "street": "Main St",
-                    "house": {
-                        "number": 123,
-                        "letter": "A"
+                    "type": "object",
+                    "value": {
+                        "street": {
+                            "type": "text",
+                            "value": "Main St"
+                        },
+                        "house": {
+                            "type": "object",
+                            "value": {
+                                "number": {
+                                    "type": "number",
+                                    "value": 123
+                                },
+                                "letter": {
+                                    "type": "text",
+                                    "value": "A"
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -501,9 +568,9 @@ mod test {
     }
 
     #[rstest]
-    #[case(CredentialFormat::MsoMdoc, vec![], vec![])]
+    #[case(Format::MsoMdoc, vec![], vec![])]
     #[case(
-        CredentialFormat::MsoMdoc,
+        Format::MsoMdoc,
         vec![
             claim_path(&vec_nonempty!["org.iso.18013.5.1", "family_name"]),
             claim_path(&vec_nonempty!["org.iso.18013.5.1", "issue_date"]),
@@ -515,12 +582,12 @@ mod test {
         vec![],
     )]
     #[case(
-        CredentialFormat::MsoMdoc,
+        Format::MsoMdoc,
         vec![claim_path(&vec_nonempty!["org.iso.18013.5.1", "is_rich"])],
         vec![claim_path(&vec_nonempty!["org.iso.18013.5.1", "is_rich"])],
     )]
     #[case(
-        CredentialFormat::MsoMdoc,
+        Format::MsoMdoc,
         vec![
             claim_path(&vec_nonempty!["org.iso.18013.5.1", "family_name"]),
             claim_path(&vec_nonempty!["org.iso.18013.5.1", "is_rich"]),
@@ -528,7 +595,7 @@ mod test {
         vec![claim_path(&vec_nonempty!["org.iso.18013.5.1", "is_rich"])],
     )]
     #[case(
-        CredentialFormat::MsoMdoc,
+        Format::MsoMdoc,
         vec![
             claim_path(&vec_nonempty!["org.iso.18013.5.1", "family_name"]),
             claim_path(&vec_nonempty!["vroom", "driving_privileges"]),
@@ -536,7 +603,7 @@ mod test {
         vec![claim_path(&vec_nonempty!["vroom", "driving_privileges"])],
     )]
     #[case(
-        CredentialFormat::MsoMdoc,
+        Format::MsoMdoc,
         vec![
             claim_path(&vec_nonempty!["org.iso.18013.5.1", "portrait"]),
             claim_path(&vec_nonempty!["foobar"]),
@@ -549,13 +616,13 @@ mod test {
         ],
     )]
     #[case(
-        CredentialFormat::MsoMdoc,
+        Format::MsoMdoc,
         vec![vec_nonempty![ClaimPath::SelectAll]],
         vec![vec_nonempty![ClaimPath::SelectAll]]
     )]
-    #[case(CredentialFormat::SdJwt, vec![], vec![])]
+    #[case(Format::SdJwt, vec![], vec![])]
     #[case(
-        CredentialFormat::SdJwt,
+        Format::SdJwt,
         vec![
             claim_path(&vec_nonempty!["address", "street"]),
             claim_path(&vec_nonempty!["family_name"]),
@@ -563,7 +630,7 @@ mod test {
         vec![],
     )]
     #[case(
-        CredentialFormat::SdJwt,
+        Format::SdJwt,
         vec![
             claim_path(&vec_nonempty!["family_name", "something"]),
             claim_path(&vec_nonempty!["address"]),
@@ -576,7 +643,7 @@ mod test {
         ],
     )]
     #[case(
-        CredentialFormat::SdJwt,
+        Format::SdJwt,
         vec![
             claim_path(&vec_nonempty!["address", "street"]),
             claim_path(&vec_nonempty!["address", "house_number"]),
@@ -584,13 +651,13 @@ mod test {
         vec![claim_path(&vec_nonempty!["address", "house_number"])],
     )]
     fn test_disclosed_attestation_missing_claim_paths(
-        #[case] credential_format: CredentialFormat,
+        #[case] credential_format: Format,
         #[case] request_claim_paths: Vec<VecNonEmpty<ClaimPath>>,
         #[case] expected_missing_attributes: Vec<VecNonEmpty<ClaimPath>>,
     ) {
         let disclosed_attestation = match credential_format {
-            CredentialFormat::MsoMdoc => DisclosedAttestation::mdoc_example(),
-            CredentialFormat::SdJwt => DisclosedAttestation::sd_jwt_example(),
+            Format::MsoMdoc => DisclosedAttestation::mdoc_example(),
+            Format::SdJwt => DisclosedAttestation::sd_jwt_example(),
         };
 
         let missing_attributes = disclosed_attestation.missing_claim_paths(&request_claim_paths);

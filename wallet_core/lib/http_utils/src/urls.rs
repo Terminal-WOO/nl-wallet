@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-use cfg_if::cfg_if;
 use http::HeaderValue;
 use http::header::InvalidHeaderValue;
 use itertools::Itertools;
@@ -8,6 +7,26 @@ use nutype::nutype;
 use serde::Deserialize;
 use url::Url;
 
+// TODO (PVW-5612): Only allow HTTPS in local development environment and remove this feature flag.
+pub const ALLOWED_HTTP_SCHEMES: &[&str] = cfg_select! {
+    feature = "allow_insecure_url" => &["https", "http"],
+    _ => &["https"],
+};
+
+/// A [`url::Url`] that can be used as a base for [`join`](BaseUrl::join) operations.
+///
+/// This type validates that the URL is a base URL as defined by the `url` crate (i.e. it can be joined, schemes such as
+/// `data:` and `mailto:` cannot). Unlike [`Url::join`], which strips the last segment of the base path before joining,
+/// [`BaseUrl::join`] preserves the entire base path and appends the relative path on top of it.
+///
+/// ```
+/// # use std::str::FromStr;
+/// # use http_utils::urls::BaseUrl;
+/// let base = BaseUrl::from_str("https://example.com/foo")?;
+/// let joined = base.join("bar");
+/// assert_eq!(joined.as_str(), "https://example.com/foo/bar");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 #[nutype(
     validate(predicate = |u| !u.cannot_be_a_base()),
     derive(Debug, Clone, TryFrom, FromStr, Display, AsRef, PartialEq, Eq, Hash, Serialize, Deserialize),
@@ -30,13 +49,18 @@ impl BaseUrl {
     pub fn join_base_url(&self, input: &str) -> Self {
         self.join(input).try_into().unwrap()
     }
+
+    pub fn is_https(&self) -> bool {
+        self.as_ref().scheme() == "https"
+    }
 }
 
 pub const DEFAULT_UNIVERSAL_LINK_BASE: &str = "walletdebuginteraction://wallet.edi.rijksoverheid.nl/";
-const ISSUANCE_BASE_PATH: &str = "return-from-digid";
+const ISSUANCE_BASE_PATH: &str = "iss";
 const DISCLOSURE_BASE_PATH: &str = "disclosure";
 const DISCLOSURE_BASED_ISSUANCE_BASE_PATH: &str = "disclosure_based_issuance";
 const TRANSFER_BASE_PATH: &str = "transfer";
+const CREDENTIAL_OFFER_BASE_PATH: &str = "credential-offer";
 
 #[inline]
 pub fn issuance_base_uri(universal_link_base: &BaseUrl) -> BaseUrl {
@@ -58,7 +82,12 @@ pub fn transfer_base_uri(universal_link_base: &BaseUrl) -> BaseUrl {
     universal_link_base.join_base_url(TRANSFER_BASE_PATH)
 }
 
-#[nutype(validate(predicate = |s| s.parse::<Url>().is_ok_and(|u| u.scheme() == "https")), derive(Debug, Clone, TryFrom, FromStr, Into, Display, PartialEq, Eq, Serialize, Deserialize))]
+#[inline]
+pub fn credential_offer_base_uri(universal_link_base: &BaseUrl) -> BaseUrl {
+    universal_link_base.join_base_url(CREDENTIAL_OFFER_BASE_PATH)
+}
+
+#[nutype(validate(predicate = |s| s.parse::<Url>().is_ok_and(|u| u.scheme() == "https")), derive(Debug, Clone, TryFrom, FromStr, Into, AsRef, Display, PartialEq, Eq, Serialize, Deserialize))]
 pub struct HttpsUri(String);
 
 #[nutype(validate(predicate = |u| Origin::is_valid(u)), derive(Debug, Clone, TryFrom, PartialEq, Eq, Deserialize))]
@@ -66,15 +95,7 @@ pub struct Origin(Url);
 
 impl Origin {
     fn is_valid(u: &Url) -> bool {
-        cfg_if! {
-            if #[cfg(feature = "allow_insecure_url")] {
-                let allowed_schemes = ["https", "http"];
-            } else {
-                let allowed_schemes = ["https"];
-            }
-        }
-
-        (allowed_schemes.contains(&u.scheme()))
+        (ALLOWED_HTTP_SCHEMES.contains(&u.scheme()))
             && u.has_host()
             && u.fragment().is_none()
             && u.query().is_none()
@@ -175,9 +196,9 @@ mod axum {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use rstest::rstest;
+
+    use super::*;
 
     #[rstest]
     #[case("http://example.com/", Ok(()))]
@@ -231,7 +252,6 @@ mod tests {
     )]
     #[tokio::test]
     async fn https_uri(#[case] value: &str, #[case] expected: Result<String, HttpsUriError>) {
-        // The `HttpsUriError` that `nutype` returns does not implement `PartialEq`
         assert_eq!(value.parse::<HttpsUri>().map(|u| u.to_string()), expected);
     }
 
@@ -291,5 +311,12 @@ mod tests {
     #[case(r#"["scheme/"]"#)]
     fn deserialize_connect_source_errors(#[case] input: &str) {
         let _ = toml::from_str::<Test>(&format!("connect_src = {input}")).expect_err("invalid toml");
+    }
+
+    #[test]
+    fn test_credential_offer_base_uri() {
+        let base = "https://example.com/app/".parse::<BaseUrl>().unwrap();
+        let result = credential_offer_base_uri(&base);
+        assert_eq!(result.as_ref().as_str(), "https://example.com/app/credential-offer");
     }
 }

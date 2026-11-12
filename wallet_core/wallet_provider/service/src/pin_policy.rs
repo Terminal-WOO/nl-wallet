@@ -1,7 +1,6 @@
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
-
 use wallet_provider_domain::model::pin_policy::PinPolicyEvaluation;
 use wallet_provider_domain::model::pin_policy::PinPolicyEvaluator;
 
@@ -128,11 +127,11 @@ impl PinPolicyEvaluator for PinRecoveryPinPolicy {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
+    use std::assert_matches;
+
     use chrono::Duration;
     use chrono::Utc;
     use rstest::rstest;
-
     use wallet_provider_domain::model::pin_policy::PinPolicyEvaluation;
     use wallet_provider_domain::model::pin_policy::PinPolicyEvaluator;
 

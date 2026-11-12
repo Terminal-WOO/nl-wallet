@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wallet/src/wallet_core/error/core_error.dart';
 import 'package:wallet/src/wallet_core/error/core_error_mapper.dart';
+import 'package:wallet/src/wallet_core/error/data/core_error_data.dart';
 import 'package:wallet/src/wallet_core/error/flutter_api_error.dart';
-import 'package:wallet_core/core.dart';
 
 void main() {
   const defaultDescription = 'core error description';
@@ -24,7 +24,11 @@ void main() {
     });
 
     test('mapping FlutterApiErrorType.generic results in CoreGenericError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.generic, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.generic,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, const CoreGenericError(defaultDescription));
@@ -33,7 +37,7 @@ void main() {
     test('mapping FlutterApiErrorType.server results in CoreGenericError', () {
       // Server errors don't require any dedicated handling just yet (rust side is still defining when exactly this is relevant). So
       // it should be treated as a generic error for now.
-      final error = FlutterApiError(
+      final error = const FlutterApiError(
         type: FlutterApiErrorType.server,
         description: defaultDescription,
         data: {'http_error': 'some extra error information might show up here'},
@@ -44,21 +48,33 @@ void main() {
     });
 
     test('mapping FlutterApiErrorType.walletState results in CoreStateError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.walletState, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.walletState,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, const CoreStateError(defaultDescription));
     });
 
     test('mapping FlutterApiErrorType.networking results in CoreNetworkError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.networking, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.networking,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, const CoreNetworkError(defaultDescription));
     });
 
     test('mapping FlutterApiErrorType.redirectUri results in CoreRedirectUriError with RedirectError.unknown', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.redirectUri, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.redirectUri,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, const CoreRedirectUriError(defaultDescription, redirectError: RedirectError.unknown));
@@ -67,7 +83,7 @@ void main() {
     test(
       'mapping FlutterApiErrorType.redirectUri with invalid data results in CoreRedirectUriError with RedirectError.unknown',
       () {
-        final error = FlutterApiError(
+        final error = const FlutterApiError(
           type: FlutterApiErrorType.redirectUri,
           description: defaultDescription,
           data: {'redirect_error': 'xxyyzz'},
@@ -84,7 +100,7 @@ void main() {
     test(
       'mapping FlutterApiErrorType.redirectUri with accessDenied data results in CoreRedirectUriError with RedirectError.accessDenied',
       () {
-        final error = FlutterApiError(
+        final error = const FlutterApiError(
           type: FlutterApiErrorType.redirectUri,
           description: defaultDescription,
           data: {'redirect_error': 'access_denied'},
@@ -101,7 +117,7 @@ void main() {
     test(
       'mapping FlutterApiErrorType.redirectUri with serverError data results in CoreRedirectUriError with RedirectError.serverError',
       () {
-        final error = FlutterApiError(
+        final error = const FlutterApiError(
           type: FlutterApiErrorType.redirectUri,
           description: defaultDescription,
           data: {'redirect_error': 'server_error'},
@@ -131,7 +147,7 @@ void main() {
     );
 
     test('mapping FlutterApiErrorType.hardwareKeyUnsupported results in CoreHardwareKeyUnsupportedError', () {
-      final error = FlutterApiError(
+      final error = const FlutterApiError(
         type: FlutterApiErrorType.hardwareKeyUnsupported,
         description: defaultDescription,
         data: null,
@@ -141,8 +157,19 @@ void main() {
       expect(result, const CoreHardwareKeyUnsupportedError(defaultDescription));
     });
 
+    test('mapping FlutterApiErrorType.attestation results in CoreAttestationError', () {
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.attestation,
+        description: defaultDescription,
+        data: null,
+      );
+      final errorJson = jsonEncode(error);
+      final result = errorMapper.map(errorJson);
+      expect(result, const CoreAttestationError(defaultDescription));
+    });
+
     test('mapping FlutterApiErrorType.disclosureSourceMismatch results in CoreDisclosureSourceMismatchError', () {
-      final error = FlutterApiError(
+      final error = const FlutterApiError(
         type: FlutterApiErrorType.disclosureSourceMismatch,
         description: defaultDescription,
         data: null,
@@ -155,7 +182,7 @@ void main() {
     test(
       'mapping FlutterApiErrorType.disclosureSourceMismatch with isCrossDevice results in CoreDisclosureSourceMismatchError',
       () {
-        final error = FlutterApiError(
+        final error = const FlutterApiError(
           type: FlutterApiErrorType.disclosureSourceMismatch,
           description: defaultDescription,
           data: {'session_type': 'cross_device'},
@@ -170,7 +197,7 @@ void main() {
     );
 
     test('mapping FlutterApiErrorType.cancelledSession results in CoreCancelledSessionError', () {
-      final error = FlutterApiError(
+      final error = const FlutterApiError(
         type: FlutterApiErrorType.cancelledSession,
         description: defaultDescription,
         data: null,
@@ -180,19 +207,34 @@ void main() {
       expect(result, const CoreCancelledSessionError(defaultDescription));
     });
 
+    test('mapping FlutterApiErrorType.closeProximityDisconnected results in CoreCloseProximityDisconnectedError', () {
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.closeProximityDisconnected,
+        description: defaultDescription,
+        data: {'session_type': 'cross_device'},
+      );
+      final errorJson = jsonEncode(error);
+      final result = errorMapper.map(errorJson);
+      expect(result, CoreCloseProximityDisconnectedError(defaultDescription, data: error.data));
+    });
+
     test('mapping FlutterApiErrorType.issuer results in CoreRelyingPartyError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.issuer, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.issuer,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, CoreRelyingPartyError(defaultDescription));
     });
 
     test('mapping FlutterApiErrorType.issuer with organization name results in CoreRelyingPartyError', () {
-      final error = FlutterApiError(
+      final error = const FlutterApiError(
         type: FlutterApiErrorType.issuer,
         description: defaultDescription,
         data: {
-          'organization_name': {'en': 'Test'},
+          'organization_name': 'Test',
         },
       );
       final errorJson = jsonEncode(error);
@@ -202,24 +244,28 @@ void main() {
         CoreRelyingPartyError(
           defaultDescription,
           data: error.data,
-          organizationName: [const LocalizedString(language: 'en', value: 'Test')],
+          organizationName: 'Test',
         ),
       );
     });
 
     test('mapping FlutterApiErrorType.verifier results in CoreRelyingPartyError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.verifier, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.verifier,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, CoreRelyingPartyError(defaultDescription));
     });
 
     test('mapping FlutterApiErrorType.verifier with organization name results in CoreRelyingPartyError', () {
-      final error = FlutterApiError(
+      final error = const FlutterApiError(
         type: FlutterApiErrorType.verifier,
         description: defaultDescription,
         data: {
-          'organization_name': {'en': 'Test'},
+          'organization_name': 'Test',
         },
       );
       final errorJson = jsonEncode(error);
@@ -229,23 +275,47 @@ void main() {
         CoreRelyingPartyError(
           defaultDescription,
           data: error.data,
-          organizationName: [const LocalizedString(language: 'en', value: 'Test')],
+          organizationName: 'Test',
         ),
       );
     });
 
     test('mapping FlutterApiErrorType.wrongDigid results in CoreWrongDigidError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.wrongDigid, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.wrongDigid,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, const CoreWrongDigidError(defaultDescription));
     });
 
     test('mapping FlutterApiErrorType.deniedDigid results in CoreDeniedDigidError', () {
-      final error = FlutterApiError(type: FlutterApiErrorType.deniedDigid, description: defaultDescription, data: null);
+      final error = const FlutterApiError(
+        type: FlutterApiErrorType.deniedDigid,
+        description: defaultDescription,
+        data: null,
+      );
       final errorJson = jsonEncode(error);
       final result = errorMapper.map(errorJson);
       expect(result, const CoreDeniedDigidError(defaultDescription));
+    });
+
+    test('mapping FlutterApiErrorType.revoked results in CoreAccountRevokedError', () {
+      final revocationData = RevocationData(
+        revocationReason: .userRequest,
+        canRegisterNewAccount: true,
+      );
+      final errorData = CoreErrorData(revocationData: revocationData).toJson();
+      final error = FlutterApiError(
+        type: FlutterApiErrorType.revoked,
+        description: defaultDescription,
+        data: errorData,
+      );
+      final errorJson = jsonEncode(error);
+      final result = errorMapper.map(errorJson);
+      expect(result, CoreAccountRevokedError(defaultDescription, revocationData: revocationData, data: errorData));
     });
   });
 }

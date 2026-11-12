@@ -1,11 +1,10 @@
 import 'dart:async';
 
-import 'package:after_layout/after_layout.dart';
 import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../data/service/navigation_service.dart';
+import '../../domain/model/result/application_error.dart';
 import '../../navigation/wallet_routes.dart';
 import '../../util/extension/build_context_extension.dart';
 import '../../util/extension/string_extension.dart';
@@ -16,7 +15,8 @@ import '../common/page/terminal_page.dart';
 import '../common/sheet/error_details_sheet.dart';
 import '../common/widget/button/icon/back_icon_button.dart';
 import '../common/widget/button/icon/close_icon_button.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
+import '../common/widget/button/primary_button.dart';
+import '../common/widget/button/tertiary_button.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
 import '../common/widget/page_illustration.dart';
 import '../common/widget/text/body_text.dart';
@@ -31,20 +31,8 @@ import 'page/wallet_transfer_awaiting_scan_page.dart';
 import 'page/wallet_transfer_target_transferring_page.dart';
 import 'widget/wallet_transfer_target_stop_sheet.dart';
 
-class WalletTransferTargetScreen extends StatefulWidget {
+class WalletTransferTargetScreen extends StatelessWidget {
   const WalletTransferTargetScreen({super.key});
-
-  @override
-  State<WalletTransferTargetScreen> createState() => _WalletTransferTargetScreenState();
-}
-
-class _WalletTransferTargetScreenState extends State<WalletTransferTargetScreen>
-    with AfterLayoutMixin<WalletTransferTargetScreen> {
-  @override
-  FutureOr<void> afterFirstLayout(BuildContext context) {
-    final showTransferStoppedDialog = ModalRoute.of(context)?.settings.arguments == true;
-    if (showTransferStoppedDialog) context.read<NavigationService>().showDialog(WalletDialogType.moveStopped);
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +42,9 @@ class _WalletTransferTargetScreenState extends State<WalletTransferTargetScreen>
           title: _buildTitle(context),
           leading: _buildBackButton(context),
           automaticallyImplyLeading: false,
-          actions: [const HelpIconButton(), _buildCloseButton(context)],
+          actions: [
+            _buildCloseButton(context),
+          ],
           progress: context.bloc.state.stepperProgress,
         ),
         body: BlocConsumer<WalletTransferTargetBloc, WalletTransferTargetState>(
@@ -63,75 +53,16 @@ class _WalletTransferTargetScreenState extends State<WalletTransferTargetScreen>
             DialogHelper.dismissOpenDialogs(context); // Dismiss potentially open stop sheet on page transitions
           },
           builder: (context, state) {
-            void restart() => context.bloc.add(const WalletTransferRestartEvent());
             final Widget page = switch (state) {
-              WalletTransferIntroduction() => TerminalPage(
-                title: context.l10n.walletTransferTargetScreenIntroductionTitle,
-                description: context.l10n.walletTransferTargetScreenIntroductionDescription,
-                primaryButtonCta: context.l10n.walletTransferTargetScreenIntroductionOptInCta,
-                primaryButtonIcon: const Icon(Icons.arrow_forward_outlined),
-                illustration: const PageIllustration(asset: WalletAssets.svg_move_source_confirm),
-                onPrimaryPressed: () => context.bloc.add(const WalletTransferOptInEvent()),
-                secondaryButtonCta: context.l10n.walletTransferTargetScreenIntroductionOptOutCta,
-                secondaryButtonIcon: const Icon(Icons.arrow_forward_outlined),
-                onSecondaryButtonPressed: () => _onSkipPressed(context),
-              ),
-              WalletTransferLoadingQrData() => GenericLoadingPage(
-                title: context.l10n.walletTransferLoadingQrTitle,
-                description: context.l10n.walletTransferLoadingQrDescription,
-                onCancel: () => _onStopPressed(context),
-              ),
-              WalletTransferAwaitingQrScan() => WalletTransferAwaitingScanPage(
-                data: state.qrContents,
-                onBackPressed: () => context.bloc.add(const WalletTransferBackPressedEvent()),
-              ),
-              WalletTransferAwaitingConfirmation() => WalletTransferAwaitingConfirmationPage(
-                onCtaPressed: () => _onStopPressed(context),
-              ),
-              WalletTransferTransferring() => WalletTransferTargetTransferringPage(
-                onStopPressed: () => _onStopPressed(context),
-              ),
-              WalletTransferSuccess() => TerminalPage(
-                title: context.l10n.walletTransferTargetScreenSuccessTitle,
-                description: context.l10n.walletTransferTargetScreenSuccessDescription,
-                primaryButtonCta: context.l10n.walletTransferTargetScreenSuccessCta,
-                illustration: const PageIllustration(asset: WalletAssets.svg_move_destination_success),
-                onPrimaryPressed: () => DashboardScreen.show(context),
-              ),
-              WalletTransferStopped() => TerminalPage(
-                title: context.l10n.walletTransferScreenStoppedTitle,
-                description: context.l10n.walletTransferTargetScreenStoppedDescription,
-                onPrimaryPressed: restart,
-                primaryButtonCta: context.l10n.generalClose,
-                primaryButtonIcon: const Icon(Icons.close_outlined),
-                illustration: const PageIllustration(asset: WalletAssets.svg_stopped),
-              ),
-              WalletTransferGenericError() => ErrorPage.generic(
-                context,
-                onPrimaryActionPressed: restart,
-                style: ErrorCtaStyle.retry,
-              ),
-              WalletTransferNetworkError() =>
-                state.hasInternet
-                    ? ErrorPage.network(context, onPrimaryActionPressed: restart, style: ErrorCtaStyle.retry)
-                    : ErrorPage.noInternet(context, onPrimaryActionPressed: restart, style: ErrorCtaStyle.retry),
-              WalletTransferSessionExpired() => ErrorPage.sessionExpired(
-                context,
-                onPrimaryActionPressed: restart,
-                style: ErrorCtaStyle.retry,
-              ),
-              WalletTransferFailed() => TerminalPage(
-                title: context.l10n.walletTransferScreenFailedTitle,
-                description: context.l10n.walletTransferScreenFailedDescription,
-                illustration: const PageIllustration(asset: WalletAssets.svg_error_general),
-                flipButtonOrder: true,
-                primaryButtonCta: context.l10n.generalRetry,
-                primaryButtonIcon: const Icon(Icons.refresh_outlined),
-                onPrimaryPressed: restart,
-                secondaryButtonCta: context.l10n.generalShowDetailsCta,
-                secondaryButtonIcon: const Icon(Icons.info_outline_rounded),
-                onSecondaryButtonPressed: () => ErrorDetailsSheet.show(context, error: state.error),
-              ),
+              WalletTransferIntroduction() => _buildIntroductionPage(context),
+              WalletTransferLoadingQrData() => _buildLoadingQrDataPage(context),
+              WalletTransferAwaitingQrScan() => _buildAwaitingQrScanPage(context, state),
+              WalletTransferAwaitingConfirmation() => _buildAwaitingConfirmationPage(context),
+              WalletTransferTransferring() => _buildTransferringPage(context),
+              WalletTransferSuccess() => _buildSuccessPage(context),
+              WalletTransferStopped() => _buildStoppedPage(context),
+              WalletTransferError(:final error) => _buildErrorPage(context, error),
+              WalletTransferFailed() => _buildFailedPage(context, state),
             };
             return FakePagingAnimatedSwitcher(
               animateBackwards: state.didGoBack,
@@ -146,6 +77,110 @@ class _WalletTransferTargetScreenState extends State<WalletTransferTargetScreen>
             );
           },
         ),
+      ),
+    );
+  }
+
+  Widget _buildIntroductionPage(BuildContext context) {
+    return TerminalPage(
+      title: context.l10n.walletTransferTargetScreenIntroductionTitle,
+      description: context.l10n.walletTransferTargetScreenIntroductionDescription,
+      illustration: const PageIllustration(asset: WalletAssets.svg_move_source_confirm),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.walletTransferTargetScreenIntroductionOptInCta),
+        icon: const Icon(Icons.arrow_forward_outlined),
+        onPressed: () => context.bloc.add(const WalletTransferOptInEvent()),
+        key: const Key('primaryButtonCta'),
+      ),
+      secondaryButton: TertiaryButton(
+        text: Text(context.l10n.walletTransferTargetScreenIntroductionOptOutCta),
+        icon: const Icon(Icons.arrow_forward_outlined),
+        onPressed: () => _onSkipPressed(context),
+        key: const Key('secondaryButtonCta'),
+      ),
+    );
+  }
+
+  Widget _buildLoadingQrDataPage(BuildContext context) {
+    return GenericLoadingPage(
+      title: context.l10n.walletTransferLoadingQrTitle,
+      description: context.l10n.walletTransferLoadingQrDescription,
+      onCancel: () => _onStopPressed(context),
+    );
+  }
+
+  Widget _buildAwaitingQrScanPage(BuildContext context, WalletTransferAwaitingQrScan state) {
+    return WalletTransferAwaitingScanPage(
+      data: state.qrContents,
+      onBackPressed: () => context.bloc.add(const WalletTransferBackPressedEvent()),
+    );
+  }
+
+  Widget _buildAwaitingConfirmationPage(BuildContext context) {
+    return WalletTransferAwaitingConfirmationPage(
+      onCtaPressed: () => _onStopPressed(context),
+    );
+  }
+
+  Widget _buildTransferringPage(BuildContext context) {
+    return WalletTransferTargetTransferringPage(
+      onStopPressed: () => _onStopPressed(context),
+    );
+  }
+
+  Widget _buildSuccessPage(BuildContext context) {
+    return TerminalPage(
+      title: context.l10n.walletTransferTargetScreenSuccessTitle,
+      description: context.l10n.walletTransferTargetScreenSuccessDescription,
+      illustration: const PageIllustration(asset: WalletAssets.svg_move_destination_success),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.walletTransferTargetScreenSuccessCta),
+        onPressed: () => DashboardScreen.show(context),
+        key: const Key('primaryButtonCta'),
+      ),
+    );
+  }
+
+  Widget _buildStoppedPage(BuildContext context) {
+    return TerminalPage(
+      title: context.l10n.walletTransferScreenStoppedTitle,
+      description: context.l10n.walletTransferTargetScreenStoppedDescription,
+      illustration: const PageIllustration(asset: WalletAssets.svg_stopped),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.generalClose),
+        icon: const Icon(Icons.close_outlined),
+        onPressed: () => context.bloc.add(const WalletTransferRestartEvent()),
+        key: const Key('primaryButtonCta'),
+      ),
+    );
+  }
+
+  Widget _buildErrorPage(BuildContext context, ApplicationError error) {
+    return ErrorPage.fromError(
+      context,
+      error,
+      onPrimaryActionPressed: () => context.bloc.add(const WalletTransferRestartEvent()),
+      style: ErrorCtaStyle.retry,
+    );
+  }
+
+  Widget _buildFailedPage(BuildContext context, WalletTransferFailed state) {
+    return TerminalPage(
+      title: context.l10n.walletTransferScreenFailedTitle,
+      description: context.l10n.walletTransferScreenFailedDescription,
+      illustration: const PageIllustration(asset: WalletAssets.svg_error_general),
+      // Because flipButtonOrder was true: primary ⇄ secondary.
+      primaryButton: TertiaryButton(
+        text: Text(context.l10n.generalShowDetailsCta),
+        icon: const Icon(Icons.info_outline_rounded),
+        onPressed: () => ErrorDetailsSheet.show(context, error: state.error),
+        key: const Key('secondaryButtonCta'),
+      ),
+      secondaryButton: PrimaryButton(
+        text: Text(context.l10n.generalRetry),
+        icon: const Icon(Icons.refresh_outlined),
+        onPressed: () => context.bloc.add(const WalletTransferRestartEvent()),
+        key: const Key('primaryButtonCta'),
       ),
     );
   }
@@ -168,9 +203,7 @@ class _WalletTransferTargetScreenState extends State<WalletTransferTargetScreen>
       case WalletTransferAwaitingQrScan():
       case WalletTransferSuccess():
       case WalletTransferStopped():
-      case WalletTransferGenericError():
-      case WalletTransferNetworkError():
-      case WalletTransferSessionExpired():
+      case WalletTransferError():
       case WalletTransferFailed():
         return const SizedBox.shrink();
     }
@@ -205,12 +238,7 @@ class _WalletTransferTargetScreenState extends State<WalletTransferTargetScreen>
       WalletTransferTransferring() => TitleText(context.l10n.walletTransferTargetScreenTransferringTitle),
       WalletTransferSuccess() => TitleText(context.l10n.walletTransferTargetScreenSuccessTitle),
       WalletTransferStopped() => TitleText(context.l10n.walletTransferScreenStoppedTitle),
-      WalletTransferGenericError() => TitleText(context.l10n.errorScreenGenericHeadline),
-      WalletTransferNetworkError() =>
-        state.hasInternet
-            ? TitleText(context.l10n.errorScreenServerHeadline)
-            : TitleText(context.l10n.errorScreenNoInternetHeadline),
-      WalletTransferSessionExpired() => TitleText(context.l10n.errorScreenSessionExpiredHeadline),
+      WalletTransferError(:final error) => TitleText(ErrorPage.titleFromError(context, error)),
       WalletTransferFailed() => TitleText(context.l10n.walletTransferScreenFailedTitle),
       WalletTransferLoadingQrData() => const SizedBox.shrink(),
     };

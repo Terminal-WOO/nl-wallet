@@ -1,6 +1,6 @@
 {
     "@@locale": "en",
-    "@@last_modified": "2025-11-21T09:38:57+01:00",
+    "@@last_modified": "2026-09-25T10:18:32+02:00",
     "aboutScreenDescription": "The NL Wallet is created by the Dutch government so that everyone can use digital services safely and easily.\n\nYou can follow the developments on {url}.",
     "aboutScreenDescriptionLink": "edi.pleio.nl",
     "@aboutScreenDescriptionLink": {
@@ -8,8 +8,13 @@
     },
     "aboutScreenPrivacyCta": "Privacy statement",
     "aboutScreenTitle": "About the NL Wallet",
+    "activeIssuanceSessionDialogDescription": "You already started adding card(s). Finish or stop this action first. Then open the link again.",
+    "activeIssuanceSessionDialogTitle": "Finish adding your card(s)",
+    "activeSessionDialogDescription": "You already started sharing. Finish or stop this action first. Then open the link again.",
+    "activeSessionDialogTitle": "Finish sharing",
     "activitySummaryCardsAdded": "{activitySummaryCardsAdded, plural, one {added {count} card} other {added {count} cards}}",
-    "activitySummaryCardsUpdated": "{activitySummaryCardsUpdated, plural, one {replaced {count} card} other {replaced {count} cards}}",
+    "activitySummaryCardsDeleted": "{activitySummaryCardsDeleted, plural, one {deleted {count} card} other {deleted {count} cards}}",
+    "activitySummaryCardsRenewed": "{activitySummaryCardsRenewed, plural, one {replaced {count} card} other {replaced {count} cards}}",
     "activitySummaryEmpty": "No activities",
     "activitySummaryLastMonth": "Activities last month",
     "activitySummaryLastWeek": "Activities last week",
@@ -22,12 +27,23 @@
     "activitySummarySharedWithMultiple": "shared with {organizations} and {organization}",
     "activitySummarySharedWithOthers": "{nrOrganizations} other organizations",
     "activitySummaryToday": "Activities today",
-    "appBlockedScreenDescription": "You can no longer use this version of the app. Go to the Play Store to update the app.",
-    "appBlockedScreenDescriptioniOSVariant": "You can no longer use this version of the app. Go to the App Store to update the app.",
-    "appBlockedScreenTitle": "A new app version is needed",
+    "appBlockedByUpdateScreenDescription": "You can no longer use this version of the app. Go to the Play Store to update the app.",
+    "appBlockedByUpdateScreenDescriptioniOSVariant": "You can no longer use this version of the app. Go to the App Store to update the app.",
+    "appBlockedByUpdateScreenTitle": "A new app version is needed",
+    "appBlockedScreenByUserDescription": "You can no longer use this NL Wallet. You deleted this wallet with your deletion code.\n\nIf this was not you, please contact the helpdesk.",
+    "appBlockedScreenByUserTitle": "Your NL Wallet was deleted",
+    "appBlockedScreenDescription": "You can no longer use your NL Wallet app. This may have several reasons.\n\nClose this app or create a new wallet to use the NL Wallet again.\n\nNeed help? Contact the helpdesk.",
+    "appBlockedScreenHelpdeskCta": "To help desk",
+    "appBlockedScreenMoreInfoCta": "Read more information",
+    "appBlockedScreenNewWalletCta": "Create a new NL Wallet",
+    "appBlockedScreenPermanentDescription": "You cannot use NL Wallet right now. You also cannot create a new NL Wallet. This may have several reasons.\n\nContact the help desk for help and more information.",
+    "appBlockedScreenPermanentTitle": "You have been blocked",
+    "appBlockedScreenSolutionRevokedDescription": "You cannot use NL Wallet due to a technical problem on our side.\n\nWant to know more? Read more information.",
+    "appBlockedScreenSolutionRevokedTitle": "NL Wallet can no longer be used",
+    "appBlockedScreenTitle": "Your NL Wallet is blocked",
     "appTitle": "NL Wallet",
     "applicationErrorDetailsTitle": "Technical details",
-    "biometricSettingsScreenDescription": "You use your PIN code to share data. {supportedBiometrics} is only for opening the app faster.\nEnable {supportedBiometrics} and confirm with your PIN.",
+    "biometricSettingsScreenDescription": "With {supportedBiometrics}, you can open NL Wallet faster. You still use your PIN when you share your data.\n\nEnable {supportedBiometrics} and confirm with your PIN.",
     "@biometricSettingsScreenDescription": {
         "placeholders": {
             "supportedBiometrics": {
@@ -84,10 +100,10 @@
             }
         }
     },
-    "biometricsFace": "face scan",
+    "biometricsFace": "face unlock",
     "biometricsFaceId": "Face ID",
     "biometricsFaceIdOrTouchId": "Face ID or Touch ID",
-    "biometricsFaceOrFingerprint": "face scan or fingerprint",
+    "biometricsFaceOrFingerprint": "face unlock or fingerprint",
     "biometricsFingerprint": "fingerprint",
     "biometricsTouchId": "Touch ID",
     "cardAttributeRowTitle": "From {name}",
@@ -101,21 +117,14 @@
     },
     "cardDataIncorrectScreenDescription": "Incorrect data can cause problems. Contact your issuer to have your data changed.\n\nAre you still waiting for an adjustment? It may take a while before it is available in the app.",
     "cardDataIncorrectScreenSubhead": "Are your details incorrect?",
-    "cardDataScreenDataPrivacyBanner": "This overview is only for you. Only share data using an invitation through the app.",
     "cardDataScreenIncorrectCta": "Are your details incorrect?",
     "cardDataScreenTitle": "Data from {title}",
     "cardDetailScreenCardDataCta": "Details in this card",
     "cardDetailScreenCardDataPrivacyWarning": "Keep your details private",
+    "cardDetailScreenCardDeleteCta": "Delete card",
+    "cardDetailScreenCardDeleteWarning": "This card will be deleted",
     "cardDetailScreenCardHistoryCta": "Card activities",
-    "cardDetailScreenCardValidUntil": "Valid until {dateTime}",
-    "@cardDetailScreenCardValidUntil": {
-        "placeholders": {
-            "dateTime": {
-                "example": "April 25 13:31",
-                "type": "String"
-            }
-        }
-    },
+    "cardDetailScreenFallbackTitle": "Card details",
     "cardDetailScreenIssuerCta": "About the issuer",
     "cardDetailScreenLatestSuccessInteraction": "{shareStatus} {timeAgo} with {organization}",
     "@cardDetailScreenLatestSuccessInteraction": {
@@ -136,6 +145,54 @@
     },
     "cardDetailScreenLatestSuccessInteractionUnknown": "Never shared before",
     "cardDetailScreenRenewPidCta": "Replace card via DigiD",
+    "cardExpiredNotificationDescription": "{card} expired. Replace this card if you still need it.",
+    "@cardExpiredNotificationDescription": {
+        "placeholders": {
+            "card": {
+                "example": "Personal data",
+                "type": "String"
+            }
+        }
+    },
+    "cardExpiredNotificationTitle": "NL Wallet",
+    "cardExpiresSoonNotificationDescription": "{days, plural, one {{card} expires in {days} day. Replace this card if you still need it.} other {{card} expires in {days} days. Replace this card if you still need it.}}",
+    "@cardExpiresSoonNotificationDescription": {
+        "placeholders": {
+            "card": {
+                "example": "Personal data",
+                "type": "String"
+            },
+            "days": {
+                "example": "200",
+                "type": "int"
+            }
+        }
+    },
+    "cardExpiresSoonNotificationTitle": "NL Wallet",
+    "cardExpiryBannerExpiredTitle": "{card} expired",
+    "@cardExpiryBannerExpiredTitle": {
+        "placeholders": {
+            "card": {
+                "example": "Personal data",
+                "type": "String"
+            }
+        }
+    },
+    "cardExpiryBannerExpiresSoonTitle": "{days, plural, one {{card} expires in {days} day} other {{card} expires in {days} days}}",
+    "@cardExpiryBannerExpiresSoonTitle": {
+        "placeholders": {
+            "card": {
+                "example": "Personal data",
+                "type": "String"
+            },
+            "days": {
+                "example": "200",
+                "type": "int"
+            }
+        }
+    },
+    "cardExpiryBannerSubtitle": "Replace this card if you still need it.",
+    "cardHistoryDeletionSuccess": "Card deleted",
     "cardHistoryDisclosureCancelled": "Sharing stopped",
     "cardHistoryDisclosureError": "Sharing may have failed",
     "cardHistoryDisclosureErrorNoDataShared": "Sharing failed",
@@ -153,6 +210,8 @@
     "cardHistoryTimelineOperationExpired": "Card expired",
     "cardHistoryTimelineOperationRenewed": "Card renewed",
     "cardHistoryTimelineOperationRevoked": "Card revoked",
+    "cardNotificationsChannelDescription": "Notifications about the status of your cards",
+    "cardNotificationsChannelName": "Card status",
     "cardPreviewScreenIncorrectCta": "Are your details incorrect?",
     "cardPreviewScreenIssuedBy": "Card issued by {organization}.",
     "@cardPreviewScreenIssuedBy": {
@@ -163,33 +222,71 @@
             }
         }
     },
+    "cardRevocationBannerSubtitle": "Replace this card if you still need it.",
+    "cardRevocationBannerTitle": "{card} withdrawn by issuer",
+    "@cardRevocationBannerTitle": {
+        "placeholders": {
+            "card": {
+                "example": "Personal data",
+                "type": "String"
+            }
+        }
+    },
+    "cardRevokedNotificationDescription": "{card} withdrawn by issuer. Replace this card if you still need it.",
+    "@cardRevokedNotificationDescription": {
+        "placeholders": {
+            "card": {
+                "example": "Personal data",
+                "type": "String"
+            }
+        }
+    },
+    "cardRevokedNotificationTitle": "NL Wallet",
     "cardStatusMetadataCardDataScreenCorrupted": "These details can no longer be used because the card is invalid.",
     "cardStatusMetadataCardDataScreenExpired": "These details can no longer be used because the card has expired.",
     "cardStatusMetadataCardDataScreenRevoked": "These details can no longer be used because the card has been withdrawn by the issuer.",
-    "cardStatusMetadataCardDataScreenUnknown": "Some organisations may not accept a card without validity.",
+    "cardStatusMetadataCardDataScreenUndetermined": "Some organisations may not accept a card without validity.",
     "cardStatusMetadataCardDataScreenValidSoon": "These details will be valid from {notBeforeTime}.",
     "cardStatusMetadataCardDetailScreenCorrupted": "Not working due to a problem at {organisation}. Contact {organisation} for help.",
+    "cardStatusMetadataCardDetailScreenCorruptedPid": "Invalid. That is why your NL Wallet is not working now. Contact the helpdesk.",
     "cardStatusMetadataCardDetailScreenExpired": "No longer valid since {expiryTime}. Replace the card via {organisation}.",
+    "cardStatusMetadataCardDetailScreenExpiredPid": "No longer valid since {expiryTime}. That is why your NL Wallet is not working now. Replace this card with the DigiD app to keep using the wallet.",
     "cardStatusMetadataCardDetailScreenExpiresSoon": "Expires in {timeUntilExpiryTime}. Valid until {expiryTime}. Replace the card via {organisation}.",
+    "cardStatusMetadataCardDetailScreenExpiresSoonPid": "Expires in {timeUntilExpiryTime}. Valid until {expiryTime}. Replace this card with the DigiD app to keep using your wallet.",
     "cardStatusMetadataCardDetailScreenRevoked": "Withdrawn by {organisation}. Contact {organisation} for more information.",
-    "cardStatusMetadataCardDetailScreenUnknown": "Might not work because the validity is missing. Some organisations may not accept a card without validity.",
-    "cardStatusMetadataCardDetailScreenValid": "Valid until {expiryTime}.",
+    "cardStatusMetadataCardDetailScreenRevokedPid": "Withdrawn by the {organisation}. That is why your NL Wallet is not working now. Replace this card with the DigiD app to keep using the wallet.",
+    "cardStatusMetadataCardDetailScreenUndetermined": "Might not work because the validity is missing. Some organisations may not accept a card without validity.",
+    "cardStatusMetadataCardDetailScreenUndeterminedPid": "Might not work because the validity is missing. Some organisations may not accept a card without validity.",
+    "cardStatusMetadataCardDetailScreenValid": "Card valid.",
     "cardStatusMetadataCardDetailScreenValidSoon": "Automatically valid from {notBeforeTime}.",
+    "cardStatusMetadataCardDetailScreenValidUntil": "Valid until {expiryTime}.",
     "cardStatusMetadataSharedAttributesCardCorrupted": "These details are outdated.",
     "cardStatusMetadataSharedAttributesCardExpired": "These details are outdated.",
     "cardStatusMetadataSharedAttributesCardRevoked": "These details are outdated.",
+    "cardStatusMetadataSharedAttributesCardUndetermined": "Some organisations may not accept a card without validity.",
     "cardStatusMetadataWalletItemCorrupted": "Invalid",
     "cardStatusMetadataWalletItemExpired": "Expired",
     "cardStatusMetadataWalletItemExpiresSoon": "Expires in {timeUntilExpiryTime}",
     "cardStatusMetadataWalletItemRevoked": "Withdrawn",
-    "cardStatusMetadataWalletItemUnknown": "Validity unknown",
+    "cardStatusMetadataWalletItemUndetermined": "Validity unknown",
     "cardStatusMetadataWalletItemValidSoon": "Not yet valid",
     "cardTitleSemanticsLabel": "Card",
     "cardValueEmpty": "Left empty",
     "cardValueEmptyList": "Left empty",
     "cardValueFalse": "No",
+    "cardValueImage": "Photo",
+    "cardValueMapKeyAddress": "Address",
+    "cardValueMapKeyCity": "City",
+    "cardValueMapKeyCountry": "Country",
+    "cardValueMapKeyExpiryDate": "Expiry date",
+    "cardValueMapKeyFamilyName": "Last name",
+    "cardValueMapKeyGivenName": "First name",
+    "cardValueMapKeyIssueDate": "Issue date",
+    "cardValueMapKeyPostalCode": "Postal code",
+    "cardValueMapKeyVehicleCategoryCode": "Vehicle category",
     "cardValueNull": "Not provided",
     "cardValueTrue": "Yes",
+    "cardValueUnsupported": "Cannot be displayed",
     "changeLanguageScreenTitle": "Select a language",
     "changePinScreenConfirmNewPinTitle": "Success! Repeat your new PIN",
     "changePinScreenEnterCurrentPinTitle": "First, enter your current PIN",
@@ -247,23 +344,13 @@
     "dashboardScreenMenuWCAGLabel": "Navigation menu",
     "dashboardScreenOverviewAnnouncement": "NL Wallet overview",
     "dashboardScreenTitle": "Menu",
-    "dataAttributeSectionTitle": "From {source}",
-    "@dataAttributeSectionTitle": {
-        "placeholders": {
-            "source": {
-                "example": "Persoonsgegevens",
-                "type": "String"
-            }
-        }
-    },
-    "dataIncorrectScreenApproveCta": "Add card anyway",
-    "dataIncorrectScreenApproveDescription": "Add the card now, and update it later once the data changes.",
-    "dataIncorrectScreenApproveTitle": "Add card",
-    "dataIncorrectScreenDeclineCta": "Decline card",
-    "dataIncorrectScreenDeclineDescription": "If you decline the card, it will not be added to your Wallet.",
-    "dataIncorrectScreenDeclineTitle": "Decline card",
-    "dataIncorrectScreenHeaderDescription": "Contact the providing organization to request a data update. You have two options now:",
-    "dataIncorrectScreenHeaderTitle": "Are your details incorrect?",
+    "deleteCardDialogBody": "The card will be deleted from your wallet.\n\nYou can still view the previous activities of this card in your wallet.",
+    "deleteCardDialogCancelCta": "Cancel",
+    "deleteCardDialogConfirmCta": "Yes, delete",
+    "deleteCardDialogTitle": "Do you want to delete {cardTitle} card?",
+    "deleteCardSuccessPageDescription": "You can still view the previous activities of this card in your wallet.",
+    "deleteCardSuccessPageTitle": "{cardTitle} card has been deleted",
+    "deleteCardSuccessPageToDashboardCta": "To my overview",
     "demoScreenContentBullets": "The Ministry of the Interior (MinBZK) is still developing the app.\nWe expect the app to be available in 2027.\nThe app uses only test data, not real data.\nDuring testing we will track how you use the app, to make it better.\nThe app can update anytime, older versions may not work.\nThe app may sometimes be unstable.",
     "demoScreenContentFooter": "If something goes wrong, reinstall the app.",
     "demoScreenContentHeader": "You are now using a demo version of the app.",
@@ -272,54 +359,14 @@
     "demoScreenTitle": "Demo version NL Wallet",
     "detailsIncorrectScreenDescription": "If your details are incorrect, it can cause problems. Contact your issuer to change your details.\n\nAre you still waiting for an adjustment? It can take a while before changes appear in the app.",
     "detailsIncorrectScreenTitle": "Are your details incorrect?",
-    "disclosureConfirmDataAttributesCheckConditionsCta": "Read the agreement",
+    "developerSettingsScreenDisclaimer": "These settings are only for developers. You do not need to change these settings to use NL Wallet.\n\nThey will not be available in the final version of the app.",
+    "developerSettingsScreenError": "Could not load or save this setting. Try again later.",
+    "developerSettingsScreenTitle": "For developers",
+    "developerSettingsScreenWrprcStrictMode": "WRPRC strict mode",
+    "developerSettingsScreenWrprcStrictModeDescription": "Require a registration certificate when sharing nearby. Turn off for readers that do not send one.",
     "disclosureConfirmDataAttributesDisclaimer": "Only share if you trust the organization and the request.",
     "disclosureConfirmDataAttributesPageApproveCta": "Share",
     "disclosureConfirmDataAttributesPageDenyCta": "Stop",
-    "disclosureConfirmDataAttributesPageNotSharedButStoredSubtitle": "{count, plural, one {{organization} will store your data for 1 month and will not share it with other organizations.} other {{organization} will store your data for {count} months and will not share it with other organizations.}}",
-    "@disclosureConfirmDataAttributesPageNotSharedButStoredSubtitle": {
-        "placeholders": {
-            "count": {
-                "example": "3",
-                "type": "int"
-            },
-            "organization": {
-                "example": "Municipality of Amsterdam",
-                "type": "String"
-            }
-        }
-    },
-    "disclosureConfirmDataAttributesPageNotSharedNotStoredSubtitle": "The {organization} will not store your data and your data will not be shared with other organizations.",
-    "@disclosureConfirmDataAttributesPageNotSharedNotStoredSubtitle": {
-        "placeholders": {
-            "organization": {
-                "example": "Municipality of Amsterdam",
-                "type": "String"
-            }
-        }
-    },
-    "disclosureConfirmDataAttributesPageSharedAndStoredSubtitle": "{count, plural, one {{organization} will store your data for 1 month and can share your data with other organizations.} other {The {organization} will store your data for {count} months and can share your data with other organizations.}}",
-    "@disclosureConfirmDataAttributesPageSharedAndStoredSubtitle": {
-        "placeholders": {
-            "count": {
-                "example": "3",
-                "type": "int"
-            },
-            "organization": {
-                "example": "Municipality of Amsterdam",
-                "type": "String"
-            }
-        }
-    },
-    "disclosureConfirmDataAttributesPageSharedNotStoredSubtitle": "{organization} will not store your data and can share your data with other organizations.",
-    "@disclosureConfirmDataAttributesPageSharedNotStoredSubtitle": {
-        "placeholders": {
-            "organization": {
-                "example": "Municipality of Amsterdam",
-                "type": "String"
-            }
-        }
-    },
     "disclosureConfirmDataAttributesShareWithTitle": "Do you want to share the following details with {organization}?",
     "@disclosureConfirmDataAttributesShareWithTitle": {
         "placeholders": {
@@ -340,16 +387,22 @@
     },
     "disclosureConfirmDataAttributesSubtitleData": "{count, plural, one {Requested detail} other {Requested details}}",
     "disclosureConfirmDataAttributesSubtitlePurpose": "Reason",
-    "disclosureConfirmDataAttributesSubtitleTerms": "Agreements",
     "disclosureConfirmPinPageForLoginTitle": "Agree with your PIN",
     "disclosureConfirmPinPageTitle": "Agree with your PIN",
-    "disclosureGenericErrorPageTitle": "Something went wrong",
+    "disclosureDisconnectedPageDescription": "You cannot continue {action}.\n\nKeep the devices close together. Check your Bluetooth connection.\n\nClose this screen and start again.",
+    "@disclosureDisconnectedPageDescription": {
+        "placeholders": {
+            "action": {
+                "example": "sharing",
+                "type": "String"
+            }
+        }
+    },
+    "disclosureDisconnectedPageLoginAction": "logging in",
+    "disclosureDisconnectedPageSharingAction": "sharing",
+    "disclosureDisconnectedPageTitle": "Sorry, connection lost",
     "disclosureLoadingSubtitle": "Your request is being retrieved",
     "disclosureLoadingTitle": "Please wait",
-    "disclosureRelyingPartyErrorCloseCta": "Close",
-    "disclosureRelyingPartyErrorDescription": "This action was unsuccessful. This may have several reasons.\n\nGo back to the organization's website where you started and try again. If it still doesn’t work, contact the organization.",
-    "disclosureRelyingPartyErrorDescriptionWithOrganizationName": "This action was unsuccessful. This may have several reasons.\n\nGo back to the {organization} website where you started and try again. If it still doesn’t work, contact {organization}.",
-    "disclosureRelyingPartyErrorTitle": "Sorry, something went wrong",
     "disclosureReportSubmittedPageCloseCta": "Close",
     "disclosureReportSubmittedPageSubtitle": "Your report has been sent anonymously. \n\nNever share any data with organizations you do not trust.",
     "disclosureReportSubmittedPageTitle": "Thanks for your feedback",
@@ -417,7 +470,6 @@
     },
     "disclosureStoppedPageTitle": "Stopped",
     "disclosureStoppedPageToWebsiteCta": "Go to website",
-    "disclosureSuccessPageCloseCta": "Close",
     "disclosureSuccessPageDescription": "Your data has been shared with {organization}. Close this screen and continue on the website of {organization}.",
     "@disclosureSuccessPageDescription": {
         "placeholders": {
@@ -427,8 +479,17 @@
             }
         }
     },
-    "disclosureSuccessPageDescriptionForLogin": "You are logged in. Continue on the website of {organization}.",
+    "disclosureSuccessPageDescriptionForLogin": "Your data has been shared with {organization}. Close this screen and continue with the process.",
     "@disclosureSuccessPageDescriptionForLogin": {
+        "placeholders": {
+            "organization": {
+                "example": "DUO",
+                "type": "String"
+            }
+        }
+    },
+    "disclosureSuccessPageDescriptionForSameDeviceNoReturnUrl": "Your data has been shared with {organization}. Continue on the website or in the app of {organization} where you started this action.",
+    "@disclosureSuccessPageDescriptionForSameDeviceNoReturnUrl": {
         "placeholders": {
             "organization": {
                 "example": "DUO",
@@ -441,7 +502,11 @@
     "disclosureSuccessPageToDashboardCta": "To my overview",
     "disclosureSuccessPageToWebsiteCta": "Go to website",
     "errorDetailsSheetTitle": "Error details",
+    "errorScreenAttestationFailedDescription": "This may happen if you use an old version or if this device is not supported.\n\nUpdate your device in Settings > Software update. Then open NL Wallet again.\n\nStill having problems? Contact the help desk.",
+    "errorScreenAttestationFailedHeadline": "Your device does not work with NL Wallet",
+    "errorScreenAttestationFailedHelpdeskCta": "To help desk",
     "errorScreenCancelledSessionDescription": "It seems you have stopped on the webpage. {organization} may not have received your information.",
+    "errorScreenCancelledSessionDescriptionUnknownOrganization": "It seems you have stopped on the webpage. The organization may not have received your information.",
     "errorScreenCancelledSessionHeadline": "Stopped",
     "errorScreenDeviceIncompatibleDescription": "It is not possible to use the NL Wallet app on this device. Uninstall the app from this device and download the app to a suitable device.",
     "errorScreenDeviceIncompatibleHeadline": "Sorry, this device is not suitable",
@@ -451,6 +516,8 @@
     "errorScreenNoInternetDescription": "Your internet connection seems to be down or too slow. Check your connection and try again.",
     "errorScreenNoInternetDescriptionCloseVariant": "Your internet connection seems to be down or too slow. Check your connection. Close the app and try again later.",
     "errorScreenNoInternetHeadline": "Sorry, no internet connection",
+    "errorScreenPreAuthorizedCodeExpiredDescription": "The QR code has expired or has already been used.\n\nGo back to the issuer's website where you started and try again. If it still doesn’t work, contact issuer.",
+    "errorScreenPreAuthorizedCodeExpiredTitle": "QR code is no longer valid",
     "errorScreenServerDescription": "Unable to reach the system. There could be several reasons for this.\nCheck if you are connected to the internet or use another network. Try again after doing so.",
     "errorScreenServerDescriptionCloseVariant": "Unable to reach the system. There could be several reasons for this.\nCheck your internet connection. Close the app and try again later.",
     "errorScreenServerHeadline": "Sorry, no response",
@@ -459,26 +526,26 @@
     "errorScreenSessionExpiredDescriptionCloseVariant": "This action has stopped because too much time has passed. This is intended to keep your data secure. Close the app and try again later.",
     "errorScreenSessionExpiredHeadline": "Sorry, you're out of time",
     "errorScreenSessionExpiredReturnUrlCta": "Go to website",
+    "finishRecoverPinDialogDescription": "You already started creating new PIN. Finish or stop this action first. Then open the link again.",
+    "finishRecoverPinDialogTitle": "Finish your new PIN",
+    "finishSetupDialogDescription": "Finish creating your wallet. Then open the link again.",
+    "finishSetupDialogTitle": "Your NL Wallet is not ready",
+    "finishTransferDestinationDialogDescription": "You already started moving your NL Wallet to this device. Finish the move first. Then open the link again.",
+    "finishTransferDestinationDialogTitle": "Finish moving your NL Wallet",
+    "finishTransferSourceDialogDescription": "You already started moving your NL Wallet to your new device. Finish the move first. Then open the link again on your new device. (source)",
+    "finishTransferSourceDialogTitle": "Finish moving your NL wallet",
     "flashlightDisabledWCAGAnnouncement": "Flashlight turned off",
     "flashlightEnabledWCAGAnnouncement": "Flashlight turned on",
     "forgotPinScreenCta": "Create a new PIN",
-    "forgotPinScreenDescription": "You can create a new PIN to get access again. To do this, confirm your identity with DigiD.",
+    "forgotPinScreenDescription": "You can create a new PIN to use NL Wallet again. First, log in with DigiD to show who you are.",
     "forgotPinScreenResetCta": "Delete wallet",
     "forgotPinScreenResetDescription": "When you forget your PIN, you can no longer use your Wallet.\n\nTo continue using the NL Wallet, you have to start over. Remove your NL Wallet and select a new PIN.",
     "forgotPinScreenTitle": "Forgot PIN?",
-    "fraudCheckPageAboutCta": "About the website check",
+    "fraudCheckPageAboutCta": "Learn more about online safety",
     "fraudCheckPageContinueCta": "Yes, continue",
-    "fraudCheckPageDescription": "Check the website where you scanned the QR code. Only continue if the addresses match. This helps you avoid fake websites.",
+    "fraudCheckPageDescription": "Check the app or website on the other device. Make sure the organisation is correct. If you are using a website, also check the website address.",
     "fraudCheckPageStopCta": "Stop",
-    "fraudCheckPageTitle": "Is the website starting with: {url}?",
-    "@fraudCheckPageTitle": {
-        "placeholders": {
-            "url": {
-                "example": "https:\/\/example.org",
-                "type": "String"
-            }
-        }
-    },
+    "fraudCheckPageTitle": "Did you start this request on the other device?",
     "generalAppStoreAndroid": "Play Store",
     "generalAppStoreiOS": "App Store",
     "generalBottomBackCta": "Back",
@@ -515,26 +582,10 @@
         }
     },
     "generalNeedHelpCta": "Need help?",
-    "generalOff": "Off",
     "generalOkCta": "OK",
-    "generalOn": "On",
     "generalOsVersionText": "OS version:",
     "generalPageChangeWCAGAnnouncement": "Showing page {current} of {total}.",
-    "generalPolicyAllTermsCta": "All terms",
-    "generalPolicyDataCanBeDeleted": "You can have data deleted.",
-    "generalPolicyDataCanNotBeDeleted": "You can not delete data",
     "generalPolicyDataIsSignature": "By signing the agreement will be definitive",
-    "generalPolicyDataRetentionDuration": "{days, plural, one {Data will be stored for {days} day} other {Data will be stored for {days} days}}",
-    "@generalPolicyDataRetentionDuration": {
-        "placeholders": {
-            "days": {
-                "example": "30",
-                "type": "int"
-            }
-        }
-    },
-    "generalPolicyDataWillBeShared": "Your data will be shared with other organizations",
-    "generalPolicyDataWillNotBeShared": "Your data will not be shared with other organizations",
     "generalRetry": "Try again",
     "generalSeconds": "{seconds, plural, one {{seconds} second} other {{seconds} seconds}}",
     "@generalSeconds": {
@@ -565,9 +616,11 @@
     "generalWCAGQr": "Scan QR code",
     "generalWCAGSeeAllActivities": "See all activities",
     "generalWCAGStepper": "Step {current} out of {total}.",
-    "genericRelyingPartyErrorDescription": "The card(s) couldn’t be added. This may have several reasons.\n\nGo back to the organization's website where you started and try again. If it still doesn’t work, contact the organization.",
-    "genericRelyingPartyErrorDescriptionWithOrganizationName": "The card(s) couldn’t be added. This may have several reasons.\n\nGo back to the {organization} website where you started and try again. If it still doesn’t work, contact {organization}.",
+    "genericRelyingPartyErrorDescription": "This action was unsuccessful. This may have several reasons.\n\nGo back to the organization's website where you started and try again. If it still doesn’t work, contact the organization.",
+    "genericRelyingPartyErrorDescriptionWithOrganizationName": "This action was unsuccessful. This may have several reasons.\n\nGo back to the {organization} website where you started and try again. If it still doesn’t work, contact {organization}.",
     "genericRelyingPartyErrorTitle": "Sorry, something went wrong",
+    "helpOverviewScreenContactSubtitle": "Call us if your question is not listed.",
+    "helpOverviewScreenTourSubtitle": "See what you can do with NL Wallet.",
     "helpSheetDescription": "Contact support. The following data could be required.",
     "helpSheetErrorCode": "Error code: {code}",
     "@helpSheetErrorCode": {
@@ -589,6 +642,8 @@
         }
     },
     "helpSheetTitle": "Need help?",
+    "helpTopicScreenReferencesHeading": "Other questions",
+    "helpTopicScreenSomethingElseCta": "Something else?",
     "historyDetailScreenAboutOrganizationCta": "About {organization}",
     "@historyDetailScreenAboutOrganizationCta": {
         "placeholders": {
@@ -662,8 +717,6 @@
             }
         }
     },
-    "historyDetailScreenOperationStatusExpiredDescription": "Your card is expired.",
-    "historyDetailScreenOperationStatusRenewedDescription": "Card updated",
     "historyDetailScreenPurposeTitle": "Sharing reason",
     "historyDetailScreenReportIssueCta": "Would you like to report a problem?",
     "historyDetailScreenSharedAttributesSubtitle": "{count, plural, one {Only the following detail was shared.} other {Only the following {count} details were shared.}}",
@@ -688,13 +741,13 @@
     },
     "historyDetailScreenStoppedTitleForDisclosure": "Sharing stopped with {organization}",
     "historyDetailScreenStoppedTitleForLogin": "Login at {organization} stopped",
-    "historyDetailScreenTermsCta": "Read the agreement",
-    "historyDetailScreenTermsTitle": "Agreements",
     "historyDetailScreenTitle": "Details",
+    "historyDetailScreenTitleForCardDeleted": "{cardTitle} deleted",
     "historyDetailScreenTitleForCardIssued": "{card} created",
     "historyDetailScreenTitleForCardRenewed": "{card} renewed",
     "historyDetailScreenTitleForDisclosure": "Shared with {organization}",
     "historyDetailScreenTitleForLogin": "Logged in to {organization}",
+    "historyOverviewScreenLoadingNextPage": "Loading more data. Please wait.",
     "historyOverviewScreenTitle": "Activities",
     "idleWarningDialogContinueCta": "Yes, continue",
     "idleWarningDialogDescription": "You will be logged out soon because you haven’t used the app for a while. Choose \"Yes, continue\" for more time.",
@@ -717,30 +770,34 @@
     "invalidQrDialogCta": "OK",
     "invalidQrDialogDescription": "The scanned QR code is invalid. Ensure you are scanning a QR code for the NL Wallet and try again.",
     "invalidQrDialogTitle": "Invalid QR code",
-    "issuanceCheckCardPageConfirmCta": "Yes, next",
-    "issuanceCheckCardPageOverline": "Card {current} of {total}",
-    "@issuanceCheckCardPageOverline": {
+    "invariantErrorDetailsSheetCodeLabel": "Code",
+    "invariantErrorDetailsSheetCopyCta": "Copy",
+    "invariantErrorDetailsSheetDescription": "Copy this code. Send it to the NL Wallet team. The team can use this code to find out what went wrong.",
+    "invariantErrorDetailsSheetTitle": "Error details",
+    "invariantErrorScreenDescription": "You cannot use NL Wallet right now. There is a problem with NL Wallet.",
+    "invariantErrorScreenHelpdesk": "Still having problems? Please contact the helpdesk.",
+    "invariantErrorScreenSeeDetailsCta": "See details",
+    "invariantErrorScreenStartAgainCta": "Start again",
+    "invariantErrorScreenStillNotWorkingBullets": "Remove this app from your phone.\nPut NL Wallet back on your phone.\nCreate a new wallet.",
+    "invariantErrorScreenStillNotWorkingTitle": "Still not working?",
+    "invariantErrorScreenTitle": "NL Wallet is not working",
+    "invariantErrorScreenWhatCanYouDoBullets": "Close this app.\nOpen NL Wallet again.",
+    "invariantErrorScreenWhatCanYouDoTitle": "What can you do?",
+    "issuanceAuthenticateExternallyDescription": "Follow the steps on the issuer’s website.\nThen return to NL Wallet.",
+    "issuanceAuthenticateExternallyTitle": "Continue in your browser",
+    "issuanceConfirmIssuerPageAcceptCta": "Yes, continue",
+    "issuanceConfirmIssuerPageDeclineCta": "Stop",
+    "issuanceConfirmIssuerPageDescription": "Your card(s) will be added to your NL Wallet after you confirm with your PIN.",
+    "issuanceConfirmIssuerPageTitle": "Do you want to get your card(s) from {organization}?",
+    "@issuanceConfirmIssuerPageTitle": {
         "placeholders": {
-            "current": {
-                "example": "1",
-                "type": "int"
-            },
-            "total": {
-                "example": "3",
-                "type": "int"
+            "organization": {
+                "example": "Organisatie XYZ",
+                "type": "String"
             }
         }
     },
-    "issuanceCheckCardPageRejectCta": "No",
-    "issuanceCheckCardPageTitle": "Are these details correct?",
-    "issuanceCheckDataOfferingPageNegativeCta": "No",
-    "issuanceCheckDataOfferingPagePositiveCta": "Yes, add",
-    "issuanceCheckDataOfferingPageSubtitle": "If the data is correct you can add it.",
-    "issuanceCheckDataOfferingPageTitle": "Is the retrieved data correct?",
     "issuanceConfirmPinPageTitle": "Agree with your PIN",
-    "issuanceGenericErrorPageCloseCta": "Close",
-    "issuanceGenericErrorPageDescription": "Something went wrong. Try again later.",
-    "issuanceGenericErrorPageTitle": "Something went wrong",
     "issuanceLoadingCardsDescription": "Cards are being retrieved",
     "issuanceLoadingCardsTitle": "Please wait",
     "issuanceLoadingRequestDescription": "Your request is being retrieved",
@@ -755,9 +812,8 @@
         }
     },
     "issuanceNoCardsPageTitle": "No cards found",
-    "issuanceRelyingPartyErrorCloseCta": "Close",
     "issuanceRelyingPartyErrorDescription": "The card(s) couldn’t be added. This may have several reasons.\n\nGo back to the organization's website where you started and try again. If it still doesn’t work, contact the organization.",
-    "issuanceRelyingPartyErrorDescriptionWithOrganizationName": "The cards couldn’t be added. This may have several reasons.\n\nGo back to the {organization} website where you started and try again. If it still doesn’t work, contact {organization}.",
+    "issuanceRelyingPartyErrorDescriptionWithOrganizationName": "The card(s) couldn’t be added. This may have several reasons.\n\nGo back to the {organization} website where you started and try again. If it still doesn’t work, contact {organization}.",
     "issuanceRelyingPartyErrorTitle": "Sorry, something went wrong",
     "issuanceRequestedAttributeDescription": "To receive your cards, you will share your {attribute} so {organization} can be sure it's really you.",
     "@issuanceRequestedAttributeDescription": {
@@ -855,12 +911,6 @@
         }
     },
     "issuanceReviewCardsPageToggleAddCta": "Check details",
-    "issuanceSelectCardsPageAddCta": "Add",
-    "issuanceSelectCardsPageDataIncorrectCta": "Is something not right?",
-    "issuanceSelectCardsPageDescription": "Select the ones you would like to add",
-    "issuanceSelectCardsPageNoSelectionError": "Select one or more cards to add",
-    "issuanceSelectCardsPageStopCta": "Stop",
-    "issuanceSelectCardsPageTitle": "The following cards have been retrieved.",
     "issuanceStopSheetDescription": "If you stop, no cards will be added from {organization} to your NL Wallet.",
     "@issuanceStopSheetDescription": {
         "placeholders": {
@@ -898,43 +948,41 @@
             }
         }
     },
-    "localAuthMessageAndroidBiometricHint": "Use fingerprint or face scan",
-    "localAuthMessageAndroidBiometricHintFaceScanOnly": "Use face scan",
+    "localAuthMessageAndroidBiometricHint": "Use fingerprint or face unlock",
+    "localAuthMessageAndroidBiometricHintFaceScanOnly": "Use face unlock",
     "localAuthMessageAndroidBiometricHintFingerPrintOnly": "Use fingerprint",
-    "localAuthMessageAndroidBiometricNotRecognized": "Not recognized. Try again.",
-    "localAuthMessageAndroidBiometricRequiredTitle": "Turn on fingerprint of face scan first",
-    "localAuthMessageAndroidBiometricSuccess": "Success",
     "localAuthMessageAndroidCancelButton": "Cancel",
-    "localAuthMessageAndroidDeviceCredentialsRequiredTitle": "Turn on face scan or fingerprint first",
-    "localAuthMessageAndroidDeviceCredentialsSetupDescription": "Turn on face scan or fingerprint first",
-    "localAuthMessageAndroidGoToSettingsDescription": "Turn on face scan or fingerprint in Settings > Face Scan or Fingerprint.",
     "localAuthMessageAndroidSignInTitle": "Scan fingerprint or face",
-    "localAuthMessageAndroidSignInTitleFaceScanOnly": "Use your face scan",
+    "localAuthMessageAndroidSignInTitleFaceScanOnly": "Use your face unlock",
     "localAuthMessageAndroidSignInTitleFingerPrintOnly": "Use your fingerprint",
-    "localAuthMessageGoToSettingsButton": "Go to Settings",
     "localAuthMessageiOSCancelButton": "Close",
-    "localAuthMessageiOSGoToSettingsDescription": "Turn on Face ID first.",
-    "localAuthMessageiOSLockOut": "Face ID is disabled. Please lock and unlock your screen to enable it.",
     "lockedOutDialogDescription": "Too many failed attempts. Unlock with your PIN.",
     "lockedOutDialogDescriptioniOSVariant": "Too many failed attempts. Unlock with your PIN.",
-    "lockedOutDialogTitle": "Face scan or fingerprint failed",
+    "lockedOutDialogTitle": "Face unlock or fingerprint failed",
     "lockedOutDialogTitleiOSVariant": "Face ID or Touch ID failed",
-    "loginDetailScreenAgreementCta": "Read the agreement",
-    "loginDetailScreenAgreementTitle": "Agreement",
     "loginDetailScreenCredentialsBody": "Only the following data is shared. No more.",
     "loginDetailScreenCredentialsTitle": "Login credentials",
     "loginDetailScreenTitle": "Information about logging in at {organization}",
+    "maintenanceScreenHeadline": "Sorry, you cannot use NL Wallet now",
+    "maintenanceScreenOvernightDescription": "The app is under maintenance from {startTime} on {startDate} to {endTime} on {endDate}.\n\nClose the app and try again later.",
+    "maintenanceScreenSameDayDescription": "The app is under maintenance from {startTime} to {endTime} on {date}.\n\nClose the app and try again later.",
+    "manageNotificationsScreenDebugSubtitle": "Show OS notifications as exposed by the core, as well as scheduled and active notifications.",
+    "manageNotificationsScreenDebugTitle": "Debug Screen",
+    "manageNotificationsScreenDescription": "Get alerts about your cards changes, app updates, and other important messages.",
+    "manageNotificationsScreenPushSettingSubtitle": "Get alerts, even when you don’t open the app.",
+    "manageNotificationsScreenPushSettingTitle": "Push notifications",
+    "manageNotificationsScreenTitle": "Notifications",
     "menuScreenAboutCta": "About this app",
-    "menuScreenBrowserCta": "Browser Test",
+    "menuScreenBrowserCta": "Try NL Wallet yourself",
     "menuScreenDesignCta": "Design System",
-    "menuScreenFeedbackCta": "Give feedback",
-    "menuScreenHelpCta": "Need help?",
+    "menuScreenFeedbackCta": "Give feedback on edi.pleio.nl",
+    "menuScreenHelpCta": "Help and information",
     "menuScreenHistoryCta": "Activities",
     "menuScreenLockCta": "Log out",
     "menuScreenScanQrCta": "Scan QR code",
-    "menuScreenSettingsCta": "Settings",
+    "menuScreenSettingsCta": "Settings and security",
     "menuScreenTitle": "Menu",
-    "menuScreenTourCta": "App tour videos",
+    "menuScreenTourCta": "See how NL Wallet works",
     "menuScreenWCAGPageAnnouncement": "Menu in list {count} items",
     "missingAttributesPageBackToWebsiteCta": "Back to website",
     "missingAttributesPageCloseCta": "Close",
@@ -961,26 +1009,9 @@
     "mockDigidScreenTitle": "Securely login with DigiD",
     "moveStoppedDialogBody": "No data has been moved to this device.\n\nYour NL Wallet is still active on your other device.",
     "moveStoppedDialogTitle": "Move stopped",
-    "needHelpScreenActivitiesSubtitle": "Previous events, organisations and summaries",
-    "needHelpScreenActivitiesTitle": "Activities",
-    "needHelpScreenCardsSubtitle": "Adding and using cards",
-    "needHelpScreenCardsTitle": "Cards",
-    "needHelpScreenContactSubtitle": "By phone",
-    "needHelpScreenContactTitle": "Contact",
-    "needHelpScreenQrSubtitle": "Sharing from another device",
-    "needHelpScreenQrTitle": "QR code",
-    "needHelpScreenSecuritySubtitle": "Security steps and secure sharing",
-    "needHelpScreenSecurityTitle": "Security",
-    "needHelpScreenSettingsSubtitle": "Change settings and remove data",
-    "needHelpScreenSettingsTitle": "App settings",
-    "needHelpScreenShareSubtitle": "Sharing details and logging in",
-    "needHelpScreenShareTitle": "Share data",
-    "needHelpScreenTitle": "Need help?",
     "organizationApprovePageApproveCta": "Share",
     "organizationApprovePageCancelLoginCta": "Stop",
     "organizationApprovePageDenyCta": "Stop",
-    "organizationApprovePageFraudInfoPart1": "Beware of fraud. Check the web address where you scanned the QR code.",
-    "organizationApprovePageFraudInfoPart2": "Only proceed if the address matches {url}.",
     "organizationApprovePageGenericTitle": "Do you recognize {organization}?",
     "@organizationApprovePageGenericTitle": {
         "placeholders": {
@@ -1012,24 +1043,23 @@
     "organizationApprovePageMoreInfoCta": "See details",
     "organizationApprovePageMoreInfoIssuanceCta": "See what data you are sharing",
     "organizationApprovePageMoreInfoLoginCta": "Check all details",
-    "organizationApprovePageShareWithApproveCta": "Yes, continue",
-    "organizationApprovePageShareWithDenyCta": "Stop",
-    "organizationButtonLabel": "About this organization",
     "organizationDetailScreenCategoryInfo": "Organization type",
-    "organizationDetailScreenDepartmentInfo": "Department",
-    "organizationDetailScreenKvk": "KVK: {kvk}",
-    "organizationDetailScreenKvkInfo": "Chamber of Commerce number (KVK)",
     "organizationDetailScreenLegalNameInfo": "Legal name",
     "organizationDetailScreenLocationInfo": "Location",
+    "organizationDetailScreenNaturalPersonIdInfo": "Identification Number",
+    "organizationDetailScreenNaturalPersonNameInfo": "First and last name",
+    "organizationDetailScreenNotAvailable": "Not Available",
+    "organizationDetailScreenOrganizationIdInfo": "Business Identification Number",
+    "organizationDetailScreenOrganizationTypeGovernment": "Government",
+    "organizationDetailScreenOrganizationTypeNonGovernment": "Non-government",
     "organizationDetailScreenPrivacyInfo": "Privacy statement",
     "organizationDetailScreenReportIssueCta": "Would you like to report a problem?",
     "organizationDetailScreenSomeInteractions": "You have shared before with {name}",
+    "organizationDetailScreenSupportInfo": "Help and support",
     "organizationDetailScreenTitle": "About {name}",
     "organizationDetailScreenWebsiteInfo": "Website",
     "organizationFallbackName": "The organization",
     "pageIndicatorSemanticsLabel": "Step {current} out of {total}",
-    "pidAddressCardTitle": "Residential address",
-    "pidIdCardTitle": "Personal data",
     "pinBlockedScreenDescription": "You have entered your PIN incorrectly too many times.\n\nDo you want to use the Wallet again? Then you have to start again. Clear the Wallet and choose a new PIN.",
     "pinBlockedScreenHeadline": "Your app has been blocked",
     "pinBlockedScreenResetWalletCta": "Delete Wallet",
@@ -1089,71 +1119,41 @@
     "placeholderScreenContractDescription": "The contract will be displayed here.",
     "placeholderScreenGenericDescription": "Please try again later.",
     "placeholderScreenHeadline": "Sorry, this page is still under construction.",
-    "policyScreenDataCanBeDeleted": "You can have data deleted",
-    "policyScreenDataCanBeDeletedDescription": "The organization offers a way to have your data deleted.",
-    "policyScreenDataCanNotBeDeleted": "You cannot have data deleted",
-    "policyScreenDataCanNotBeDeletedDescription": "The organization does not offer a way to have your data deleted.",
-    "policyScreenDataIsSignature": "By continuing the agreements will be definitive",
-    "policyScreenDataNotBeStored": "Your data will not be stored",
-    "policyScreenDataNotBeStoredDescription": "Your data will only be used during this session and not stored for later use.",
-    "policyScreenDataPurposeDescription": "Your data is not used for anything besides the stated purpose.",
-    "policyScreenDataRetentionDuration": "{months, plural, one {Data will be stored for {months} month} other {Data will be stored for {months} months}}",
-    "@policyScreenDataRetentionDuration": {
-        "placeholders": {
-            "months": {
-                "example": "30",
-                "type": "int"
-            }
-        }
-    },
-    "policyScreenDataRetentionDurationDescription": "{months, plural, one {Your data will be stored for {months} month. It will then be deleted automatically.} other {Your data will be stored for {months} months. They will then be deleted automatically.}}",
-    "@policyScreenDataRetentionDurationDescription": {
-        "placeholders": {
-            "months": {
-                "example": "3",
-                "type": "int"
-            }
-        }
-    },
-    "policyScreenDataWillBeShared": "Data will be shared with other organizations",
-    "policyScreenDataWillBeSharedDescription": "Your data will be shared with other companies or organizations",
-    "policyScreenDataWillNotBeShared": "Data will not be shared with other organizations",
-    "policyScreenDataWillNotBeSharedDescription": "Your data will not be shared with other companies or organizations",
-    "policyScreenPolicySectionPolicyCta": "privacy policy",
-    "policyScreenPolicySectionText": "Read more in the {policy} of the {organization}. Here you can read more about how the {organization} will use your data.",
-    "@policyScreenPolicySectionText": {
-        "placeholders": {
-            "organization": {
-                "example": "Municipality of Amsterdam",
-                "type": "String"
-            },
-            "policy": {
-                "example": "privacy policy",
-                "type": "String"
-            }
-        }
-    },
-    "policyScreenPolicySectionTitle": "Learn more?",
-    "policyScreenReportIssueCta": "Would you like to report a problem?",
-    "policyScreenSubtitle": "The following agreements apply only to this sharing invitation.",
-    "policyScreenTitle": "Agreements",
-    "qrCodeCodeDialogTitle": "Scan the QR code with your NL Wallet app",
-    "qrMyCodeTabHowToCta": "How does my QR code work?",
-    "qrMyCodeTabHowToSheetCloseCta": "Close",
-    "qrMyCodeTabHowToSheetDescription": "Let the QR code be scanned by a controller to start sharing. Then, you will receive a data request. Only if you agree to the request will data be shared.",
-    "qrMyCodeTabHowToSheetTitle": "How does my QR code work?",
+    "privacySectionCta": "Read how the organisation uses your data",
+    "privacySectionTitle": "Privacy Policy",
+    "qrActionButtonSubtitle": "Scan QR or show your QR code",
+    "qrActionButtonTitle": "Start your action",
+    "qrActionSheetScanQrDescription": "Scan the QR code from the organisation. Or from another device.",
+    "qrActionSheetScanQrTitle": "Scan a QR code",
+    "qrActionSheetShowQrDescription": "Let the organisation scan your QR code.",
+    "qrActionSheetShowQrTitle": "Show your QR code",
+    "qrActionSheetTitle": "Choose how you do it",
+    "qrPresentScreenBluetoothDisabledPageDescription": "You first need to turn on \"Bluetooth\" on your device.",
+    "qrPresentScreenBluetoothDisabledPageDescriptioniOSVariant": "You first need to turn on \"Bluetooth\" on your device.\n\nGo to Settings > Bluetooth",
+    "qrPresentScreenBluetoothDisabledPageEnableCta": "Turn on Bluetooth",
+    "qrPresentScreenBluetoothDisabledPageTitle": "Turn on Bluetooth first",
+    "qrPresentScreenCenterQrCodeCta": "Center QR code on screen",
+    "qrPresentScreenConnectedTitle": "Please wait. Your request is being retrieved.",
+    "qrPresentScreenConnectionFailedPageDescription": "Keep the devices close together. Check your Bluetooth connection. Then try again.",
+    "qrPresentScreenConnectionFailedPageTitle": "Sorry, connection failed",
+    "qrPresentScreenQrWCAGLabel": "QR code. Let the organisation scan this code.",
+    "qrPresentScreenReportIssueCta": "Would you like to report a problem?",
+    "qrPresentScreenTitle": "Show your QR code",
     "qrScanTabContinueCta": "Scan another QR code",
-    "qrScanTabGrantPermissionCta": "Grant access to camera",
+    "qrScanTabGrantPermissionCta": "Grant access to the camera",
     "qrScreenCheckingCodeWCAGAnnouncement": "QR code is being checked",
     "qrScreenDisableTorchCta": "Turn flashlight off",
     "qrScreenEnableTorchCta": "Turn flashlight on",
-    "qrScreenPermissionHint": "The NL Wallet needs access to your camera to scan a QR code",
+    "qrScreenPermissionHint": "The wallet needs access to your camera to scan a QR code.",
+    "qrScreenPermissionTitle": "Camera access needed",
     "qrScreenScanHint": "Point your camera at a QR code",
     "qrScreenScanScannerActiveWCAGAnnouncement": "No QR code found. Point your camera at a QR code",
     "qrScreenScanSuccessfulWCAGAnnouncement": "Scan successful",
     "qrScreenScanningWCAGAnnouncement": "Point your camera at a QR code",
-    "recoverPinAwaitingDigidAuthenticationDescription": "DigiD app is being opened",
-    "recoverPinChooseNewPinPageTitle": "Choose a 6-digit PIN",
+    "qrShowBluetoothPermissionDescription": "This is needed to connect to a nearby bluetooth. Go to Settings > App info > Permission > Bluetooth.",
+    "qrShowBluetoothPermissionSettingsCta": "OPEN SETTINGS",
+    "qrShowBluetoothPermissionTitle": "Allow NL Wallet to find Bluetooth devices.",
+    "recoverPinChooseNewPinPageTitle": "Choose a 6-digit PIN.",
     "recoverPinConfirmNewPinPageTitle": "Repeat your PIN",
     "recoverPinContinueWithDigiDDescription": "That's how you can get your details",
     "recoverPinContinueWithDigiDTitle": "Continue in your DigiD app",
@@ -1185,9 +1185,11 @@
     "recoverPinSuccessPageToOverviewCta": "To my overview",
     "recoverPinUpdatingPinPageDescription": "New PIN is being saved",
     "recoverPinVerifyingAuthenticationDescription": "Your request is being retrieved",
+    "recoverSessionScreenDescription": "Follow the steps on the website of the relying party.\nThen return to NL Wallet.",
+    "recoverSessionScreenTitle": "Continue in your browser",
     "renewPidCheckDetailsPageAcceptCta": "Yes, continue",
     "renewPidCheckDetailsPageDeclineCta": "No",
-    "renewPidCheckDetailsPageSubtitle": "If your details are correct, you can replace your Personal data card and Residential card.",
+    "renewPidCheckDetailsPageSubtitle": "If your details are correct, you can replace your Personal data card.",
     "renewPidCheckDetailsPageTitle": "Are your details correct?",
     "renewPidConfirmPinPageTitle": "Agree with your PIN",
     "renewPidDigidLoginCancelledDescription": "If you still want to retrieve your personal data, please log in again with DigiD.",
@@ -1198,7 +1200,7 @@
     "renewPidDigidMismatchPageOpenWebsiteCta": "Go to DigiD website",
     "renewPidDigidMismatchPageRetryCta": "Log in again",
     "renewPidDigidMismatchPageTitle": "Wrong DigiD",
-    "renewPidIntroPageDescription": "This way, you replace your Personal Data card and Residential Address card.",
+    "renewPidIntroPageDescription": "This way, you replace your Personal Data card.",
     "renewPidIntroPageDigidWebsiteCta": "Go to DigiD website",
     "renewPidIntroPageLoginWithDigidCta": "Open the DigiD app",
     "renewPidIntroPageTitle": "Log in with DigiD to show that it’s really you",
@@ -1207,16 +1209,16 @@
     "renewPidOpeningDigidDescription": "That's how you can get your details",
     "renewPidOpeningDigidStopCta": "Stop",
     "renewPidOpeningDigidTitle": "Continue in your DigiD app",
-    "renewPidStopSheetDescription": "If you stop, you will not be able to replace your Personal data and Residential address cards",
+    "renewPidStopSheetDescription": "If you stop, you will not be able to replace your Personal data card.",
     "renewPidStopSheetNegativeCta": "No",
     "renewPidStopSheetPositiveCta": "Yes, stop",
     "renewPidStopSheetReportIssueCta": "Would you like to report a problem?",
     "renewPidStopSheetTitle": "Are you sure you want to stop?",
     "renewPidStoppedCloseCta": "Close",
-    "renewPidStoppedDescription": "Because you have stopped, your wallet remains view-only mode. Replace the card using your DigiD app.",
+    "renewPidStoppedDescription": "Because you stopped the process, your card was not replaced. Replace the card using your DigiD app.",
     "renewPidStoppedTitle": "Stopped",
-    "renewPidSuccessPageDescription": "Your have replaced your Personal Data and Residential Address cards. You can now use the app fully again.",
-    "renewPidSuccessPageTitle": "Cards replaced",
+    "renewPidSuccessPageDescription": "Your have replaced your Personal Data card. You can now use the app fully again.",
+    "renewPidSuccessPageTitle": "Card replaced",
     "renewPidSuccessPageToDashboardCta": "To my overview",
     "renewPidUpdatingCardsDescription": "Your request is being retrieved",
     "renewPidUpdatingCardsTitle": "Please wait",
@@ -1262,13 +1264,27 @@
         }
     },
     "requestDetailsScreenAttributesTitle": "Requested attributes",
+    "requestNotificationPermissionSheetDescription": "You will get messages about your card changes, app updates, and other important messages. Even when you do not open the app.\n\nYou can turn this on or off later in Settings.",
+    "requestNotificationPermissionSheetNegativeCta": "Not now",
+    "requestNotificationPermissionSheetPositiveCta": "Yes, turn it on",
+    "requestNotificationPermissionSheetTitle": "Do you want to get important updates?",
     "resetWalletDialogBody": "This will delete all your data. You can then recreate the NL Wallet.",
     "resetWalletDialogCancelCta": "CANCEL",
     "resetWalletDialogConfirmCta": "YES, DELETE",
     "resetWalletDialogTitle": "Do you want to delete all data?",
+    "reviewRevocationCodeScreenDescription": "You can use this code to delete this NL Wallet from this phone if your phone is lost or stolen.\n\nKeep the code in a safe place, but not on your phone. Do not share the code with anyone.",
+    "reviewRevocationCodeScreenSuccessCta": "I have written it down",
+    "reviewRevocationCodeScreenSuccessDescription": "Your 18 characters deletion code is:",
+    "reviewRevocationCodeScreenSuccessTitle": "Write down your deletion code",
+    "reviewRevocationCodeScreenTitle": "View your deletion code",
+    "reviewRevocationCodeScreenViewCta": "View",
+    "revocationCodeScreenCodeFooter": "You can find the code later in Menu > Settings and Security > View your deletion code.",
+    "revocationCodeScreenCodeHeader": "Your 18-digit deletion code is:",
+    "revocationCodeScreenContinueCta": "I have written it down",
+    "revocationCodeScreenDescription": "You can use this code to delete this NL Wallet from this phone if your phone is lost or stolen.\n\nKeep the code in a safe place, but not on your phone. Do not share the code with anyone.",
+    "revocationCodeScreenTitle": "Write down your deletion code now",
     "rootDetectedScreenDescription": "To protect your data, you can not use NL Wallet on this device. \n\nThis device is not in its original state, which makes it not secure. See the help page for more information.",
     "rootDetectedScreenTitle": "Your device is not secure",
-    "scanQrButtonCta": "Scan QR code",
     "scanWithWalletDialogBody": "It looks like you have scanned a QR code with a different app. To be sure, scan the QR code with the NL Wallet.",
     "scanWithWalletDialogScanCta": "Scan QR code",
     "scanWithWalletDialogTitle": "Scan the QR code with NL Wallet",
@@ -1276,6 +1292,7 @@
     "settingsScreenChangeLanguageCta": "Change language",
     "settingsScreenChangePinCta": "Change PIN",
     "settingsScreenClearDataCta": "Remove data",
+    "settingsScreenManageNotificationsCta": "Notifications",
     "settingsScreenSetupBiometricsCta": "Unlock with {supportedBiometrics}",
     "@settingsScreenSetupBiometricsCta": {
         "placeholders": {
@@ -1286,9 +1303,18 @@
         }
     },
     "settingsScreenSetupBiometricsNotSupportedSubtitle": "Not supported on this device",
-    "settingsScreenTitle": "Settings",
+    "settingsScreenShowRevocationCodeCta": "View your deletion code",
+    "settingsScreenTitle": "Settings and security",
     "settingsScreenTransferWalletCta": "Move NL Wallet",
-    "setupBiometricsPageDescription": "You use your PIN code to share data. Face scan or fingerprint is only for opening the app faster.",
+    "setupBiometricsPageDescription": "With {supportedBiometrics}, you can open NL Wallet faster.\nYou still use your PIN when you share your data.",
+    "@setupBiometricsPageDescription": {
+        "placeholders": {
+            "supportedBiometrics": {
+                "example": "Face ID",
+                "type": "String"
+            }
+        }
+    },
     "setupBiometricsPageEnableCta": "Enable",
     "setupBiometricsPageLocalizedReason": "To unlock the app",
     "setupBiometricsPageSkipCta": "Skip",
@@ -1329,7 +1355,6 @@
             }
         }
     },
-    "sharedAttributesCardOutdatedFooter": "These details are outdated.",
     "sharedAttributesCardTitle": "{count} from {cardTitle}",
     "showDetailsCta": "View",
     "signConfirmPinPageDescription": "By entering your PIN you agree to exchange your data.",
@@ -1344,9 +1369,6 @@
     },
     "signConfirmPinPageErrorTitle": "Invalid PIN",
     "signConfirmPinPageTitle": "Enter your PIN",
-    "signGenericErrorPageCloseCta": "Close",
-    "signGenericErrorPageDescription": "Something went wrong. Please try again later.",
-    "signGenericErrorPageTitle": "Something went wrong",
     "signScreenCancelSheetDescription": "If you stop, no agreements will be signed.",
     "signScreenCancelSheetNegativeCta": "No",
     "signScreenCancelSheetPositiveCta": "Yes, stop",
@@ -1372,10 +1394,36 @@
     "stopDigidLoginDialogPositiveCta": "STOP LOGIN",
     "stopDigidLoginDialogSubtitle": "If you stop, you'll need to start over.",
     "stopDigidLoginDialogTitle": "Stop DigiD login?",
-    "tourBannerTitle": "Discover everything in short videos",
+    "stopToResetPinDialogCancelCta": "No",
+    "stopToResetPinDialogConfirmCta": "Yes, Stop",
+    "stopToResetPinDialogDescriptionDisclosureVariant": "If you stop, no data will be shared with {organisation}\n\nYou can then create a new PIN.",
+    "@stopToResetPinDialogDescriptionDisclosureVariant": {
+        "placeholders": {
+            "organisation": {
+                "example": "Relying Party",
+                "type": "String"
+            }
+        }
+    },
+    "stopToResetPinDialogDescriptionIssuanceVariant": "If you stop, no card(s) will be added to your NL Wallet.\n\nYou can then create a new PIN.",
+    "stopToResetPinDialogDescriptionLoginVariant": "If you stop, you will not log in to {organisation}.\n\nYou can then create a new PIN.",
+    "@stopToResetPinDialogDescriptionLoginVariant": {
+        "placeholders": {
+            "organisation": {
+                "example": "Relying Party",
+                "type": "String"
+            }
+        }
+    },
+    "stopToResetPinDialogDescriptionTransferVariant": "If you stop, your NL Wallet will not be moved to your other device.\n\nYou can then create a new PIN.",
+    "stopToResetPinDialogTitleDisclosureVariant": "Stop sharing details to create a new PIN",
+    "stopToResetPinDialogTitleIssuanceVariant": "Stop adding card(s) to create a new PIN",
+    "stopToResetPinDialogTitleLoginVariant": "Stop logging in to create a new PIN",
+    "stopToResetPinDialogTitleTransferVariant": "Stop moving NL Wallet to create a new PIN",
+    "tourBannerTitle": "Discover how NL Wallet works and what you can do with the app",
     "tourOverviewScreenItemWCAGLabel": "Play video \"{name}\"",
-    "tourOverviewScreenSubtitle": "Discover how the app works in short videos.",
-    "tourOverviewScreenTitle": "App tour videos",
+    "tourOverviewScreenSubtitle": "Watch a short video or read how NL Wallet works.",
+    "tourOverviewScreenTitle": "Discover how NL Wallet works and what you can do with the app",
     "unlockWithBiometricsReason": "Unlock the NL Wallet",
     "updateBannerNotifyDescription": "This way, you get the best experience.",
     "updateBannerNotifyTitle": "Update the app",
@@ -1448,10 +1496,10 @@
     "walletPersonalizeCheckDataOfferingPageAcceptCta": "Add",
     "walletPersonalizeCheckDataOfferingPageDeclineCta": "No",
     "walletPersonalizeCheckDataOfferingPageDeclineCtaSemanticsLabel": "No, something is not right",
-    "walletPersonalizeCheckDataOfferingPageSubtitle": "If your details are correct, you will receive a Personal data card and an Address card.",
+    "walletPersonalizeCheckDataOfferingPageSubtitle": "If your details are correct, you will receive a Personal data card.",
     "walletPersonalizeCheckDataOfferingPageTitle": "Are your details correct?",
     "walletPersonalizeConfirmPinPageTitle": "Agree with your PIN",
-    "walletPersonalizeDataIncorrectScreenDescription": "If your details are incorrect, it can cause problems. Therefore, do not add these details.",
+    "walletPersonalizeDataIncorrectScreenDescription": "If your details are incorrect, this can cause problems. Therefore, do not add these details.",
     "walletPersonalizeDataIncorrectScreenHowToResolveBulletPoints": "Contact your municipality to have your details changed.\nWait for a message from your municipality confirming the update.\nLog in again with DigiD to retrieve the correct details.",
     "walletPersonalizeDataIncorrectScreenHowToResolveTitle": "How can I correct incorrect details?",
     "walletPersonalizeDataIncorrectScreenNotYourDataDescription": "Do not add the details and log in with your own DigiD.",
@@ -1464,18 +1512,13 @@
     "walletPersonalizeDigidErrorPageDigidWebsiteCta": "Go to DigiD website",
     "walletPersonalizeDigidErrorPageLoginWithDigidCta": "Login again",
     "walletPersonalizeDigidErrorPageTitle": "Login failed",
-    "walletPersonalizeIntroPageDescription": "This way, you get your Personal Data card and Residential Address card.",
+    "walletPersonalizeIntroPageDescription": "This way, you get your Personal Data card.",
     "walletPersonalizeIntroPageDigidWebsiteCta": "Go to DigiD website",
     "walletPersonalizeIntroPageLoginWithDigidCta": "Open the DigiD app",
-    "walletPersonalizeIntroPageNoDigidCta": "No DigiD?",
     "walletPersonalizeIntroPageTitle": "Log in with DigiD to show that it’s really you",
-    "walletPersonalizeScreenAddingCardsSubtitle": "Cards are being added",
-    "walletPersonalizeScreenAwaitingUserAuthDescription": "That's how you can get your details",
-    "walletPersonalizeScreenAwaitingUserAuthTitle": "Continue in your DigiD app",
+    "walletPersonalizeScreenAddingCardsSubtitle": "Card is being added",
+    "walletPersonalizeScreenAwaitingUserAuthTitle": "Waiting for your data. Continue in your DigiD app.",
     "walletPersonalizeScreenDigidLoadingStopCta": "Stop",
-    "walletPersonalizeScreenErrorDescription": "Something went wrong, please try again.",
-    "walletPersonalizeScreenErrorRetryCta": "Try again",
-    "walletPersonalizeScreenErrorTitle": "Personalization failed",
     "walletPersonalizeScreenExitSheetCancelCta": "No",
     "walletPersonalizeScreenExitSheetConfirmCta": "Yes, stop",
     "walletPersonalizeScreenExitSheetDescription": "Are you sure you want to quit setting up your Wallet?",
@@ -1490,13 +1533,14 @@
     "walletPersonalizeSetupFailedScreenDescription": "Too many wrong PIN attempts. Set a new PIN and try again.",
     "walletPersonalizeSetupFailedScreenHeadline": "Setup failed",
     "walletPersonalizeSuccessPageContinueCta": "To my overview",
-    "walletPersonalizeSuccessPageDescription": "You can share the data in these cards or use it to log in.",
+    "walletPersonalizeSuccessPageDescription": "You can share the data in this card or use it to log in.",
     "walletPersonalizeSuccessPageTitle": "Your NL Wallet is ready",
     "walletTransferAwaitingConfirmationPageCta": "Stop",
     "walletTransferAwaitingConfirmationPageDescription": "Choose ‘Yes, move’ and enter your PIN on your other device if you want to move your NL Wallet to this device.\n\nThen wait until the move is finished on both devices.\n\nThis action cannot be undone.",
     "walletTransferAwaitingConfirmationPageTitle": "Confirm on your other device",
     "walletTransferAwaitingScanPageCenterQrCta": "Center QR code on screen",
     "walletTransferAwaitingScanPageDescription": "Use the QR scanner in the NL Wallet on your other device.",
+    "walletTransferAwaitingScanPageQrWCAGLabel": "QR code. Scan this code with NL Wallet on your other phone.",
     "walletTransferAwaitingScanPageTitle": "Scan the QR code below",
     "walletTransferFaqScreenFooter": "Your data is now on your new phone. The NL Wallet app on your old phone is empty and no longer active.",
     "walletTransferFaqScreenSection1Content": "Your new phone\nYour old phone with NL Wallet installed",
@@ -1524,12 +1568,10 @@
     "walletTransferSourceScreenSuccessDescription": "This app is empty and no longer active.\n\nClose this app or create new NL Wallet on this device.",
     "walletTransferSourceScreenSuccessTitle": "Move completed",
     "walletTransferSourceScreenTransferringDescription": "Do not close this screen or stop this action. This may take a few minutes.",
-    "walletTransferSourceScreenTransferringTitle": "NL Wallet is being moved",
+    "walletTransferSourceScreenTransferringTitle": "Please wait, NL Wallet is being moved",
     "walletTransferSourceStopSheetCancelCta": "No",
     "walletTransferSourceStopSheetConfirmCta": "Yes, stop",
     "walletTransferSourceStopSheetDescription": "If you stop, no data will be moved to your other device.",
-    "walletTransferSourceStopSheetForgotPinVariantDescription": "You want to create a new PIN. This will stop the transfer and no data will be moved to your other device.\n\nAfter you create a new PIN, you can start moving the NL Wallet again.",
-    "walletTransferSourceStopSheetForgotPinVariantTitle": "Stop moving to create a new PIN?",
     "walletTransferSourceStopSheetTitle": "Are you sure you want to stop?",
     "walletTransferTargetOptOutDialogDescription": "A new NL Wallet will be created on this device. NL Wallet apps are not connected.",
     "walletTransferTargetOptOutDialogTitle": "Create new NL Wallet?",
@@ -1542,7 +1584,7 @@
     "walletTransferTargetScreenSuccessDescription": "All your data is now in this NL Wallet app.",
     "walletTransferTargetScreenSuccessTitle": "Success! Your NL Wallet is ready",
     "walletTransferTargetScreenTransferringDescription": "Do not close this screen or stop this action. The move will take a few minutes.",
-    "walletTransferTargetScreenTransferringTitle": "NL Wallet is being moved to this device",
+    "walletTransferTargetScreenTransferringTitle": "Please wait, NL Wallet is being moved to this device",
     "walletTransferTargetStopSheetCancelCta": "No",
     "walletTransferTargetStopSheetConfirmCta": "Yes, stop",
     "walletTransferTargetStopSheetDescription": "If you stop, no data will be moved to this device.",

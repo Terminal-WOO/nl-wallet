@@ -21,12 +21,12 @@ class HistorySectionHeader extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
             child: Semantics(
               header: true,
+              headingLevel: 1,
               child: Text.rich(
                 DateFormat(
                   DateFormat.YEAR_MONTH,
                   context.l10n.localeName,
                 ).format(dateTime).capitalize.toTextSpan(context),
-                maxLines: 1,
                 style: context.textTheme.labelSmall,
               ),
             ),

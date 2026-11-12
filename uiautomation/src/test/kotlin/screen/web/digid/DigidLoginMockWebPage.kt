@@ -6,32 +6,38 @@ import util.MobileActions
 
 class DigidLoginMockWebPage : MobileActions() {
 
-    private val headlineTextLocator = By.xpath("//*[contains(text(), 'DigiD MOCK')]")
-    private val bsnInputLocator = By.id("bsn_inp")
-    private val mockLoginButtonLocator = By.linkText("Login / Submit")
+    private val listHeadingLocator = By.xpath("//h2[contains(@class, 'list-heading')]")
+    private fun cardButtonLocator(bsn: String) = By.xpath(
+        "//form[contains(@class, 'card') and .//input[@name='bsn' and @value='$bsn']]//button"
+    )
 
     fun visible(): Boolean {
-        return isWebElementVisible(findWebElement(headlineTextLocator))
+        return isWebElementVisible(findWebElement(listHeadingLocator))
     }
 
-    fun enterBsn(bsn: String) {
-        val bsnInput = findWebElement(bsnInputLocator)
-        bsnInput.clear()
-        bsnInput.sendKeys(bsn)
-        (driver as JavascriptExecutor).executeScript(
-            """
-            const el = arguments[0];
-            el.dispatchEvent(new Event('input', {bubbles:true}));
-            el.dispatchEvent(new Event('change', {bubbles:true}));
-            """.trimIndent(),
-            bsnInput
-        )
+    fun selectTestId(bsn: String) {
+        val button = findWebElement(cardButtonLocator(bsn))
+        isWebElementVisible(button)
+        clickWebElementWithMouseEvent(button)
     }
-
-    fun clickLoginButton() = findWebElement(mockLoginButtonLocator).click()
 
     fun login(bsn: String) {
-        enterBsn(bsn)
-        clickLoginButton()
+        switchToWebViewWindowContaining(cardButtonLocator(bsn))
+        selectTestId(bsn)
+    }
+
+    // Old free-form BSN entry is gone from the UI. Rewrite the first card via JS,
+    // then submit it as usual so the server-side failure path stays covered.
+    fun loginWithFakeBsn(fakeBsn: String = "123456789", fakeName: String = "Niet-Bestaande Gebruiker") {
+        switchToWebViewWindowContaining(listHeadingLocator)
+        (driver as JavascriptExecutor).executeScript(
+            "const form = document.querySelector(\"form.card\");" +
+                "form.querySelector(\"input[name='bsn']\").value = arguments[0];" +
+                "form.querySelector(\".name\").textContent = arguments[1];" +
+                "form.querySelector(\".bsn\").textContent = \"BSN \" + arguments[0];",
+            fakeBsn,
+            fakeName,
+        )
+        selectTestId(fakeBsn)
     }
 }

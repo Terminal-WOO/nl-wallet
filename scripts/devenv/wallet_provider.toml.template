@@ -1,28 +1,69 @@
-certificate_signing_key_identifier = "certificate_signing_key"
-wua_signing_key_identifier = "wua_signing_key"
-instruction_result_signing_key_identifier = "instruction_result_signing_key"
-attestation_wrapping_key_identifier = "attestation_wrapping_key"
-pin_pubkey_encryption_key_identifier = "pin_pubkey_encryption_key"
-pin_public_disclosure_protection_key_identifier = "pin_public_disclosure_protection_key"
+public_url = "https://${SERVICES_HOST}:${WALLET_PROVIDER_PORT}/"
+
+current_certificate_kid = "${WP_CERTIFICATE_KID}"
+current_instruction_result_kid = "${WP_INSTRUCTION_RESULT_KID}"
+
+wia_certificate = "${WP_WIA_CERTIFICATE}"
+wia_signing_key_identifier = "wia_signing_key"
+# wia_status_tracking_validity_in_days = 365
+# wia_wallet_name = "NL Wallet"
+# wia_wallet_link = "https://wallet.edi.rijksoverheid.nl"
+wia_wallet_version = "${WALLET_VERSION}"
+# wia_wallet_solution_certification_information = "https://wallet.edi.rijksoverheid.nl"
+
+key_attestation_certificate = "${WP_KA_CERTIFICATE}"
+key_attestation_signing_key_identifier = "key_attestation_signing_key"
+# key_attestation_certification = "https://wallet.edi.rijksoverheid.nl"
+
+# Refresh delay in seconds for background job that refreshes flags
+# flags_refresh_delay_in_seconds = 300
+
+# How long, in days, a Wallet Certificate is valid
+# wallet_certificate_validity_in_days = 90
+
+# Indicates if the revoke-solution API endpoint should be enabled
+revoke_solution_enabled = true
 
 # Indicates whether logging should be output in a structured (JSON) manner.
 #structured_logging = false
 
 pid_issuer_trust_anchors = ["${ISSUER_CA_CRT}"]
 
+# Admin Portal OIDC login, see wallet_docs/development/keycloak-setup.md
+[admin_portal]
+keycloak_url = "https://${SERVICES_HOST}:${KC_PORT_HTTPS}"
+keycloak_realm = "nl-wallet"
+keycloak_client_id = "wallet-backend"
+keycloak_trust_anchors = ["${KEYCLOAK_CA_CRT}"]
+public_url = "http://${SERVICES_HOST}:5173"
+session_ttl_in_ms = 900_000
+login_attempt_ttl_in_ms = 600_000
+
+[attestation_wrapping_kid]
+current = "${WP_ATTESTATION_WRAPPING_KID}"
+
+[pin_pubkey_encryption_kid]
+current = "${WP_PIN_PUBKEY_ENCRYPTION_KID}"
+
 [recovery_code_paths]
 "urn:eudi:pid:nl:1" = ["recovery_code"]
 
 [database]
 url = "postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/wallet_provider"
+options = { acquire_timeout_in_sec = 5, connect_timeout_in_sec = 1, max_connections = 5 }
 
-[wua_status_list]
-# TODO add correct path in PVW-4558
-base_url = "https://${SERVICES_HOST}:${CONFIG_SERVER_PORT}/"
-publish_dir = "resources/status-lists"
-private_key_type = "software"
-private_key = "${WUA_TSL_KEY}"
-certificate = "${WUA_TSL_CRT}"
+[audit_log]
+url = "postgres://${DB_USERNAME}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/wallet_provider_audit_log"
+options = { acquire_timeout_in_sec = 5, connect_timeout_in_sec = 1, max_connections = 5 }
+
+[wia_status_list]
+list_size = 100
+base_url = "https://${SERVICES_HOST}:${STATIC_SERVER_PORT}/wia"
+publish_dir = "${WALLET_CORE_DIR}/target/status-lists/wallet_provider"
+key_certificate = "${WIA_TSL_CRT}"
+
+[key_storage_status_list]
+key_certificate = "${KEY_STORAGE_TSL_CRT}"
 
 [webserver]
 ip = "0.0.0.0"
@@ -54,9 +95,8 @@ root_certificates = [
 
 [android]
 root_public_keys = [
-    "${ANDROID_ROOT_PUBKEY}",
-    "${ANDROID_EMULATOR_EC_ROOT_PUBKEY}",
-    "${ANDROID_EMULATOR_RSA_ROOT_PUBKEY}"
+    "${ANDROID_ROOT_RSA_PUBKEY}",
+    "${ANDROID_ROOT_EC_PUBKEY}",
 ]
 package_name = "nl.ictu.edi.wallet.latest"
 allow_sideloading = true

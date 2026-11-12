@@ -33,17 +33,27 @@ class IssuanceLoadInProgress extends IssuanceState {
   final FlowProgress? stepperProgress;
 }
 
+class IssuanceAuthenticateWithIssuer extends IssuanceState {
+  final String authUrl;
+
+  const IssuanceAuthenticateWithIssuer({required this.authUrl});
+
+  @override
+  FlowProgress get stepperProgress => const FlowProgress(currentStep: 1, totalSteps: kIssuanceSteps);
+
+  @override
+  List<Object?> get props => [authUrl, ...super.props];
+}
+
 class IssuanceCheckOrganization extends IssuanceState {
   final Organization organization;
   final List<DiscloseCardRequest> cardRequests;
-  final Policy policy;
   final LocalizedText purpose;
   final bool afterBackPressed;
 
   const IssuanceCheckOrganization({
     required this.organization,
     required this.cardRequests,
-    required this.policy,
     required this.purpose,
     this.afterBackPressed = false,
   });
@@ -59,14 +69,12 @@ class IssuanceCheckOrganization extends IssuanceState {
   IssuanceCheckOrganization copyWith({
     Organization? organization,
     List<DiscloseCardRequest>? cardRequests,
-    Policy? policy,
     LocalizedText? purpose,
     bool? afterBackPressed,
   }) {
     return IssuanceCheckOrganization(
       organization: organization ?? this.organization,
       cardRequests: cardRequests ?? this.cardRequests,
-      policy: policy ?? this.policy,
       purpose: purpose ?? this.purpose,
       afterBackPressed: afterBackPressed ?? this.afterBackPressed,
     );
@@ -79,7 +87,7 @@ class IssuanceCheckOrganization extends IssuanceState {
   FlowProgress get stepperProgress => const FlowProgress(currentStep: 1, totalSteps: kIssuanceSteps);
 
   @override
-  List<Object?> get props => [organization, policy, cardRequests, purpose, ...super.props];
+  List<Object?> get props => [organization, cardRequests, purpose, ...super.props];
 }
 
 class IssuanceMissingAttributes extends IssuanceState {
@@ -161,6 +169,23 @@ class IssuanceReviewCards extends IssuanceState {
   List<Object?> get props => [selectableCards, ...super.props];
 }
 
+/// Asks the user to confirm receiving cards from [organization], for an issuer that does not provide previews.
+class IssuanceConfirmIssuer extends IssuanceState {
+  final Organization organization;
+  final bool afterBackPressed;
+
+  const IssuanceConfirmIssuer({required this.organization, this.afterBackPressed = false});
+
+  @override
+  bool get didGoBack => afterBackPressed;
+
+  @override
+  FlowProgress get stepperProgress => const FlowProgress(currentStep: 3, totalSteps: kIssuanceSteps);
+
+  @override
+  List<Object?> get props => [organization, ...super.props];
+}
+
 class IssuanceProvidePinForIssuance extends IssuanceState {
   final List<WalletCard> cards;
 
@@ -203,10 +228,10 @@ class IssuanceStopped extends IssuanceState {
   List<Object?> get props => [returnUrl, ...super.props];
 }
 
-class IssuanceGenericError extends IssuanceState implements ErrorState {
+class IssuanceError extends IssuanceState implements ErrorState {
   final String? returnUrl;
 
-  const IssuanceGenericError({required this.error, this.returnUrl});
+  const IssuanceError({required this.error, this.returnUrl});
 
   @override
   bool get showStopConfirmation => false;
@@ -243,29 +268,6 @@ class IssuanceNoCardsRetrieved extends IssuanceState {
   List<Object?> get props => [organization, ...super.props];
 }
 
-class IssuanceNetworkError extends IssuanceState implements NetworkErrorState {
-  const IssuanceNetworkError({
-    required this.error,
-    required this.hasInternet,
-    this.statusCode,
-  });
-
-  @override
-  bool get showStopConfirmation => false;
-
-  @override
-  final ApplicationError error;
-
-  @override
-  final bool hasInternet;
-
-  @override
-  final int? statusCode;
-
-  @override
-  List<Object?> get props => [...super.props, error, hasInternet, statusCode];
-}
-
 class IssuanceSessionExpired extends IssuanceState implements ErrorState {
   final bool isCrossDevice;
   final bool canRetry;
@@ -286,43 +288,4 @@ class IssuanceSessionExpired extends IssuanceState implements ErrorState {
 
   @override
   List<Object?> get props => [error, canRetry, isCrossDevice, returnUrl, ...super.props];
-}
-
-/// State that is exposed when the session has been stopped remotely (e.g. the user pressed stop in wallet_web)
-class IssuanceSessionCancelled extends IssuanceState implements ErrorState {
-  final Organization? relyingParty;
-  final String? returnUrl;
-
-  const IssuanceSessionCancelled({
-    required this.error,
-    this.relyingParty,
-    this.returnUrl,
-  });
-
-  @override
-  bool get showStopConfirmation => false;
-
-  @override
-  final ApplicationError error;
-
-  @override
-  List<Object?> get props => [error, relyingParty, returnUrl, ...super.props];
-}
-
-class IssuanceRelyingPartyError extends IssuanceState implements ErrorState {
-  final LocalizedText? organizationName;
-
-  const IssuanceRelyingPartyError({
-    required this.error,
-    this.organizationName,
-  });
-
-  @override
-  bool get showStopConfirmation => false;
-
-  @override
-  final ApplicationError error;
-
-  @override
-  List<Object?> get props => [error, organizationName, ...super.props];
 }

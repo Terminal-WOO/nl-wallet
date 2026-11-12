@@ -1,14 +1,16 @@
 .create-deployment:
   extends: .clone-variables
-  rules: !reference [.default-or-release-or-merge-request, rules]
+  stage: init
+  rules: !reference [.default-branch, rules]
   script:
     # CI variables take precedence over dotenv
     - . deploy-variables/${DEPLOY_ENV}/cluster.env
     - export DEPLOY_ENV
-    - export DEPLOY_IMAGE_VERSION="${CI_COMMIT_TAG:-${CI_COMMIT_SHORT_SHA}}"
+    - export DEPLOY_IMAGE_VERSION="${CI_COMMIT_SHORT_SHA}"
     - export K8S_CLUSTER
     - export K8S_NAMESPACE
-    - envsubst '${DEPLOY_ENV} ${DEPLOY_IMAGE_VERSION} ${K8S_CLUSTER} ${K8S_NAMESPACE}' < deploy/gitlab-templates/deploy-template.yml > deploy-${DEPLOY_ENV}.yml
+    - envsubst '${DEPLOY_ENV} ${DEPLOY_IMAGE_VERSION} ${K8S_CLUSTER} ${K8S_NAMESPACE}' <
+      deploy/gitlab-templates/deploy-template.yml > deploy-${DEPLOY_ENV}.yml
   artifacts:
     name: deploy-${DEPLOY_ENV}
     paths:
@@ -16,18 +18,24 @@
       - deploy-variables/general
       - deploy-variables/${DEPLOY_ENV}
 
+create-deployment-ont:
+  extends: .create-deployment
+  rules: !reference [.default-or-merge-request, rules]
+  variables:
+    DEPLOY_ENV: ont
+
 create-deployment-demo:
   extends: .create-deployment
   variables:
     DEPLOY_ENV: demo
 
-create-deployment-ont:
+create-deployment-pub:
   extends: .create-deployment
   variables:
-    DEPLOY_ENV: ont
+    DEPLOY_ENV: pub
 
 .deploy-apps:
-  rules: !reference [.default-or-release-or-merge-request-manual, rules]
+  stage: deploy
   needs:
     - job: build-update-policy-server-image
       artifacts: false
@@ -35,9 +43,13 @@ create-deployment-ont:
       artifacts: false
     - job: build-wallet-provider-migrations-image
       artifacts: false
+    - job: build-audit-log-migrations-image
+      artifacts: false
     - job: build-demo-relying-party-image
       artifacts: false
     - job: build-demo-issuer-image
+      artifacts: false
+    - job: build-demo-index-image
       artifacts: false
     - job: build-verification-server-image
       artifacts: false
@@ -46,6 +58,14 @@ create-deployment-ont:
     - job: build-issuance-server-image
       artifacts: false
     - job: build-issuance-server-migrations-image
+      artifacts: false
+    - job: build-pacf-issuance-server-image
+      artifacts: false
+    - job: build-pacf-issuance-server-migrations-image
+      artifacts: false
+    - job: build-acf-demo-issuer-image
+      artifacts: false
+    - job: build-acf-demo-issuer-migrations-image
       artifacts: false
     - job: build-pid-issuer-image
       artifacts: false
@@ -57,11 +77,29 @@ create-deployment-ont:
       artifacts: false
     - job: build-gba-fetch-frontend-image
       artifacts: false
+    - job: build-revocation-portal-image
+      artifacts: false
+    - job: build-admin-portal-image
+      artifacts: false
   variables:
     PARENT_PIPELINE_ID: $CI_PIPELINE_ID
 
+deploy-apps-ont:
+  extends: .deploy-apps
+  rules: !reference [.default-or-merge-request-manual, rules]
+  needs:
+    - job: create-deployment-ont
+      artifacts: false
+    - !reference [.deploy-apps, needs]
+  trigger:
+    include:
+      - artifact: deploy-ont.yml
+        job: create-deployment-ont
+    strategy: depend
+
 deploy-apps-demo:
   extends: .deploy-apps
+  rules: !reference [.default-branch, rules]
   needs:
     - job: create-deployment-demo
       artifacts: false
@@ -74,14 +112,17 @@ deploy-apps-demo:
   when: manual
   allow_failure: true
 
-deploy-apps-ont:
+deploy-apps-pub:
   extends: .deploy-apps
+  rules: !reference [.default-branch, rules]
   needs:
-    - job: create-deployment-ont
+    - job: create-deployment-pub
       artifacts: false
     - !reference [.deploy-apps, needs]
   trigger:
     include:
-      - artifact: deploy-ont.yml
-        job: create-deployment-ont
+      - artifact: deploy-pub.yml
+        job: create-deployment-pub
     strategy: depend
+  when: manual
+  allow_failure: true

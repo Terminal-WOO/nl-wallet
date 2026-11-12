@@ -1,0 +1,594 @@
+pub mod authorization;
+mod authorization_endpoints;
+pub mod credential;
+mod credential_request_encryption;
+pub mod discovery;
+pub mod issuance_session;
+pub mod issuer_registration;
+
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
+
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::num::NonZeroU8;
+use std::num::NonZeroUsize;
+
+use attestation_data::attributes::AttributesError;
+use attestation_data::credential_payload::CredentialPayloadFromMdocError;
+use attestation_data::credential_payload::CredentialPayloadFromSdJwtError;
+use attestation_data::credential_payload::PreviewableCredentialPayload;
+use attestation_data::metadata::AttestationClaims;
+use attestation_data::metadata::ClaimConstraint;
+use attestation_types::credential_format::Format;
+use attestation_types::credential_kind::CredentialKind;
+use chrono::DateTime;
+use chrono::Utc;
+use coset::iana;
+use crypto::trust_anchor::TrustAnchors;
+use derive_more::Constructor;
+use error_category::ErrorCategory;
+use itertools::Either;
+use itertools::Itertools;
+use jwe::error::JweJsonEncryptionError;
+use jwt::error::JwkConversionError;
+use jwt::error::JwtParseError;
+use jwt::error::JwtX5cVerifyError;
+use oauth::dpop::DpopError;
+use oauth::dpop::DpopNonceInvalid;
+use oauth::errors::RemoteErrorResponse;
+use oauth::issuer_identifier::IssuerIdentifier;
+use oauth::issuer_identifier::IssuerUrl;
+use oauth::metadata::well_known::WellKnownError;
+use oauth::scope::Scope;
+use reqwest::header::ToStrError;
+use sd_jwt::claims::NonSelectivelyDisclosableClaimsError;
+use sd_jwt::error::DecoderError;
+use sd_jwt_vc_metadata::NormalizedTypeMetadata;
+use sd_jwt_vc_metadata::SortedTypeMetadataDocuments;
+use sd_jwt_vc_metadata::TypeMetadataChainError;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use url::Url;
+use utils::generator::Generator;
+use utils::vec_at_least::NonEmptyIterator;
+use utils::vec_at_least::VecNonEmpty;
+use wscd::issuance::IssuanceWscd;
+use wscd::payload::key_attestation::KeyAttestationVerificationError;
+use wscd::wia::WiaClient;
+
+use self::authorization::OAuthError;
+use self::authorization_endpoints::AuthorizationEndpointsError;
+use self::credential::CredentialWithMetadata;
+pub use self::credential_request_encryption::CredentialRequestEncryptionMetadataError;
+use self::issuer_registration::IssuerRegistration;
+use crate::authorization_details::CredentialId;
+use crate::client_auth::ClientAttestationChallengeError;
+use crate::client_auth::ClientAttestationChallengeMechanismError;
+use crate::client_auth::ClientAttestationMetadataError;
+use crate::errors::CredentialErrorCode;
+use crate::errors::CredentialPreviewErrorCode;
+use crate::errors::VciTokenErrorCode;
+use crate::metadata::issuer_metadata::CredentialConfigurationId;
+use crate::metadata::issuer_metadata::CredentialMetadata;
+use crate::registration_certificate::RegistrationCertificateError;
+
+const SUPPORTED_MDOC_ISSUER_ALGORITHMS: &[iana::Algorithm] = &[
+    iana::Algorithm::ES256,
+    iana::Algorithm::ES384,
+    iana::Algorithm::ESP256,
+    iana::Algorithm::ESP384,
+];
+
+#[derive(Debug, thiserror::Error, ErrorCategory)]
+#[category(defer)]
+pub enum WalletIssuanceError {
+    #[error("DPoP error: {0}")]
+    Dpop(#[from] DpopError),
+
+    #[error("failed to convert JWK to public key: {0}")]
+    JwkConversion(#[from] JwkConversionError),
+
+    #[error("could not parse Issuer Metadata JWT: {0}")]
+    JwtParse(#[source] JwtParseError),
+
+    #[error("key attestation received from WSCD is invalid: {0}")]
+    InvalidKeyAttestation(#[source] KeyAttestationVerificationError),
+
+    #[error("could not encrypt credential request: {0}")]
+    #[category(pd)]
+    CredentialRequestEncryption(#[source] JweJsonEncryptionError),
+
+    #[error("mismatch between issued and previewed credential, issued: {actual:?} , previewed: {expected:?}")]
+    #[category(pd)]
+    IssuedCredentialMismatch {
+        actual: Box<PreviewableCredentialPayload>,
+        expected: Box<PreviewableCredentialPayload>,
+    },
+
+    #[error("mdoc verification failed: {0}")]
+    MdocVerification(#[source] mdoc::Error),
+
+    #[error("SD-JWT verification failed: {0}")]
+    #[category(pd)]
+    SdJwtVerification(#[from] DecoderError),
+
+    #[error("type metadata verification failed: {0}")]
+    #[category(critical)]
+    TypeMetadataVerification(#[source] TypeMetadataChainError),
+
+    #[error("attributes do not match metadata: {0}")]
+    #[category(pd)]
+    AttributesVerification(#[from] AttributesError),
+
+    #[error(
+        "no OAuth scope value present in Issuer Metadata for Credential Configuration ID(s): {}",
+        .0.iter().join(", ")
+    )]
+    #[category(critical)]
+    IssuerMetadataNoScope(Vec<CredentialConfigurationId>),
+
+    #[error("could not push authorization request to server: {0:?}")]
+    #[category(expected)]
+    ParHttp(#[source] reqwest::Error),
+
+    #[error("could not retrieve access token from issuer: {0:?}")]
+    #[category(expected)]
+    TokenRequestHttp(#[source] reqwest::Error),
+
+    #[error("retrieving access token from issuer reported an error: {0:?}")]
+    #[category(pd)]
+    VciTokenRequest(Box<RemoteErrorResponse<VciTokenErrorCode>>),
+
+    #[error("pre-authorized code is no longer valid: it has expired or was already used")]
+    #[category(expected)]
+    PreAuthorizedCodeExpired,
+
+    #[error("could not retrieve credential preview from issuer: {0:?}")]
+    #[category(expected)]
+    CredentialPreviewHttp(#[source] reqwest::Error),
+
+    #[error("retrieving credential preview from issuer reported an error: {0:?}")]
+    #[category(pd)]
+    CredentialPreview(Box<RemoteErrorResponse<CredentialPreviewErrorCode>>),
+
+    #[error("could not retrieve type metadata from issuer: {0:?}")]
+    #[category(expected)]
+    TypeMetadataHttp(#[source] reqwest::Error),
+
+    #[error("could not retrieve nonce from issuer: {0:?}")]
+    #[category(expected)]
+    NonceHttp(#[source] reqwest::Error),
+
+    #[error("could not retrieve credential(s) from issuer: {0:?}")]
+    #[category(expected)]
+    CredentialRequestHttp(#[source] reqwest::Error),
+
+    #[error("retrieving credential(s) from issuer reported an error: {0:?}")]
+    #[category(pd)]
+    CredentialRequest(Box<RemoteErrorResponse<CredentialErrorCode>>),
+
+    #[error("generating credential private keys failed: {0}")]
+    #[category(pd)]
+    PrivateKeyGeneration(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error(
+        "received private key identifiers for unexpected credential count from WSCD, expected: {expected}, received: \
+         {received}"
+    )]
+    #[category(pd)]
+    PrivateKeyCredentialCount {
+        expected: NonZeroUsize,
+        received: NonZeroUsize,
+    },
+
+    #[error("WIA issuance failed: {0}")]
+    #[category(pd)]
+    WiaIssuance(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("public key contained in mdoc not equal to expected value")]
+    #[category(critical)]
+    PublicKeyMismatch,
+
+    #[error("deferred issuance is not supported")]
+    #[category(expected)]
+    DeferredIssuanceUnsupported,
+
+    #[error("credential preview with mdoc format has credential configuration with SD-JWT VC Type Metadata")]
+    #[category(impossible)]
+    MdocPreviewWithSdJwtVcTypeMetadata,
+
+    #[error("received credential response: {actual}, expected type {expected}")]
+    #[category(pd)]
+    UnexpectedCredentialResponseType { expected: Format, actual: Format },
+
+    #[error("could not read DPoP nonce from header: {0}")]
+    #[category(pd)]
+    DpopNonceHeader(#[source] ToStrError),
+
+    #[error("DPoP nonce header is not valid: {0}")]
+    #[category(pd)]
+    DpopNonce(#[source] DpopNonceInvalid),
+
+    #[error(
+        "unknown Credential Configuration ID(s) received in Token Response authorization_details: {}",
+        .0.iter().join(", ")
+    )]
+    #[category(pd)]
+    AuthorizationDetailsUnknownCredentialConfigIds(Vec<CredentialConfigurationId>),
+
+    #[error(
+        "duplicate Credential IDs for different Credential Configuration IDs received in Token Response \
+         authorization_details: {}",
+        .0.iter().map(|(credential_id, config_ids)| {
+            format!("{}: {}", credential_id, config_ids.iter().join(" & "))
+        }).join(", ")
+    )]
+    #[category(pd)]
+    AuthorizationDetailsDuplicateCredentialIds(HashMap<CredentialId, HashSet<CredentialConfigurationId>>),
+
+    #[error("empty scope set received in Token Response")]
+    #[category(critical)]
+    TokenResponseEmptyScope,
+
+    #[error("unknown scope values received in Token Response: {}", .0.iter().join(" "))]
+    #[category(critical)]
+    TokenResponseUnknownScope(Vec<Scope>),
+
+    #[error(
+        "no metadata (type metadata URI or credential metadata) available for credential configuration ID(s): {}",
+        .0.iter().join(", ")
+    )]
+    #[category(critical)]
+    MetadataMissing(Vec<CredentialConfigurationId>),
+
+    #[error("none of the offered credential configurations has a supported format")]
+    #[category(critical)]
+    NoSupportedCredentialConfigurations,
+
+    #[error(
+        "type metadata URI(s) found in Issuer Metadata with issuer identifier \"{}\" that have a different host: {}",
+        .0,
+        .1.iter().join(", ")
+    )]
+    #[category(critical)]
+    TypeMetadataHostMismatch(Box<IssuerIdentifier>, Box<Vec<IssuerUrl>>),
+
+    #[error(
+        "type metadata URI(s) for multiple attestation types detected: {}",
+        .0.iter().map(|(uri, attestation_types)| {
+            format!("{}: {}", uri, attestation_types.iter().join(" / "))
+        }).join(", ")
+    )]
+    #[category(critical)]
+    TypeMetadataUriMultipleVcts(Box<Vec<(IssuerUrl, Vec<String>)>>),
+
+    #[error("missing metadata integrity digest in SD-JWT payload")]
+    #[category(critical)]
+    MetadataIntegrityMissing,
+
+    #[error("type metadata integrity did not verify correctly: {0}")]
+    #[category(critical)]
+    MetadataIntegrityVerification(#[source] TypeMetadataChainError),
+
+    #[error("credential copies are inconsistent")]
+    #[category(critical)]
+    CredentialCopiesInconsistent,
+
+    #[error("could not determine non-selectively disclosable claims of SD-JWT: {0}")]
+    #[category(critical)]
+    NonSelectivelyDisclosableClaims(#[source] NonSelectivelyDisclosableClaimsError),
+
+    #[error("error discovering Oauth metadata: {0}")]
+    #[category(expected)]
+    OauthDiscovery(#[source] WellKnownError),
+
+    #[error("not all authorization endpoints present: {0}")]
+    AuthorizationEndpoints(#[source] AuthorizationEndpointsError),
+
+    #[error("could not retrieve Credential Issuer metadata: {0}")]
+    #[category(expected)]
+    CredentialIssuerMetadataHttp(#[source] reqwest::Error),
+
+    #[error(
+        "issuer identifier in Credential Issuer metadata does not match, expected: {expected}, received: {received}"
+    )]
+    #[category(expected)]
+    CredentialIssuerMetadataIdentifierMismatch {
+        expected: Box<IssuerIdentifier>,
+        received: Box<IssuerIdentifier>,
+    },
+
+    #[error("could not verify Credential Issuer metadata: {0}")]
+    #[category(expected)]
+    CredentialIssuerMetadataVerify(#[source] JwtX5cVerifyError),
+
+    #[error("invalid issuer registration certificate: {0}")]
+    #[category(expected)]
+    IssuerRegistrationCertificate(#[source] RegistrationCertificateError),
+
+    #[error(
+        "authorization server specified in Credential Offer is not present in OAuth metadata: {} not in {}",
+        .0,
+        .1.iter().join(" or ")
+    )]
+    #[category(expected)]
+    AuthorizationServerMismatch(Box<IssuerIdentifier>, Box<VecNonEmpty<IssuerIdentifier>>),
+
+    #[error("missing Credential Configuration ID from Credential Offer in Issuer Metadata: {}", .0.iter().join(", "))]
+    #[category(expected)]
+    MissingCredentialConfigId(Vec<CredentialConfigurationId>),
+
+    #[error("offered Credential Configuration ID `{0}` has an unsupported format and cannot be authorized")]
+    #[category(pd)]
+    UnsupportedOfferedCredentialConfiguration(CredentialConfigurationId),
+
+    #[error("error during OAuth: {0}")]
+    #[category(expected)]
+    OAuth(#[from] OAuthError),
+
+    #[error("issuer has no nonce endpoint, yet one of the credential configurations require cryptographic binding")]
+    #[category(critical)]
+    NoNonceEndpoint,
+
+    #[error(
+        "at least one of the offered credential configurations does not support the \"attestation\" proof type: {}",
+        .0.iter().join(", ")
+    )]
+    #[category(pd)]
+    AttestationProofTypeUnsupported(VecNonEmpty<CredentialConfigurationId>),
+
+    #[error(
+        "issuer offered Credential Configurations for none of the requested credential kinds, \
+         requested: {}, offered: {}",
+        requested.iter().join(", "),
+        offered.iter().join(", ")
+    )]
+    #[category(pd)]
+    CredentialKindsNotOffered {
+        requested: HashSet<CredentialKind>,
+        offered: Vec<CredentialKind>,
+    },
+
+    #[error("malformed attribute: random too short (was {0}; minimum {1}")]
+    #[category(critical)]
+    AttributeRandomLength(usize, usize),
+
+    #[error("error converting mdoc to a CredentialPayload: {0}")]
+    MdocCredentialPayload(#[from] CredentialPayloadFromMdocError),
+
+    #[error("error converting SD-JWT to a CredentialPayload: {0}")]
+    SdJwtCredentialPayloadError(#[from] CredentialPayloadFromSdJwtError),
+
+    #[error(
+        "the received credential preview is missing credentials the issuer offered: {}",
+        .0.iter()
+            .map(|(config_id, credential_id, format)| {
+                format!(
+                    "config id: \"{}\"{} format: {}",
+                    config_id,
+                    credential_id.as_ref().map(|id| format!(" credential_id: \"{id}\"")).unwrap_or_default(),
+                    format
+                )
+            })
+            .join(", ")
+    )]
+    #[category(pd)]
+    PreviewMissingCredentials(HashSet<(CredentialConfigurationId, Option<CredentialId>, Format)>),
+
+    #[error(
+        "the received credential preview contains more credentials than the issuer offered: {}",
+        .0.iter()
+            .map(|(config_id, credential_id, format)| {
+                format!("config id: \"{config_id}\" credential id: \"{credential_id}\" format: {format}")
+            })
+            .join(", ")
+    )]
+    #[category(pd)]
+    PreviewExcessCredentials(Vec<(CredentialConfigurationId, CredentialId, Format)>),
+
+    #[error("missing query in credential offer URI")]
+    #[category(critical)]
+    MissingCredentialOfferQuery,
+
+    #[error("failed to deserialize credential offer: {0}")]
+    #[category(pd)]
+    CredentialOfferDeserialization(#[source] serde_qs::Error),
+
+    #[error("could not retrieve credential offer from issuer: {0:?}")]
+    #[category(expected)]
+    CredentialOfferHttp(#[source] reqwest::Error),
+
+    #[error("only unknown grant type(s) found in Credential Offer: {}", .0.iter().join(", "))]
+    #[category(expected)]
+    CredentialOfferUnknownGrants(HashSet<String>),
+
+    #[error(
+        "the Credential Offer did not contain any grants and the Authorization Server does not support the \
+         Authorization Code grant"
+    )]
+    #[category(expected)]
+    AuthorizationCodeNotSupported,
+
+    #[error("a Credential Offer containing a Pre-Authorized code with a Transaction Code is unsupported")]
+    #[category(expected)]
+    CredentialOfferTxCodeUnsupported,
+
+    #[error("the Credential Offer did not resolve to using the Authorization Code flow")]
+    #[category(expected)]
+    CredentialOfferNoAuthorizationCode,
+
+    #[error("the Credential Offer did not contain a Pre-Authorized Code")]
+    #[category(expected)]
+    CredentialOfferNoPreAuthorizedCode,
+
+    #[error("could not verify Authorization Server support for Attestation-Based Client Authentication: {0}")]
+    ClientAttestationMetadata(#[source] ClientAttestationMetadataError),
+
+    #[error("could not determine credential request encryption parameters from issuer metadata: {0}")]
+    CredentialRequestEncryptionMetadata(#[source] CredentialRequestEncryptionMetadataError),
+
+    #[error("could not determine Attestation-Based Client Authentication challenge mechanism: {0}")]
+    ClientAttestationChallengeMechanism(#[source] ClientAttestationChallengeMechanismError),
+
+    #[error("could not fetch Attestation-Based Client Authentication challenge: {0}")]
+    ClientAttestationChallenge(#[source] ClientAttestationChallengeError),
+}
+
+/// The set of parameters that are common to all methods that start issuance discovery.
+#[derive(Debug, Clone, Copy, Constructor)]
+pub struct IssuanceDiscoveryParameters<'a, W> {
+    pub offer_uri: &'a Url,
+    pub selection: &'a CredentialSelection,
+    pub wia_client: &'a W,
+    pub wrpac_trust_anchors: &'a TrustAnchors,
+    pub wrprc_trust_anchors: &'a TrustAnchors,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfferedCredentialMetadata {
+    TypeMetadata {
+        normalized: NormalizedTypeMetadata,
+        raw: SortedTypeMetadataDocuments,
+    },
+    CredentialMetadata(CredentialMetadata),
+}
+
+impl AttestationClaims for OfferedCredentialMetadata {
+    fn claim_constraints(&self) -> impl Iterator<Item = ClaimConstraint<'_>> {
+        match self {
+            Self::TypeMetadata { normalized, .. } => Either::Left(normalized.claim_constraints()),
+            Self::CredentialMetadata(metadata) => Either::Right(metadata.claim_constraints()),
+        }
+    }
+}
+
+/// The preview of a credential offered by the issuer, together with the metadata of its Credential Configuration. The
+/// `format` is that of the Credential Configuration and is checked against the format of the received credential
+/// preview.
+#[derive(Debug, Clone, Copy)]
+pub struct OfferedCredentialPreview<'a> {
+    pub format: Format,
+    pub credential_payload: &'a PreviewableCredentialPayload,
+    pub metadata: &'a OfferedCredentialMetadata,
+}
+
+/// Allows selection of specific credential kinds (i.e. combinations of format and attestation type) at the start of
+/// issuance. If the `CredentialSelection::ByCredentialKind` variant is used, issuance will fail if the issuer offers
+/// none of the credential kinds. If some of them match, issuance will proceed with those matched credential
+/// configurations.
+#[derive(Debug, Clone)]
+pub enum CredentialSelection {
+    All,
+    ByCredentialKind(HashSet<CredentialKind>),
+}
+
+#[derive(Debug)]
+pub enum IssuanceFlow<A, I> {
+    AuthorizationCode { authorization_session: A },
+    PreAuthorizedCode { issuance_session: I },
+}
+
+/// Discovers credential issuer and OAuth authorization server metadata, then starts an issuance flow.
+pub trait IssuanceDiscovery {
+    type Authorization: AuthorizationSession<Issuance = Self::Issuance>;
+    type Issuance: IssuanceSession;
+
+    /// Parses the Credential Offer from the redirect URI, fetches issuer and OAuth metadata and then either returns an
+    /// [`AuthorizationSession`] the caller can use to redirect the user into a web-based OAuth flow (if the Credential
+    /// Offer resolves to an Authorization Code flow) or immediately returns an [`IssuanceSession`] that the caller can
+    /// use to request issued credentials (if the Credential Offer contains a Pre-Authorized Code).
+    async fn start<'a, W>(
+        &self,
+        common_parameters: IssuanceDiscoveryParameters<'a, W>,
+        client_id: String,
+        redirect_uri: Url,
+    ) -> Result<IssuanceFlow<Self::Authorization, Self::Issuance>, WalletIssuanceError>
+    where
+        W: WiaClient;
+
+    /// Parses the Credential Offer from the redirect URI, fetches issuer and OAuth metadata and then returns an
+    /// [`AuthorizationSession`] the caller can use to redirect the user into a web-based OAuth flow. If the credential
+    /// offer contains a Pre-Authorized code, this returns an error.
+    async fn start_authorization_code_flow<'a, W>(
+        &self,
+        common_parameters: IssuanceDiscoveryParameters<'a, W>,
+        client_id: String,
+        redirect_uri: Url,
+    ) -> Result<Self::Authorization, WalletIssuanceError>
+    where
+        W: WiaClient;
+
+    /// Parses the Credential Offer from the redirect URI, fetches issuer and OAuth metadata and then returns an
+    /// [`IssuanceSession`] that the caller can use to request issued credentials. If the Credential Offer resolves to
+    /// an Authorization Code flow, this returns an error.
+    async fn start_pre_authorized_code_flow<'a, W>(
+        &self,
+        common_parameters: IssuanceDiscoveryParameters<'a, W>,
+    ) -> Result<Self::Issuance, WalletIssuanceError>
+    where
+        W: WiaClient;
+
+    /// Rebuilds an [`AuthorizationSession`] from data that was persisted before the app left memory.
+    fn restore_authorization_session(
+        &self,
+        data: <Self::Authorization as AuthorizationSession>::Persisted,
+    ) -> Self::Authorization;
+}
+
+/// Represents an in-progress OAuth authorization code flow.
+///
+/// The caller should redirect the user to [`auth_url`](AuthorizationSession::auth_url) and then
+/// call [`start_issuance`](AuthorizationSession::start_issuance) with the redirect URI the
+/// authorization server returns after the user authenticates.
+pub trait AuthorizationSession {
+    type Issuance: IssuanceSession;
+    type Persisted: Clone + Send + Sync + Serialize + DeserializeOwned + 'static;
+
+    /// Returns the authorization URL the user should be redirected to.
+    fn auth_url(&self) -> &Url;
+
+    /// Returns the OAuth `state` (CSRF token) stored in the PAR-submitted authorization request.
+    fn state(&self) -> &str;
+
+    /// Returns the data needed to resume the authorization code flow after an app restart.
+    fn persist(&self) -> Self::Persisted;
+
+    /// Exchanges the authorization code in `received_redirect_uri` for an access token and
+    /// credential previews, returning an [`IssuanceSession`].
+    async fn start_issuance(
+        self,
+        received_redirect_uri: &Url,
+        wia_client: &impl WiaClient,
+    ) -> Result<Self::Issuance, WalletIssuanceError>;
+}
+
+#[derive(Debug, Clone, Copy, Constructor)]
+pub struct AcceptIssuanceTrustAnchors<'a> {
+    pub issuer_trust_anchors: &'a TrustAnchors,
+    pub wptl_trust_anchors: &'a TrustAnchors,
+}
+
+/// Represents an active credential issuance session.
+pub trait IssuanceSession {
+    /// Accept all of the credentials the issuer offered. Cap the amount of copies of each credential the issuer offers
+    /// to `max_copy_count`.
+    ///
+    /// If the issuer provides previews, the credentials are returned in the same order as the previews returned by
+    /// [`Self::credential_previews`]. If not, the order of the credentials is not relevant.
+    async fn accept_issuance<'a, W, G>(
+        &mut self,
+        max_copy_count: NonZeroU8,
+        trust_anchors: AcceptIssuanceTrustAnchors<'a>,
+        wscd: &W,
+        time: &G,
+    ) -> Result<Vec<CredentialWithMetadata>, WalletIssuanceError>
+    where
+        W: IssuanceWscd,
+        G: Generator<DateTime<Utc>>;
+
+    /// Returns the credential previews with their metadata, or `None` if the issuer does not provide previews.
+    fn credential_previews(&self) -> Option<impl NonEmptyIterator<Item = OfferedCredentialPreview<'_>>>;
+
+    fn issuer_registration(&self) -> &IssuerRegistration;
+}

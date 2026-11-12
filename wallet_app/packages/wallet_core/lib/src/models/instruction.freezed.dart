@@ -1,6 +1,6 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // coverage:ignore-file
-// ignore_for_file: type=lint
+// ignore_for_file: type=lint, type=warning, deprecated_member_use, deprecated_member_use_from_same_package
 // ignore_for_file: unused_element, deprecated_member_use, deprecated_member_use_from_same_package, use_function_type_syntax_for_parameters, unnecessary_const, avoid_init_to_null, invalid_override_different_default_values_named, prefer_expression_function_bodies, annotate_overrides, invalid_annotation_target, unnecessary_question_mark
 
 part of 'instruction.dart';
@@ -9,10 +9,11 @@ part of 'instruction.dart';
 // FreezedGenerator
 // **************************************************************************
 
+// GENERATED CODE - DO NOT MODIFY BY HAND
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
-mixin _$DisclosureBasedIssuanceResult {
+mixin _$DisclosureBasedIssuanceInstructionResult {
 
 
 
@@ -20,7 +21,7 @@ mixin _$DisclosureBasedIssuanceResult {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DisclosureBasedIssuanceResult);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is DisclosureBasedIssuanceInstructionResult);
 }
 
 
@@ -29,20 +30,20 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'DisclosureBasedIssuanceResult()';
+    return 'DisclosureBasedIssuanceInstructionResult()';
 }
 
 
 }
 
 /// @nodoc
-class $DisclosureBasedIssuanceResultCopyWith<$Res>  {
-$DisclosureBasedIssuanceResultCopyWith(DisclosureBasedIssuanceResult _, $Res Function(DisclosureBasedIssuanceResult) __);
+class $DisclosureBasedIssuanceInstructionResultCopyWith<$Res>  {
+$DisclosureBasedIssuanceInstructionResultCopyWith(DisclosureBasedIssuanceInstructionResult _, $Res Function(DisclosureBasedIssuanceInstructionResult) __);
 }
 
 
-/// Adds pattern-matching-related methods to [DisclosureBasedIssuanceResult].
-extension DisclosureBasedIssuanceResultPatterns on DisclosureBasedIssuanceResult {
+/// Adds pattern-matching-related methods to [DisclosureBasedIssuanceInstructionResult].
+extension DisclosureBasedIssuanceInstructionResultPatterns on DisclosureBasedIssuanceInstructionResult {
 /// A variant of `map` that fallback to returning `orElse`.
 ///
 /// It is equivalent to doing:
@@ -55,11 +56,11 @@ extension DisclosureBasedIssuanceResultPatterns on DisclosureBasedIssuanceResult
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DisclosureBasedIssuanceResult_Ok value)?  ok,TResult Function( DisclosureBasedIssuanceResult_InstructionError value)?  instructionError,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( DisclosureBasedIssuanceInstructionResult_Ok value)?  ok,TResult Function( DisclosureBasedIssuanceInstructionResult_InstructionError value)?  instructionError,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case DisclosureBasedIssuanceResult_Ok() when ok != null:
-return ok(_that);case DisclosureBasedIssuanceResult_InstructionError() when instructionError != null:
+case DisclosureBasedIssuanceInstructionResult_Ok() when ok != null:
+return ok(_that);case DisclosureBasedIssuanceInstructionResult_InstructionError() when instructionError != null:
 return instructionError(_that);case _:
   return orElse();
 
@@ -78,11 +79,11 @@ return instructionError(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DisclosureBasedIssuanceResult_Ok value)  ok,required TResult Function( DisclosureBasedIssuanceResult_InstructionError value)  instructionError,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( DisclosureBasedIssuanceInstructionResult_Ok value)  ok,required TResult Function( DisclosureBasedIssuanceInstructionResult_InstructionError value)  instructionError,}){
 final _that = this;
 switch (_that) {
-case DisclosureBasedIssuanceResult_Ok():
-return ok(_that);case DisclosureBasedIssuanceResult_InstructionError():
+case DisclosureBasedIssuanceInstructionResult_Ok():
+return ok(_that);case DisclosureBasedIssuanceInstructionResult_InstructionError():
 return instructionError(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
@@ -97,11 +98,11 @@ return instructionError(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DisclosureBasedIssuanceResult_Ok value)?  ok,TResult? Function( DisclosureBasedIssuanceResult_InstructionError value)?  instructionError,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( DisclosureBasedIssuanceInstructionResult_Ok value)?  ok,TResult? Function( DisclosureBasedIssuanceInstructionResult_InstructionError value)?  instructionError,}){
 final _that = this;
 switch (_that) {
-case DisclosureBasedIssuanceResult_Ok() when ok != null:
-return ok(_that);case DisclosureBasedIssuanceResult_InstructionError() when instructionError != null:
+case DisclosureBasedIssuanceInstructionResult_Ok() when ok != null:
+return ok(_that);case DisclosureBasedIssuanceInstructionResult_InstructionError() when instructionError != null:
 return instructionError(_that);case _:
   return null;
 
@@ -119,10 +120,10 @@ return instructionError(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( List<AttestationPresentation> field0)?  ok,TResult Function( WalletInstructionError error)?  instructionError,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( DisclosureBasedIssuanceResult field0)?  ok,TResult Function( WalletInstructionError error)?  instructionError,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case DisclosureBasedIssuanceResult_Ok() when ok != null:
-return ok(_that.field0);case DisclosureBasedIssuanceResult_InstructionError() when instructionError != null:
+case DisclosureBasedIssuanceInstructionResult_Ok() when ok != null:
+return ok(_that.field0);case DisclosureBasedIssuanceInstructionResult_InstructionError() when instructionError != null:
 return instructionError(_that.error);case _:
   return orElse();
 
@@ -141,10 +142,10 @@ return instructionError(_that.error);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( List<AttestationPresentation> field0)  ok,required TResult Function( WalletInstructionError error)  instructionError,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( DisclosureBasedIssuanceResult field0)  ok,required TResult Function( WalletInstructionError error)  instructionError,}) {final _that = this;
 switch (_that) {
-case DisclosureBasedIssuanceResult_Ok():
-return ok(_that.field0);case DisclosureBasedIssuanceResult_InstructionError():
+case DisclosureBasedIssuanceInstructionResult_Ok():
+return ok(_that.field0);case DisclosureBasedIssuanceInstructionResult_InstructionError():
 return instructionError(_that.error);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -159,10 +160,10 @@ return instructionError(_that.error);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( List<AttestationPresentation> field0)?  ok,TResult? Function( WalletInstructionError error)?  instructionError,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( DisclosureBasedIssuanceResult field0)?  ok,TResult? Function( WalletInstructionError error)?  instructionError,}) {final _that = this;
 switch (_that) {
-case DisclosureBasedIssuanceResult_Ok() when ok != null:
-return ok(_that.field0);case DisclosureBasedIssuanceResult_InstructionError() when instructionError != null:
+case DisclosureBasedIssuanceInstructionResult_Ok() when ok != null:
+return ok(_that.field0);case DisclosureBasedIssuanceInstructionResult_InstructionError() when instructionError != null:
 return instructionError(_that.error);case _:
   return null;
 
@@ -174,112 +175,119 @@ return instructionError(_that.error);case _:
 /// @nodoc
 
 
-class DisclosureBasedIssuanceResult_Ok extends DisclosureBasedIssuanceResult {
-  const DisclosureBasedIssuanceResult_Ok(final  List<AttestationPresentation> field0): _field0 = field0,super._();
+class DisclosureBasedIssuanceInstructionResult_Ok extends DisclosureBasedIssuanceInstructionResult {
+  const DisclosureBasedIssuanceInstructionResult_Ok(this.field0): super._();
   
 
- final  List<AttestationPresentation> _field0;
- List<AttestationPresentation> get field0 {
-  if (_field0 is EqualUnmodifiableListView) return _field0;
-  // ignore: implicit_dynamic_type
-  return EqualUnmodifiableListView(_field0);
-}
+ final  DisclosureBasedIssuanceResult field0;
 
-
-/// Create a copy of DisclosureBasedIssuanceResult
+/// Create a copy of DisclosureBasedIssuanceInstructionResult
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$DisclosureBasedIssuanceResult_OkCopyWith<DisclosureBasedIssuanceResult_Ok> get copyWith => _$DisclosureBasedIssuanceResult_OkCopyWithImpl<DisclosureBasedIssuanceResult_Ok>(this, _$identity);
+$DisclosureBasedIssuanceInstructionResult_OkCopyWith<DisclosureBasedIssuanceInstructionResult_Ok> get copyWith => _$DisclosureBasedIssuanceInstructionResult_OkCopyWithImpl<DisclosureBasedIssuanceInstructionResult_Ok>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DisclosureBasedIssuanceResult_Ok&&const DeepCollectionEquality().equals(other._field0, _field0));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is DisclosureBasedIssuanceInstructionResult_Ok&&(identical(other.field0, field0) || other.field0 == field0));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,const DeepCollectionEquality().hash(_field0));
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
 
 @override
 String toString() {
-  return 'DisclosureBasedIssuanceResult.ok(field0: $field0)';
+    return 'DisclosureBasedIssuanceInstructionResult.ok(field0: $field0)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $DisclosureBasedIssuanceResult_OkCopyWith<$Res> implements $DisclosureBasedIssuanceResultCopyWith<$Res> {
-  factory $DisclosureBasedIssuanceResult_OkCopyWith(DisclosureBasedIssuanceResult_Ok value, $Res Function(DisclosureBasedIssuanceResult_Ok) _then) = _$DisclosureBasedIssuanceResult_OkCopyWithImpl;
+abstract mixin class $DisclosureBasedIssuanceInstructionResult_OkCopyWith<$Res> implements $DisclosureBasedIssuanceInstructionResultCopyWith<$Res> {
+  factory $DisclosureBasedIssuanceInstructionResult_OkCopyWith(DisclosureBasedIssuanceInstructionResult_Ok value, $Res Function(DisclosureBasedIssuanceInstructionResult_Ok) _then) = _$DisclosureBasedIssuanceInstructionResult_OkCopyWithImpl;
 @useResult
 $Res call({
- List<AttestationPresentation> field0
+ DisclosureBasedIssuanceResult field0
 });
 
 
-
+$DisclosureBasedIssuanceResultCopyWith<$Res> get field0;
 
 }
 /// @nodoc
-class _$DisclosureBasedIssuanceResult_OkCopyWithImpl<$Res>
-    implements $DisclosureBasedIssuanceResult_OkCopyWith<$Res> {
-  _$DisclosureBasedIssuanceResult_OkCopyWithImpl(this._self, this._then);
+class _$DisclosureBasedIssuanceInstructionResult_OkCopyWithImpl<$Res>
+    implements $DisclosureBasedIssuanceInstructionResult_OkCopyWith<$Res> {
+  _$DisclosureBasedIssuanceInstructionResult_OkCopyWithImpl(this._self, this._then);
 
-  final DisclosureBasedIssuanceResult_Ok _self;
-  final $Res Function(DisclosureBasedIssuanceResult_Ok) _then;
+  final DisclosureBasedIssuanceInstructionResult_Ok _self;
+  final $Res Function(DisclosureBasedIssuanceInstructionResult_Ok) _then;
 
-/// Create a copy of DisclosureBasedIssuanceResult
+/// Create a copy of DisclosureBasedIssuanceInstructionResult
 /// with the given fields replaced by the non-null parameter values.
 @pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(DisclosureBasedIssuanceResult_Ok(
-null == field0 ? _self._field0 : field0 // ignore: cast_nullable_to_non_nullable
-as List<AttestationPresentation>,
+  return _then(DisclosureBasedIssuanceInstructionResult_Ok(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as DisclosureBasedIssuanceResult,
   ));
 }
 
-
+/// Create a copy of DisclosureBasedIssuanceInstructionResult
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$DisclosureBasedIssuanceResultCopyWith<$Res> get field0 {
+  
+  return $DisclosureBasedIssuanceResultCopyWith<$Res>(_self.field0, (value) {
+    return _then(_self.copyWith(field0: value));
+  });
+}
 }
 
 /// @nodoc
 
 
-class DisclosureBasedIssuanceResult_InstructionError extends DisclosureBasedIssuanceResult {
-  const DisclosureBasedIssuanceResult_InstructionError({required this.error}): super._();
+class DisclosureBasedIssuanceInstructionResult_InstructionError extends DisclosureBasedIssuanceInstructionResult {
+  const DisclosureBasedIssuanceInstructionResult_InstructionError({required this.error}): super._();
   
 
  final  WalletInstructionError error;
 
-/// Create a copy of DisclosureBasedIssuanceResult
+/// Create a copy of DisclosureBasedIssuanceInstructionResult
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$DisclosureBasedIssuanceResult_InstructionErrorCopyWith<DisclosureBasedIssuanceResult_InstructionError> get copyWith => _$DisclosureBasedIssuanceResult_InstructionErrorCopyWithImpl<DisclosureBasedIssuanceResult_InstructionError>(this, _$identity);
+$DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWith<DisclosureBasedIssuanceInstructionResult_InstructionError> get copyWith => _$DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWithImpl<DisclosureBasedIssuanceInstructionResult_InstructionError>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is DisclosureBasedIssuanceResult_InstructionError&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is DisclosureBasedIssuanceInstructionResult_InstructionError&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,error);
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
 
 @override
 String toString() {
-  return 'DisclosureBasedIssuanceResult.instructionError(error: $error)';
+    return 'DisclosureBasedIssuanceInstructionResult.instructionError(error: $error)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $DisclosureBasedIssuanceResult_InstructionErrorCopyWith<$Res> implements $DisclosureBasedIssuanceResultCopyWith<$Res> {
-  factory $DisclosureBasedIssuanceResult_InstructionErrorCopyWith(DisclosureBasedIssuanceResult_InstructionError value, $Res Function(DisclosureBasedIssuanceResult_InstructionError) _then) = _$DisclosureBasedIssuanceResult_InstructionErrorCopyWithImpl;
+abstract mixin class $DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWith<$Res> implements $DisclosureBasedIssuanceInstructionResultCopyWith<$Res> {
+  factory $DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWith(DisclosureBasedIssuanceInstructionResult_InstructionError value, $Res Function(DisclosureBasedIssuanceInstructionResult_InstructionError) _then) = _$DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWithImpl;
 @useResult
 $Res call({
  WalletInstructionError error
@@ -290,23 +298,23 @@ $WalletInstructionErrorCopyWith<$Res> get error;
 
 }
 /// @nodoc
-class _$DisclosureBasedIssuanceResult_InstructionErrorCopyWithImpl<$Res>
-    implements $DisclosureBasedIssuanceResult_InstructionErrorCopyWith<$Res> {
-  _$DisclosureBasedIssuanceResult_InstructionErrorCopyWithImpl(this._self, this._then);
+class _$DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWithImpl<$Res>
+    implements $DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWith<$Res> {
+  _$DisclosureBasedIssuanceInstructionResult_InstructionErrorCopyWithImpl(this._self, this._then);
 
-  final DisclosureBasedIssuanceResult_InstructionError _self;
-  final $Res Function(DisclosureBasedIssuanceResult_InstructionError) _then;
+  final DisclosureBasedIssuanceInstructionResult_InstructionError _self;
+  final $Res Function(DisclosureBasedIssuanceInstructionResult_InstructionError) _then;
 
-/// Create a copy of DisclosureBasedIssuanceResult
+/// Create a copy of DisclosureBasedIssuanceInstructionResult
 /// with the given fields replaced by the non-null parameter values.
 @pragma('vm:prefer-inline') $Res call({Object? error = null,}) {
-  return _then(DisclosureBasedIssuanceResult_InstructionError(
+  return _then(DisclosureBasedIssuanceInstructionResult_InstructionError(
 error: null == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as WalletInstructionError,
   ));
 }
 
-/// Create a copy of DisclosureBasedIssuanceResult
+/// Create a copy of DisclosureBasedIssuanceInstructionResult
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
@@ -327,7 +335,7 @@ mixin _$PidIssuanceResult {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is PidIssuanceResult);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is PidIssuanceResult);
 }
 
 
@@ -336,7 +344,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'PidIssuanceResult()';
+    return 'PidIssuanceResult()';
 }
 
 
@@ -497,16 +505,18 @@ $PidIssuanceResult_OkCopyWith<PidIssuanceResult_Ok> get copyWith => _$PidIssuanc
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is PidIssuanceResult_Ok&&(identical(other.transferAvailable, transferAvailable) || other.transferAvailable == transferAvailable));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is PidIssuanceResult_Ok&&(identical(other.transferAvailable, transferAvailable) || other.transferAvailable == transferAvailable));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,transferAvailable);
+int get hashCode {
+    return Object.hash(runtimeType,transferAvailable);
+}
 
 @override
 String toString() {
-  return 'PidIssuanceResult.ok(transferAvailable: $transferAvailable)';
+    return 'PidIssuanceResult.ok(transferAvailable: $transferAvailable)';
 }
 
 
@@ -563,16 +573,18 @@ $PidIssuanceResult_InstructionErrorCopyWith<PidIssuanceResult_InstructionError> 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is PidIssuanceResult_InstructionError&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is PidIssuanceResult_InstructionError&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,error);
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
 
 @override
 String toString() {
-  return 'PidIssuanceResult.instructionError(error: $error)';
+    return 'PidIssuanceResult.instructionError(error: $error)';
 }
 
 
@@ -620,7 +632,7 @@ $WalletInstructionErrorCopyWith<$Res> get error {
 }
 
 /// @nodoc
-mixin _$WalletInstructionError {
+mixin _$RevocationCodeResult {
 
 
 
@@ -628,7 +640,7 @@ mixin _$WalletInstructionError {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is RevocationCodeResult);
 }
 
 
@@ -637,7 +649,312 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'WalletInstructionError()';
+    return 'RevocationCodeResult()';
+}
+
+
+}
+
+/// @nodoc
+class $RevocationCodeResultCopyWith<$Res>  {
+$RevocationCodeResultCopyWith(RevocationCodeResult _, $Res Function(RevocationCodeResult) __);
+}
+
+
+/// Adds pattern-matching-related methods to [RevocationCodeResult].
+extension RevocationCodeResultPatterns on RevocationCodeResult {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( RevocationCodeResult_Ok value)?  ok,TResult Function( RevocationCodeResult_InstructionError value)?  instructionError,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case RevocationCodeResult_Ok() when ok != null:
+return ok(_that);case RevocationCodeResult_InstructionError() when instructionError != null:
+return instructionError(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( RevocationCodeResult_Ok value)  ok,required TResult Function( RevocationCodeResult_InstructionError value)  instructionError,}){
+final _that = this;
+switch (_that) {
+case RevocationCodeResult_Ok():
+return ok(_that);case RevocationCodeResult_InstructionError():
+return instructionError(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( RevocationCodeResult_Ok value)?  ok,TResult? Function( RevocationCodeResult_InstructionError value)?  instructionError,}){
+final _that = this;
+switch (_that) {
+case RevocationCodeResult_Ok() when ok != null:
+return ok(_that);case RevocationCodeResult_InstructionError() when instructionError != null:
+return instructionError(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String revocationCode)?  ok,TResult Function( WalletInstructionError error)?  instructionError,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case RevocationCodeResult_Ok() when ok != null:
+return ok(_that.revocationCode);case RevocationCodeResult_InstructionError() when instructionError != null:
+return instructionError(_that.error);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String revocationCode)  ok,required TResult Function( WalletInstructionError error)  instructionError,}) {final _that = this;
+switch (_that) {
+case RevocationCodeResult_Ok():
+return ok(_that.revocationCode);case RevocationCodeResult_InstructionError():
+return instructionError(_that.error);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String revocationCode)?  ok,TResult? Function( WalletInstructionError error)?  instructionError,}) {final _that = this;
+switch (_that) {
+case RevocationCodeResult_Ok() when ok != null:
+return ok(_that.revocationCode);case RevocationCodeResult_InstructionError() when instructionError != null:
+return instructionError(_that.error);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class RevocationCodeResult_Ok extends RevocationCodeResult {
+  const RevocationCodeResult_Ok({required this.revocationCode}): super._();
+  
+
+ final  String revocationCode;
+
+/// Create a copy of RevocationCodeResult
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$RevocationCodeResult_OkCopyWith<RevocationCodeResult_Ok> get copyWith => _$RevocationCodeResult_OkCopyWithImpl<RevocationCodeResult_Ok>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is RevocationCodeResult_Ok&&(identical(other.revocationCode, revocationCode) || other.revocationCode == revocationCode));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,revocationCode);
+}
+
+@override
+String toString() {
+    return 'RevocationCodeResult.ok(revocationCode: $revocationCode)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $RevocationCodeResult_OkCopyWith<$Res> implements $RevocationCodeResultCopyWith<$Res> {
+  factory $RevocationCodeResult_OkCopyWith(RevocationCodeResult_Ok value, $Res Function(RevocationCodeResult_Ok) _then) = _$RevocationCodeResult_OkCopyWithImpl;
+@useResult
+$Res call({
+ String revocationCode
+});
+
+
+
+
+}
+/// @nodoc
+class _$RevocationCodeResult_OkCopyWithImpl<$Res>
+    implements $RevocationCodeResult_OkCopyWith<$Res> {
+  _$RevocationCodeResult_OkCopyWithImpl(this._self, this._then);
+
+  final RevocationCodeResult_Ok _self;
+  final $Res Function(RevocationCodeResult_Ok) _then;
+
+/// Create a copy of RevocationCodeResult
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? revocationCode = null,}) {
+  return _then(RevocationCodeResult_Ok(
+revocationCode: null == revocationCode ? _self.revocationCode : revocationCode // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class RevocationCodeResult_InstructionError extends RevocationCodeResult {
+  const RevocationCodeResult_InstructionError({required this.error}): super._();
+  
+
+ final  WalletInstructionError error;
+
+/// Create a copy of RevocationCodeResult
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$RevocationCodeResult_InstructionErrorCopyWith<RevocationCodeResult_InstructionError> get copyWith => _$RevocationCodeResult_InstructionErrorCopyWithImpl<RevocationCodeResult_InstructionError>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is RevocationCodeResult_InstructionError&&(identical(other.error, error) || other.error == error));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
+
+@override
+String toString() {
+    return 'RevocationCodeResult.instructionError(error: $error)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $RevocationCodeResult_InstructionErrorCopyWith<$Res> implements $RevocationCodeResultCopyWith<$Res> {
+  factory $RevocationCodeResult_InstructionErrorCopyWith(RevocationCodeResult_InstructionError value, $Res Function(RevocationCodeResult_InstructionError) _then) = _$RevocationCodeResult_InstructionErrorCopyWithImpl;
+@useResult
+$Res call({
+ WalletInstructionError error
+});
+
+
+$WalletInstructionErrorCopyWith<$Res> get error;
+
+}
+/// @nodoc
+class _$RevocationCodeResult_InstructionErrorCopyWithImpl<$Res>
+    implements $RevocationCodeResult_InstructionErrorCopyWith<$Res> {
+  _$RevocationCodeResult_InstructionErrorCopyWithImpl(this._self, this._then);
+
+  final RevocationCodeResult_InstructionError _self;
+  final $Res Function(RevocationCodeResult_InstructionError) _then;
+
+/// Create a copy of RevocationCodeResult
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? error = null,}) {
+  return _then(RevocationCodeResult_InstructionError(
+error: null == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as WalletInstructionError,
+  ));
+}
+
+/// Create a copy of RevocationCodeResult
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$WalletInstructionErrorCopyWith<$Res> get error {
+  
+  return $WalletInstructionErrorCopyWith<$Res>(_self.error, (value) {
+    return _then(_self.copyWith(error: value));
+  });
+}
+}
+
+/// @nodoc
+mixin _$WalletInstructionError {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'WalletInstructionError()';
 }
 
 
@@ -805,16 +1122,18 @@ $WalletInstructionError_IncorrectPinCopyWith<WalletInstructionError_IncorrectPin
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError_IncorrectPin&&(identical(other.attemptsLeftInRound, attemptsLeftInRound) || other.attemptsLeftInRound == attemptsLeftInRound)&&(identical(other.isFinalRound, isFinalRound) || other.isFinalRound == isFinalRound));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError_IncorrectPin&&(identical(other.attemptsLeftInRound, attemptsLeftInRound) || other.attemptsLeftInRound == attemptsLeftInRound)&&(identical(other.isFinalRound, isFinalRound) || other.isFinalRound == isFinalRound));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,attemptsLeftInRound,isFinalRound);
+int get hashCode {
+    return Object.hash(runtimeType,attemptsLeftInRound,isFinalRound);
+}
 
 @override
 String toString() {
-  return 'WalletInstructionError.incorrectPin(attemptsLeftInRound: $attemptsLeftInRound, isFinalRound: $isFinalRound)';
+    return 'WalletInstructionError.incorrectPin(attemptsLeftInRound: $attemptsLeftInRound, isFinalRound: $isFinalRound)';
 }
 
 
@@ -872,16 +1191,18 @@ $WalletInstructionError_TimeoutCopyWith<WalletInstructionError_Timeout> get copy
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError_Timeout&&(identical(other.timeoutMillis, timeoutMillis) || other.timeoutMillis == timeoutMillis));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError_Timeout&&(identical(other.timeoutMillis, timeoutMillis) || other.timeoutMillis == timeoutMillis));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,timeoutMillis);
+int get hashCode {
+    return Object.hash(runtimeType,timeoutMillis);
+}
 
 @override
 String toString() {
-  return 'WalletInstructionError.timeout(timeoutMillis: $timeoutMillis)';
+    return 'WalletInstructionError.timeout(timeoutMillis: $timeoutMillis)';
 }
 
 
@@ -933,7 +1254,7 @@ class WalletInstructionError_Blocked extends WalletInstructionError {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError_Blocked);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionError_Blocked);
 }
 
 
@@ -942,7 +1263,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'WalletInstructionError.blocked()';
+    return 'WalletInstructionError.blocked()';
 }
 
 
@@ -960,7 +1281,7 @@ mixin _$WalletInstructionResult {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionResult);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionResult);
 }
 
 
@@ -969,7 +1290,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'WalletInstructionResult()';
+    return 'WalletInstructionResult()';
 }
 
 
@@ -1125,7 +1446,7 @@ class WalletInstructionResult_Ok extends WalletInstructionResult {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionResult_Ok);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionResult_Ok);
 }
 
 
@@ -1134,7 +1455,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'WalletInstructionResult.ok()';
+    return 'WalletInstructionResult.ok()';
 }
 
 
@@ -1162,16 +1483,18 @@ $WalletInstructionResult_InstructionErrorCopyWith<WalletInstructionResult_Instru
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionResult_InstructionError&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WalletInstructionResult_InstructionError&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,error);
+int get hashCode {
+    return Object.hash(runtimeType,error);
+}
 
 @override
 String toString() {
-  return 'WalletInstructionResult.instructionError(error: $error)';
+    return 'WalletInstructionResult.instructionError(error: $error)';
 }
 
 

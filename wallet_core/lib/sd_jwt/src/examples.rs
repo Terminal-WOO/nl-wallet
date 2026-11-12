@@ -4,19 +4,20 @@ use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use chrono::DateTime;
 use chrono::Utc;
+use crypto::keys::PublicKey;
+use http_utils::urls::HttpsUri;
 use indexmap::IndexMap;
-use jsonwebtoken::jwk::Jwk;
+use jwt::Header;
+use jwt::JwtDecodingKey;
+use jwt::JwtTyp;
+use jwt::confirmation::ConfirmationClaim;
+use jwt::jwk::Jwk;
+use jwt::jwk::jwk_to_public_key;
+use jwt::nonce::Nonce;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use serde_with::skip_serializing_none;
-
-use http_utils::urls::HttpsUri;
-use jwt::EcdsaDecodingKey;
-use jwt::Header;
-use jwt::JwtTyp;
-use jwt::confirmation::ConfirmationClaim;
-use jwt::jwk::jwk_to_p256;
 use utils::date_time_seconds::DateTimeSeconds;
 use utils::generator::Generator;
 use utils::generator::mock::MockTimeGenerator;
@@ -98,7 +99,7 @@ impl VerifiedSdJwt {
         SIMPLE_STRUCTURED_SD_JWT
             .parse::<UnverifiedSdJwt<SdJwtExampleClaims, Header>>()
             .unwrap()
-            .into_verified(&examples_sd_jwt_decoding_key())
+            .into_verified(&JwtDecodingKey::from(&examples_sd_jwt_public_key()))
             .unwrap()
     }
 
@@ -106,7 +107,7 @@ impl VerifiedSdJwt {
         COMPLEX_STRUCTURED_SD_JWT
             .parse::<UnverifiedSdJwt<SdJwtExampleClaims, Header>>()
             .unwrap()
-            .into_verified(&examples_sd_jwt_decoding_key())
+            .into_verified(&JwtDecodingKey::from(&examples_sd_jwt_public_key()))
             .unwrap()
     }
 
@@ -114,7 +115,7 @@ impl VerifiedSdJwt {
         SD_JWT_VC
             .parse::<UnverifiedSdJwt<SdJwtVcClaims, Header>>()
             .unwrap()
-            .into_verified(&examples_sd_jwt_decoding_key())
+            .into_verified(&JwtDecodingKey::from(&examples_sd_jwt_public_key()))
             .unwrap()
     }
 }
@@ -125,9 +126,9 @@ impl VerifiedSdJwtPresentation {
             .parse::<UnverifiedSdJwtPresentation<SdJwtExampleClaims, Header>>()
             .unwrap()
             .into_verified(
-                &examples_sd_jwt_decoding_key(),
+                &(&examples_sd_jwt_public_key()).into(),
                 WITH_KB_SD_JWT_AUD,
-                WITH_KB_SD_JWT_NONCE,
+                &Nonce::from(WITH_KB_SD_JWT_NONCE.to_string()),
                 Duration::from_secs(2 * 60),
                 &MockTimeGenerator::default(),
             )
@@ -150,7 +151,6 @@ pub fn recursive_disclosures_example() -> (serde_json::Value, IndexMap<String, D
         "HvrKX6fPV0v9K_yCVFBiLFHsMaxcD_114Em6VT8x1lg"
       ],
       "vct": "com.example.pid",
-      "iss": "https://issuer.example.com",
       "iat": 1683000000,
       "exp": 1883000000,
       "sub": "6c5c0a49-b589-431d-bae7-219122a9ec2c",
@@ -184,7 +184,7 @@ pub fn recursive_disclosures_example() -> (serde_json::Value, IndexMap<String, D
 }
 
 // Taken from https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-17.html#name-elliptic-curve-key-used-in-
-pub fn examples_sd_jwt_decoding_key() -> EcdsaDecodingKey {
+pub fn examples_sd_jwt_public_key() -> PublicKey {
     let jwk = json!({
         "kty": "EC",
         "crv": "P-256",
@@ -192,11 +192,6 @@ pub fn examples_sd_jwt_decoding_key() -> EcdsaDecodingKey {
         "y": "Xv5zWwuoaTgdS6hV43yI6gBwTnjukmFQQnJ_kCxzqk8"
     });
 
-    decoding_key_from_jwk(jwk)
-}
-
-fn decoding_key_from_jwk(jwk: serde_json::Value) -> EcdsaDecodingKey {
     let jwk: Jwk = serde_json::from_value(jwk).unwrap();
-    let verifying_key = jwk_to_p256(&jwk).unwrap();
-    EcdsaDecodingKey::from(&verifying_key)
+    jwk_to_public_key(&jwk).unwrap()
 }

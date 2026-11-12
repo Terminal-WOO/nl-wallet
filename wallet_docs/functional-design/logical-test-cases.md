@@ -1,67 +1,91 @@
 # Logical Test Cases
 
-## Issuance
+## LTCs
+
+This page describes the logical test cases (LTCs) that are used to verify the correct functionality of the wallet app.
+Test are written in Gherkin syntax with a Given When Then structure. Each LTC is implemented with at least one manual
+or automated tests.
+
+An LTC that has to be executed by hand is marked with a comment directly below its heading. The marker is picked up by
+the `extract-manual-test-set` pipeline job, which generates the manual test set from this page. A marker can be scoped
+to the platforms on which the manual execution is needed, which is how an LTC that can only be automated on one
+platform is kept in the manual test set for the other one:
+
+```text
+% manual                    manual on every platform
+% manual: ios               automated on Android, manual on iOS
+% manual: android           automated on iOS, manual on Android
+% manual: ios - <reason>    with a note for the tester
+```
+
+Use one marker per platform when the reason differs per platform.
+
+---
 
 ### LTC1
 
-#### PID issuance happy flow
+#### PID issuance
 
-**Given** user has completed security setup  
-**When** user authenticates at auth server  
-**Then** system displays issued attributes to user for verification  
-**When** user adds attributes  
-**And** confirms using their PIN  
-**Then** system displays message that wallet is created  
-**And** provides a link to the dashboard
+**Given** user has completed security setup<br>
+**When** user authenticates at auth server<br>
+**Then** system displays issued attributes to user for verification<br>
+**When** user adds attributes<br>
+**And** confirms using their PIN<br>
+**Then** system displays message that wallet is created<br>
+**And** provides a link to the dashboard<br>
 
 ---
 
 ### LTC2
 
+% manual: ios - Failing the issuance needs network toggling, which is Android only (adb)
+
 #### Issuance fails
 
-**Given** user has completed security setup  
-**And** user authenticates at auth server  
-**When** issuance fails  
-**Then** system displays message that issuance failed  
-**And** provides a link to try again
+**Given** user has completed security setup<br>
+**And** user authenticates at auth server<br>
+**When** issuance fails<br>
+**Then** system displays message that issuance failed<br>
+**And** provides a link to try again<br>
 
 ---
 
 ### LTC3
 
-#### Authentication with auth server fails
+#### Authentication at auth server fails
 
-**Given** user has completed security setup  
-**And** user authentication at auth server fails  
-**Then** system displays message that authentication failed  
-**And** provides a link to try again
+**Given** user has completed security setup<br>
+**And** user authentication at auth server fails<br>
+**Then** system displays message that authentication failed<br>
+**And** provides a link to try again<br>
 
 ---
 
 ### LTC4
 
-#### User rejects issued attributes
+#### Rejects issued attributes
 
-**Given** user has completed security setup  
-**When** user authenticates at auth server  
-**Then** system displays issued attributes to user for verification
+**Given** user has completed security setup<br>
+**And** user authenticates at auth server<br>
+**And** system displays issued attributes to user for verification<br>
+**When** user rejects issued attributes<br>
+**Then** provides a link to try again<br>
 
 ---
 
 ### LTC5
 
-#### Disclosure based Issuance happy flow
+#### Disclosure based Issuance
 
-**Given** user has completed PID setup and opened the app  
-**When** user invokes a universal link from a (Q)EAA issuer  
-**Then** system requests approval for disclosure  
-**When** user approves with PIN  
-**Then** system validates PIN and proceeds  
-**And** system requests approval for attestations  
-**When** user approves with PIN  
-**Then** system issues card and displays it to user  
-**And** provides a link to the dashboard
+**Given** user has completed PID setup and opened the app<br>
+**When** user invokes a universal link from a (Q)EAA issuer<br>
+**Then** system requests approval for disclosure<br>
+**When** user approves with PIN<br>
+**Then** system validates PIN and proceeds<br>
+**And** system requests approval for attestations<br>
+**When** user approves with PIN<br>
+**Then** system issues card and displays it to user<br>
+**And** provides a link to the dashboard<br>
 
 
 ---
@@ -70,753 +94,602 @@
 
 #### Invalid universal link
 
-**Given** user invokes an invalid universal link  
-**Then** system informs user link is not recognized  
-**And** provides a link to try again
+**Given** user invokes an invalid universal link<br>
+**Then** system informs user link is not recognized<br>
 
 ---
 
 ### LTC7
 
-#### cross-device generic issuance
+#### Cross-device disclosure based issuance
 
-**Given** user is on a device with wallet installed  
-**When** relying party presents a QR code  
-**And** user scans it with wallet  
-**Then** system requests approval for disclosure  
-**When** user approves with PIN  
-**Then** system validates PIN and proceeds  
-**And** system requests approval for attestations  
-**When** user approves with PIN  
-**Then** system issues card and displays it to user  
-**And** provides a link to the dashboard
-
+**Given** user is on a device with wallet installed<br>
+**When** relying party presents a QR code<br>
+**And** user scans it with wallet<br>
+**Then** system requests approval for disclosure<br>
+**When** user approves with PIN<br>
+**Then** system validates PIN and proceeds<br>
+**And** system requests approval for attestations<br>
+**When** user approves with PIN<br>
+**Then** system issues card and displays it to user<br>
+**And** provides a link to the dashboard<br>
 
 ---
 
 ### LTC8
 
-#### User rejects disclosure of attributes
+#### Reject disclosure of attributes
 
-**Given** user starts card issuance  
-**When** system asks for disclosure consent  
-**And** user selects 'stop'  
-**Then** system confirms cancellation
+**Given** user starts card issuance<br>
+**When** system asks for disclosure consent<br>
+**And** user selects 'stop'<br>
+**Then** system confirms cancellation<br>
 
 ---
 
 ### LTC9
 
-#### User continues after initially cancelling disclosure
+#### No cards to be issued
 
-**Given** user starts disclosure  
-**And** selects 'stop'  
-**When** system asks confirmation  
-**And** user selects 'no'  
-**Then** disclosure flow continues
+**Given** user has no cards to be issued available at EAA issuer<br>
+**When** user performs disclosure based issuance to retrieve cards<br>
+**Then** system displays error message that no cards are available for issuance<br>
 
 ---
 
 ### LTC10
 
-#### User continues after initially cancelling issuance
+#### Wallet does not contain requested attributes
 
-**Given** user starts issuance  
-**And** selects 'stop'  
-**When** system asks confirmation  
-**And** user selects 'no'  
-**Then** issuance flow continues
+**Given** wallet does not contain attributes to fulfill a disclosure request
+from an issuer<br>
+**When** user invokes a universal link from a (Q)EAA issuer<br>
+**Then** System displays an error message with instructions<br>
+**When** user selects 'see details'<br>
+**Then** system displays a bottom sheet with app information<br>
 
 ---
 
 ### LTC11
 
-#### wallet does not contain requested attributes
+#### Renew card
 
-**Given** wallet does not contain attributes to fulfill a disclosure request
-from an issuer  
-**When** user invokes a universal link from a (Q)EAA issuer  
-**Then** System displays an error message with instructions  
-**When** user selects 'see details'  
-**Then** system displays a bottom sheet with app information
+**Given** user has an EAA card in its wallet<br>
+**When** user invokes a universal link from issuer of card<br>
+**Then** system requests approval for disclosure<br>
+**When** user approves with PIN<br>
+**Then** system validates PIN and proceeds<br>
+**And** system requests approval card renewal<br>
+**When** user approves with PIN<br>
+**Then** system renews card<br>
+**And** provides a link to the dashboard<br>
+**And** merges history of old and new cards<br>
+**And** adds a card renewel event to the history<br>
 
 ---
 
 ### LTC12
 
-#### Renew card happy flow
+#### View introduction
 
-**Given** user has an EAA card in its wallet  
-**When** user invokes a universal link from issuer of card  
-**Then** system requests approval for disclosure  
-**When** user approves with PIN  
-**Then** system validates PIN and proceeds  
-**And** system requests approval card renewal  
-**When** user approves with PIN  
-**Then** system renews card  
-**And** provides a link to the dashboard  
-**And** merges history of old and new cards  
-**And** adds a card renewel event to the history
+**Given** the app is opened<br>
+**And** user has not completed introduction<br>
+**When** user navigates through the introduction screens<br>
+**Then** system displays set pin screen<br>
 
 ---
-
-### LTC79
-
-#### No cards to be issued
-
-**Given** user has no cards to be issued available at EAA issuer
-**When** user performs disclosure based issuance to retrieve cards  
-**Then** system displays error message that no cards are available for issuance
-
----
-
-## Introduction
 
 ### LTC13
 
-#### Introduction Happy flow
+#### Skip introduction
 
-**Given** the app is opened  
-**And** user has not completed introduction 
-**When** user navigates through the introduction screens    
-**Then** system displays set pin screen
+**Given** the app is opened<br>
+**And** user has not completed introduction<br>
+**When** user skips the introduction screens<br>
+**Then** systems displays the privacy introduction screen<br>
 
 ---
 
 ### LTC14
 
-#### User skips introduction
+#### View app tour
 
-**Given** the app is opened  
-**And** user has not completed introduction
-**When** user skips the introduction screens   
-**Then** systems displays the privacy introduction screen
+**Given** user has not closed app after obtaining PID<br>
+**When** user views the app dashboard<br>
+**Then** system displays a non-dismissible banner<br>
+**When** user views the menu<br>
+**Then** system displays an app tour menu item<br>
+**When** user selects app tour<br>
+**Then** system displays an app tour overview with a list of video items<br>
+**When** user selects a video<br>
+**Then** system opens the videoplayer<br>
+**And** videoplayer contains correct controls<br>
 
 ---
 
 ### LTC15
 
-#### User navigates back to previous introduction screen
+#### Share data
 
-**Given** user has navigated forward to an introduction screen  
-**And** user navigates back  
-**Then** systems displays the previous introduction screen
+**Given** user has completed PID setup and opened the app<br>
+**When** user starts disclosure process at relying party<br>
+**Then** system requests user consent<br>
+**When** user approves with PIN<br>
+**Then** system discloses attributes to relying party<br>
+**And** system displays data shared message<br>
 
 ---
 
 ### LTC16
 
-#### User views app tour
+#### Cross-device data sharing
 
-**Given** user has not closed app after obtaining PID  
-**When** user views the app dashboard  
-**Then** system displays a non-dismissible banner    
-**When** user views the menu  
-**Then** system displays an app tour menu item  
-**When** user selects app tour  
-**Then** system displays an app tour overview with a list of video items  
-**When** user selects a video  
-**Then** system opens the videoplayer  
-**And** videoplayer contains correct controls  
+**Given** user starts disclosure on a non-mobile device<br>
+**When** user scans QR code with wallet<br>
+**Then** system validates relying party URL<br>
+**When** user confirms to proceed<br>
+**And** approves disclosure with PIN<br>
+**Then** system completes disclosure<br>
+**And** displays a success message<br>
 
 ---
 
-## Disclosure
-
 ### LTC17
 
-#### Share data happy flow
+#### Decline consent to share data
 
-**Given** user has completed PID setup and opened the app  
-**When** user starts disclosure process at relying party  
-**Then** system requests user consent  
-**When** user approves with PIN  
-**Then** system discloses attributes to relying party  
-**And** system displays data shared message
+**Given** user is shown consent screen<br>
+**When** user selects 'Stop'<br>
+**Then** system confirms cancellation<br>
+**When** user confirms<br>
+**Then** system displays the stopped screen<br>
+**And** provides a link to the dashboard<br>
 
 ---
 
 ### LTC18
 
-#### Cross-device share data
+#### RP Login
 
-**Given** user starts disclosure on a non-mobile device  
-**When** user scans QR code with wallet  
-**Then** system validates relying party URL  
-**When** user confirms to proceed  
-**And** approves disclosure with PIN  
-**Then** system completes disclosure  
-**And** displays a success message
+**Given** user has completed PID setup and opened the app<br>
+**When** user starts login process at relying party<br>
+**Then** system requests consent to disclose BSN<br>
+**When** user approves with PIN<br>
+**Then** system discloses BSN to relying party<br>
+**And** relying pary displays login success message<br>
 
 ---
 
 ### LTC19
 
-#### User does not give consent to share data
+#### Cross-device login
 
-**Given** user is shown consent screen  
-**When** user selects 'Stop'  
-**Then** system confirms cancellation  
-**When** user confirms  
-**Then** system displays the stopped screen  
-**And** provides a link to the dashboard
+**Given** user starts login on a non-mobile device<br>
+**When** user scans QR code with wallet<br>
+**Then** system validates relying party URL<br>
+**When** user confirms to continue<br>
+**And** approves disclosure with PIN<br>
+**Then** login is completed<br>
+**And** system displays success message<br>
 
 ---
 
 ### LTC20
 
-#### User stops at Share data approve organization
+#### Disclosure fails
 
-**Given** user is shown approve organization screen  
-**When** user selects 'Stop'  
-**Then** system confirms cancellation  
-**When** user confirms  
-**Then** system displays the stopped screen  
-**And** provides a link to the dashboard
+**Given** user has completed security setup<br>
+**When** user starts a disclosure flow<br>
+**And** disclosure fails<br>
+**And** system displays message disclosure failed<br>
+**And** provides a link to try again<br>
 
 ---
 
 ### LTC21
 
-#### User continues after initially cancelling
+#### Delete App data
 
-**Given** user selects 'Stop'  
-**When** system displays message conforming cancellation  
-**And** user selects 'No'  
-**Then** disclosure flow continues
+**Given** user has completed PID setup and opened the app<br>
+**When** user selects 'Remove data' from the settings menu<br>
+**Then** system displays a prompt with 'Cancel' and 'Yes, Delete' options<br>
+**When** user selects 'Yes, Delete'<br>
+**Then** system displays the introduction screen<br>
 
 ---
 
 ### LTC22
 
-#### invalid universal link in QR
+#### View complete history
 
-**Given** user scans a QR with an invalid link  
-**Then** system displays invalid QR message
+**Scenario Outline:**<br>
+**Given** user has performed activity `<activity>`<br>
+**When** user selects 'activities' from settings or dashboard<br>
+**Then** system displays a list of all usage and management activities,
+grouped by month and sorted newest first<br>
+**And** the list shows the activity with label `<label>`<br>
+**When** user selects the activity<br>
+**Then** system displays details for the selected activity<br>
+**When** user navigates back<br>
+**And** user selects 'About Organization'<br>
+**Then** system displays information about the `<organization>`<br>
+
+**Examples:**
+
+| activity                                  | label                     | organization  |
+| ----------------------------------------- | ------------------------- | ------------- |
+| card issuance                             | "Card created"            | issuer        |
+| card renewal                              | "Card renewed"            | issuer        |
+| data sharing completed                    | "Data shared"             | relying party |
+| data sharing failed after data was sent   | "Sharing may have failed" | relying party |
+| data sharing failed before data was sent  | "Sharing failed"          | relying party |
+| data sharing stopped by user              | "Sharing stopped"         | relying party |
+| login completed                           | "Logged in"               | relying party |
+| login failed after data was sent          | "Login may have failed"   | relying party |
+| login failed before data was sent         | "Login failed"            | relying party |
+| login stopped by user                     | "Log in is stopped"       | relying party |
+| card deletion                             | "Card deleted"            | issuer        |
 
 ---
 
 ### LTC23
 
-#### RP Login happy flow
+#### View card-specific activity list
 
-**Given** user has completed PID setup and opened the app  
-**When** user starts login process at relying party  
-**Then** system requests consent to disclose BSN  
-**When** user approves with PIN  
-**Then** system discloses BSN to relying party  
-**And** relying pary displays login success message
+**Scenario Outline:** activity is shown for the related card<br>
+**Given** user has performed activity `<activity>`<br>
+**When** user selects 'activities' on the details screen of a card<br>
+**Then** system displays a list of activities related to the selected card,
+grouped by month and sorted newest first<br>
+**And** the list shows the activity with label `<label>`<br>
+**When** user selects the activity<br>
+**Then** system displays details for the selected activity<br>
+**When** user navigates back<br>
+**And** user selects 'About Organization'<br>
+**Then** system displays organization information<br>
+
+**Examples:**
+
+| activity                                | label                     |
+| --------------------------------------- | ------------------------- |
+| card issuance                           | "Card created"            |
+| card renewal                            | "Card renewed"            |
+| data sharing completed                  | "Data shared"             |
+| data sharing failed after data was sent | "Sharing may have failed" |
+| login completed                         | "Logged in"               |
+| login failed after data was sent        | "Login may have failed"   |
 
 ---
 
 ### LTC24
 
-#### Cross-device login
+#### View all available cards
 
-**Given** user starts login on a non-mobile device  
-**When** user scans QR code with wallet  
-**Then** system validates relying party URL  
-**When** user confirms to continue  
-**And** approves disclosure with PIN  
-**Then** login is completed  
-**And** system displays success message
+**Given** user has completed PID setup and unlocked the app<br>
+**When** user completes one of the relevant flows (unlock app, obtain PID, or
+obtain card)<br>
+**Then** system displays all cards currently available in the app<br>
 
 ---
 
 ### LTC25
 
-#### User continues after initially cancelling
+#### View Card Details
 
-**Given** user selects 'Stop'  
-**When** system displays message confirm cancellation  
-**And** user selects 'No'  
-**Then** login flow continues
+**Given** dashboard is opened<br>
+**When** user selects a card<br>
+**Then** system displays the card details<br>
+**When** user selects card attributes<br>
+**Then** system displays the card attributes<br>
+**When** user navigates back<br>
+**And** user selects card history<br>
+**Then** system displays the card history<br>
+**When** user navigates back<br>
+**And** user selects organization<br>
+**Then** system displays the organization<br>
 
 ---
 
 ### LTC26
 
-#### Disclosure fails
+#### Show app menu
 
-**Given** user has completed security setup  
-**When** user starts a disclosure flow  
-**And** disclosure fails  
-**And** system displays message disclosure failed  
-**And** provides a link to try again
+**Given** user has completed PID setup and opened the app<br>
+**When** user selects 'menu' on the dashboard<br>
+**Then** system displays all app menu items<br>
 
 ---
 
 ### LTC27
 
-#### Wallet does not contain requested attributes
+#### View settings menu
 
-**Given** wallet does not contain attributes to fulfill a disclosure request
-from a relying party  
-**When** user invokes a universal link from a relying party  
-**Then** System displays an error message with instructions
+**Given** app menu is shown<br>
+**When** user selects 'Settings'<br>
+**Then** system displays settings menu items<br>
+**When** user navigates back<br>
+**Then** system displays app menu items<br>
 
 ---
 
-## Cards, App Data & Settings
-
 ### LTC28
 
-#### Delete App data
+#### View app information
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'Remove data' from the settings menu  
-**Then** system displays a prompt with 'Cancel' and 'Yes, Delete' options  
-**When** user selects 'Yes, Delete'  
-**Then** system displays the introduction screen
+**Given** user selects app information<br>
+**Then** system displays the About App screen<br>
 
 ---
 
 ### LTC29
 
-#### Cancel app data deletion
+#### View privacy statement
 
-**Given** system displays confirm delete message  
-**When** user selects 'Cancel'  
-**Then** system displays the settings menu
+**Given** About App screen is shown<br>
+**When** user selects 'Privacy Statement'<br>
+**Then** system displays the Privacy Statement screen<br>
+**When** user navigates back<br>
+**Then** system displays the About App screen again<br>
 
 ---
 
 ### LTC30
 
-#### View activity list
+#### Select a new language
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'activities' from settings or dashboard  
-**Then** system displays list of all usage and management activities  
-**When** user selects an activity  
-**Then** system displays details for the selected activity  
-**When** user navigates back  
-**And** user selects 'About Organization'  
-**Then** system displays information about the organization
+**Given** system displays language selection screen<br>
+**When** user selects a non-active language<br>
+**Then** system updates the UI to the selected language<br>
+**And** displays the updated language as active<br>
+**When** user navigates back<br>
+**Then** system displays the settings menu in the selected language<br>
 
 ---
 
 ### LTC31
 
-#### View card-specific activity list
+#### Get help
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'activities' on card details screen  
-**Then** system displays list of activities related to the selected card  
-**When** user selects an activity  
-**Then** system displays details for the selected activity  
-**When** user navigates back  
-**And** user selects 'About Organization'  
-**Then** system displays organization information
+**Given** system displays the app menu<br>
+**When** user selects 'Help and information'<br>
+**Then** system displays the help overview with the help categories<br>
+**When** user selects a help category<br>
+**Then** system displays the subcategories of that category<br>
+**When** user selects a subcategory<br>
+**Then** system displays the topics of that subcategory<br>
+**When** user selects a topic<br>
+**Then** system displays the content of that topic<br>
 
 ---
 
 ### LTC32
 
-#### Show all available cards
+#### Open closed app
 
-**Given** user has completed PID setup and unlocked the app  
-**When** user completes one of the relevant flows (unlock app, obtain PID, or
-obtain card)  
-**Then** system displays all cards currently available in the app
+**Given** the app is installed<br>
+**And** wallet is registered<br>
+**When** user opens the app<br>
+**Then** system displays splash screen<br>
+**And** system determines if wallet is registered<br>
+**And** system displays the dashboard<br>
 
 ---
 
 ### LTC33
 
-#### Show Card Details
+#### Open app via universal link
 
-**Given** dashboard is opened  
-**When** user selects a card  
-**Then** system displays the card details  
-**When** user selects card attributes  
-**Then** system displays the card attributes  
-**When** user navigates back  
-**And** user selects card history  
-**Then** system displays the card history  
-**When** user navigates back  
-**And** user selects organization  
-**Then** system displays the organization
+**Given** the app is installed<br>
+**And** wallet is registered<br>
+**When** user opens the app by following a universal link<br>
+**Then** system validates the universal link<br>
+**And** app is opened<br>
 
 ---
 
 ### LTC34
 
-#### Show app menu
+#### Open app with unregistered wallet
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'menu' on the dashboard  
-**Then** system displays all app menu items
+**Given** the app is installed<br>
+**When** user opens the app<br>
+**Then** system displays introduction screen<br>
 
 ---
 
 ### LTC35
 
-#### Settings menu
+####  Invoke universal link when app is not installed
 
-**Given** app menu is shown  
-**When** user selects 'Settings'  
-**Then** system displays settings menu items  
-**When** user navigates back  
-**Then** system displays app menu items
+**Given** user invokes a universal link<br>
+**And** the app is not installed<br>
+**Then** system navigates user to fallback page<br>
+**And** system displays message to install the app<br>
 
 ---
 
 ### LTC36
 
-#### Show app information from menu
+#### Open universal link via external QR scanner
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'about this app' from the menu  
-**Then** system displays the About App screen
+**Given** user invokes a universal link using an external QR scanner<br>
+**Then** system displays message to rescan the QR code using the in-app scanner<br>
 
 ---
 
 ### LTC37
 
-#### View privacy statement
+% manual: ios
 
-**Given** About App screen is shown  
-**When** user selects 'Privacy Statement'  
-**Then** system displays the Privacy Statement screen  
-**When** user navigates back  
-**Then** system displays the About App screen again
+#### Unlock app with correct PIN
+
+**Given** user has completed setup of remote PIN and biometrics<br>
+**When** user opens the app<br>
+**Then** system displays PIN screen<br>
+**When** user enters correct PIN<br>
+**Then** system displays dashboard<br>
 
 ---
 
 ### LTC38
 
-#### Show language selection screen
+% manual: android
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'Change Language' in the settings menu  
-**Then** system displays the language selection screen  
-**And** displays the currently active language
+#### Unlock app with biometric
+
+**Given** user has completed setup of remote PIN and biometrics<br>
+**When** user opens the app<br>
+**Then** system requests biometric<br>
+**When** user enters valid biometric<br>
+**Then** system displays dashboard<br>
 
 ---
 
 ### LTC39
 
-#### Select a new language
+% manual
 
-**Given** system displays language selection screen  
-**When** user selects a non-active language  
-**Then** system updates the UI to the selected language  
-**And** displays the updated language as active  
-**When** user navigates back  
-**Then** system displays the settings menu in the selected language
+#### Unlock app with invalid biometric
+
+**Given** user has completed setup of remote PIN and biometrics<br>
+**When** user opens the app<br>
+**Then** system requests biometric<br>
+**When** user enters invalid biometric<br>
+**Then** device gives option to try again<br>
 
 ---
 
 ### LTC40
 
-#### Show app information on introduction screen
+#### Unlock app with invalid PIN
 
-**Given** system displays an introduction screen  
-**When** user selects 'see details'  
-**Then** system displays a bottom sheet with app information
+**Given** user has completed setup of remote PIN and biometrics<br>
+**When** user opens the app<br>
+**Then** system displays PIN screen<br>
+**When** user enters invalid PIN<br>
+**Then** system handles it according to PIN retry policy<br>
 
 ---
 
 ### LTC41
 
-#### Show app information on PIN screen
+#### Recover PIN
 
-**Given** system displays a PIN screen  
-**When** user selects 'see details'  
-**Then** system displays a bottom sheet with app information
-
----
-
-### LTC79
-
-#### Get help on PIN screen  
-
-**Given** system displays a PIN screen  
-**When** user selects 'help'    
-**Then** system displays get help screen  
-**When** user selects back  
-**Then** system displays a PIN screen
+**Given** user start PIN recovery<br>
+**When** user changes PIN successfully<br>
+**Then** user can use new PIN<br>
+**And** user can not use old PIN<br>
 
 ---
-
-## App lock & Security
 
 ### LTC42
 
-#### Open closed app 
+#### App update is available
 
-**Given** the app is installed   
-**And** wallet is registered  
-**When** user opens the app  
-**Then** system displays splash screen  
-**And** system determines if wallet is registered  
-**And** system displays the dashboard
+**Given** the app is installed<br>
+**And** an app update is available<br>
+**When** user opens the app<br>
+**Then** System displays a message on update informing user that an update
+is available and offers instructions on how to update<br>
 
 ---
 
 ### LTC43
 
-#### Open app via universal link
+#### Current app version is blocked
 
-**Given** the app is installed  
-**And** wallet is registered  
-**When** user opens the app by following a universal link  
-**Then** system validates the universal link  
-**And** app is opened  
-**And** system displays dashoboard
+**Given** the app is installed<br>
+**And** an app update is available<br>
+**And** current app version is blocked<br>
+**When** user opens the app<br>
+**Then** System displays a message on update informing user that current app
+version is blocked and offers instructions on how to update<br>
 
 ---
 
 ### LTC44
 
-#### Wallet is not registered
+#### Wallet not created when universal link is invoked
 
-**Given** the app is installed  
-**When** user opens the app  
-**Then** system displays introduction screen
+**Given** user invokes a universal link<br>
+**And** wallet is not created<br>
+**Then** System shows introduction screen<br>
 
 ---
 
 ### LTC45
 
-#### App is not installed when universal link is invoked
+#### Change PIN
 
-**Given** user invokes a universal link  
-**And** the app is not installed  
-**Then** system navigates user to fallback page  
-**And** system displays message to install the app
+**When** user changes the PIN code<br>
+**Then** the change is successful<br>
+**And** old PIN is unusable<br>
+**And** new PIN is usable<br>
 
 ---
 
 ### LTC46
 
-#### Universal link is opened via external QR scanner
+#### PIN is invalid timeout
 
-**Given** user invokes a universal link using an external QR scanner  
-**Then** system displays message to rescan the QR code using the in-app scanner
+**Scenario Outline:**<br>
+**Given** system allows 4 rounds of 4 attempts each<br>
+**And** user enters their PIN invalid for all `<Y>` attempts in round
+`<round>`<br>
+**Then** system introduces a timeout of `<Z{i}>` for that round<br>
+
+**Examples:**
+
+| round | Z{i} |
+| ----- | ---- |
+| 1     | 1m   |
+| 2     | 5m   |
+| 3     | 60m  |
 
 ---
 
 ### LTC47
 
-#### Unlock app with correct PIN
+#### PIN is invalid Block
 
-**Given** user has completed setup of remote PIN and biometrics  
-**When** user opens the app  
-**Then** system displays PIN screen  
-**When** user enters correct PIN  
-**Then** system displays dashboard
+**Given** system allows 4 rounds of 4 attempts each<br>
+**And** user enters their PIN invalid for all attempts in all 4
+rounds<br>
+**Then** system blocks access<br>
 
 ---
 
 ### LTC48
 
-#### Unlock app with biometric
+#### PIN entries do not match, try again
 
-**Given** user has completed setup of remote PIN and biometrics  
-**When** user opens the app  
-**Then** system requests biometric  
-**When** user enters valid biometric  
-**Then** system displays dashboard
+**Given** user enters the correct current PIN<br>
+**When** user does an invalid confirmation<br>
+**Then** system displays a message that the PIN entries are not equal and
+offers user to try again<br>
 
 ---
 
 ### LTC49
 
-#### Unlock app with invalid biometric
+#### PIN entries do not match, choose new PIN
 
-**Given** user has completed setup of remote PIN and biometrics  
-**When** user opens the app  
-**Then** system requests biometric  
-**When** user enters invalid biometric  
-**Then** device gives option to try again
+**Given** user enters PIN<br>
+**When** user does an invalid confirmation<br>
+**Then** system displays a message that the PIN entries are not equal and
+instructs user to choose a new PIN<br>
 
 ---
 
 ### LTC50
 
-#### Unlock app with invalid PIN
-
-**Given** user has completed setup of remote PIN and biometrics  
-**When** user opens the app  
-**Then** system displays PIN screen  
-**When** user enters invalid PIN  
-**Then** system handles it according to PIN retry policy
-
----
-
-### LTC51
-
-#### User selects forgot PIN
-
-**Given** user has completed setup of remote PIN and biometrics  
-**When** user opens the app  
-**And** user selects 'Forgot PIN?'  
-**Then** system displays forgot PIN screen  
-**When** user selects 'Delete Wallet'  
-**Then** user enters UC9.4 Wipe all app data
-
----
-
-### LTC52
-
-#### App update is available
-
-**Given** the app is installed  
-**And** an app update is available  
-**When** user opens the app  
-**Then** System displays a message on update informing the User that an update
-is available and offers instructions on how to update
-
----
-
-### LTC53
-
-#### Current app version is blocked
-
-**Given** the app is installed  
-**And** an app update is available  
-**And** current app version is blocked  
-**When** user opens the app  
-**Then** System displays a message on update informing the User that current app
-version is blocked and offers instructions on how to update
-
----
-
-### LTC54
-
-#### Wallet not created when universal link is invoked
-
-**Given** user invokes a universal link  
-**And** wallet is not created  
-**Then** System shows introduction screen
-
----
-
-### LTC55
-
-#### Invalid universal link 
-
-**When** user invokes an invalid universal link  
-**Then** System displays an error message that universal link could not be opened
-
----
-
-### LTC56
-
-#### PIN Change Happy flow
-
-**When** the user changes the PIN code  
-**Then** the change is successful
-
----
-
-### LTC57
-
-#### PIN is invalid timeout
-
-**Scenario Outline:**  
-**Given** system allows 4 rounds of 4 attempts each  
-**And** user enters their PIN invalid for all `<Y>` attempts in round
-`<round>`  
-**Then** system introduces a timeout of `<Z{i}>` for that round
-
-**Examples:**
-
-| round | Z{i} |
-| ----- | ---- |
-| 1     | 1m   |
-| 2     | 5m   |
-| 3     | 60m  |
-
----
-
-### LTC58
-
-#### PIN is invalid Block
-
-**Given** system allows 4 rounds of 4 attempts each  
-**And** user enters their PIN invalid for all attempts in all 4
-rounds  
-**Then** system blocks access
-
----
-
-### LTC59
-
-#### Mixed PIN entry success and failure
-
-**Scenario Outline:**  
-**Given** system allows 4 rounds of 4 attempts each  
-**And** user enters their PIN invalid for `<failures>` attempt(s) in
-round `<round>`  
-**And** enters their PIN in attempt `<success_attempt>` of the same
-round  
-**Then** system grants access without proceeding to timeout or block
-
-**Examples:**
-
-| round | failures | success_attempt |
-| ----- | -------- | --------------- |
-| 1     | 2        | 3               |
-| 2     | 1        | 2               |
-| 3     | 3        | 4               |
-
----
-
-### LTC60
-
-#### Timeout reset after successful PIN entry
-
-**Scenario Outline:**  
-**Given** the system allows 4 rounds of 4 attempts each  
-**And** user fails to enter their PIN correctly in round `<round>`  
-**And** the timeout `<Z{i}>` is introduced  
-**And** user enters their PIN after the timeout  
-**Then** app resets the timeout policy for subsequent rounds
-
-**Examples:**
-
-| round | Z{i} |
-| ----- | ---- |
-| 1     | 1m   |
-| 2     | 5m   |
-| 3     | 60m  |
-
----
-
-### LTC61
-
-#### PIN entries do not match, try again
-
-**Given** the user enters the correct current PIN  
-**When** the user does an invalid confirmation  
-**Then** the system displays a message that the PIN entries are not equal and
-offers the user to try again
-
----
-
-### LTC62
-
-#### PIN entries do not match, choose new PIN
-
-**Given** the user PIN  
-**When** the user does an invalid confirmation  
-**Then** the system displays a message that the PIN entries are not equal and
-instructs the user to choose a new PIN
-
----
-
-### LTC63
-
 #### PIN entry does not conform to policy
 
-**Scenario Outline:**  
-**Given** the user enters the correct current PIN  
-**When** the user enters a PIN `<pin>` that does not conform to policy  
-**Then** the system displays a message that the PIN entry is not conformant and
-instructs the user to choose a new PIN
+**Scenario Outline:**<br>
+**Given** user enters the correct current PIN<br>
+**When** user enters a PIN `<pin>` that does not conform to policy<br>
+**Then** system displays a message that the PIN entry is not conformant and
+instructs user to choose a new PIN<br>
 
 **Examples:**
 
@@ -828,230 +701,463 @@ instructs the user to choose a new PIN
 
 ---
 
+### LTC51
+
+#### Setup PIN
+
+**Given** user completed introduction<br>
+**When** user enters a valid pin<br>
+**And** user confirms pin<br>
+**Then** remote pin is configured<br>
+
+---
+
+### LTC52
+
+% manual
+
+#### Setup PIN fails device does not pass app and key attestation
+
+**Given** device can not pass app and key attestation<br>
+**When** user sets up a remote PIN<br>
+**Then** System displays message that device is not supported<br>
+
+---
+
+### LTC53
+
+#### Logout from menu
+
+**Given** user has completed PID setup and opened the app<br>
+**When** user selects 'Logout' from the menu<br>
+**Then** system logs out user<br>
+**And** displays the PIN screen<br>
+
+---
+
+### LTC54
+
+#### Logout due to inactivity
+
+**Given** user is inactive for warning timeout Z<br>
+**Then** system displays inactivity prompt<br>
+**When** user remains inactive for X - Z minutes<br>
+**Then** system logs out user<br>
+**And** displays the PIN screen<br>
+
+---
+
+### LTC55
+
+#### Logout due to background timeout
+
+**Given** user puts the app in the background<br>
+**When** background timeout Y elapses<br>
+**Then** system logs out user<br>
+**And** app remains in the background<br>
+
+---
+
+### LTC56
+
+#### Confirm logout on inactivity prompt
+
+**Given** system displays inactivity prompt<br>
+**When** user selects 'Log out'<br>
+**Then** system logs out user<br>
+**And** displays the PIN screen<br>
+
+---
+
+### LTC57
+
+#### Dismiss inactivity prompt
+
+**Given** system displays inactivity prompt<br>
+**When** user selects 'Yes, continue'<br>
+**Then** prompt is dismissed<br>
+**And** system displays the currently active screen<br>
+
+---
+
+### LTC59
+
+% manual
+
+#### No Biometric enrolled on device
+
+**Given** device has no enrolled biometric<br>
+**When** user completes PIN setup<br>
+**Then** system does not display biometric configuration option<br>
+**When** user opens the app settings<br>
+**And** user toggles biometric unlock<br>
+**Then** system displays prompt to instruct user to enroll biometric<br>
+
+---
+
+### LTC60
+
+% manual: android
+
+#### Disable biometrics
+
+**Given** user has enabled biometrics<br>
+**When** user disables biometrics<br>
+**Then** biometrics is disabled<br>
+**And** user can not use biometric login<br>
+
+---
+
+### LTC61
+
+% manual: android
+
+#### Setup biometrics in settings
+
+**Given** user has not enabled biometrics<br>
+**And** device supports biometrics<br>
+**When** user enables biometrics<br>
+**Then** system requests pin<br>
+**When** user enters pin<br>
+**And** user enter biometric<br>
+**Then** biometrics is enabled<br>
+**And** user can use biometric login<br>
+
+---
+
+### LTC62
+
+#### Transfer wallet
+
+**Given** user has an existing active source wallet<br>
+**And** user has completed PID issuance on its destination wallet<br>
+**When** user completes wallet transfer<br>
+**Then** the destination wallet contains the data of the source wallet<br>
+**And** the destination wallet is active<br>
+**And** the source wallet does not contain data<br>
+**And** the source wallet is inactive<br>
+
+---
+
+### LTC63
+
+#### Stop transfer flow on source device
+
+**Given** user has an existing active source wallet<br>
+**And** user has completed PID issuance on its destination wallet<br>
+**When** user aborts wallet transfer on the source device<br>
+**Then** the source wallet displays the dashboard screen<br>
+**And** user is prompted on the destination device to try again<br>
+
+---
+
 ### LTC64
 
-#### PIN change fails, could not reach server
+#### Stop transfer flow on destination device
 
-**Given** the server is not reachable  
-**When** the user changes the PIN code  
-**Then** the system displays message that the PIN change has failed and offers to try
-again
+**Given** user has an existing active source wallet<br>
+**And** user has completed PID issuance on its destination wallet<br>
+**When** user aborts wallet transfer on the destination device<br>
+**Then** user is prompted on the destination device to try again<br>
+**And** the source wallet displays the dashboard screen<br>
 
 ---
 
 ### LTC65
 
-#### PIN change fails, no internet
+#### Select another card to be disclosed
 
-**Given** there is no internet connection  
-**When** the user changes the PIN code  
-**Then** the system displays message that the PIN change has failed and offers to try
-again
+**Given** user has multiple cards that can fulfill a disclosure request<br>
+**When** user starts disclosure<br>
+**Then** system offers user option to select another card<br>
+**When** user selects a card<br>
+**Then** the requested attributes are disclosed from the previously selected card<br>
 
 ---
 
 ### LTC66
 
-#### Setup PIN Happy flow
+#### Renew PID
 
-**Given** user completed introduction  
-**When** user enters a valid pin  
-**And** user confirms pin  
-**Then** remote pin is configured
+**Given** user has issued PID<br>
+**When** user renews PID<br>
+**Then** PID is renewed<br>
+**And** a card renewal event is added to the history<br>
 
 ---
 
 ### LTC67
 
-#### Setup PIN fails device does not pass app and key attestation
+#### Revoke PID
 
-**Given** device can not pass app and key attestation  
-**When** user sets up a remote PIN  
-**Then** System displays message that device is not supported
+**Given** user has issued PID<br>
+**When** PID is revoked<br>
+**Then** PID card is displayed as revoked<br>
+**And** PID cannot be presented anymore<br>
 
 ---
 
 ### LTC68
 
-#### User forgot PIN
+#### Revoke EAA Card
 
-**Given** PIN screen is shown  
-**When** user selects forgot PIN  
-**Then** System displays a link to delete wallet
+**Given** user has an EAA card in its wallet<br>
+**When** EAA card is revoked<br>
+**Then** EAA card is displayed as revoked<br>
+**And** EAA card cannot be presented anymore<br>
 
 ---
 
 ### LTC69
 
-#### Manual logout from menu
+#### Universal link is invoked while wallet is not personalized
 
-**Given** user has completed PID setup and opened the app  
-**When** user selects 'Logout' from the menu  
-**Then** system logs out the user  
-**And** displays the PIN screen
+**Given** user is performing app personalization<br>
+**When** user invokes a universal link<br>
+**Then** System displays message informing the user that personalization should be completed first<br>
 
 ---
 
 ### LTC70
 
-#### Logout due to inactivity
+#### Receive revocation code
 
-**Given** user is inactive for warning timeout Z  
-**Then** system displays inactivity prompt  
-**When** user remains inactive for X - Z minutes  
-**Then** system logs out the user  
-**And** displays the PIN screen
+**Given** user has completed remote PIN setup<br>
+**Then** system display a revocation code<br>
+**And** user has to confirm the revocation code is written to continue<br>
 
 ---
 
 ### LTC71
 
-#### Logout due to background timeout
+#### System sends notifications for card status changes
 
-**Given** user puts the app in the background  
-**When** background timeout Y elapses  
-**Then** system logs out the user  
-**And** app remains in the background
+**Given** a <card_type> card exists in the wallet<br>
+**And** the card <scenario><br>
+**Then** the system displays an in-app notification at <schedule><br>
+**And** the system sends a push notification at <schedule><br>
+**And** the in-app notification contains "<in_app_message>"<br>
+**And** the push notification contains "<push_message>"<br>
+**When** the user selects the notification<br>
+**Then** the system displays the card details screen<br>
+
+Cases:
+
+| card_type | scenario                      | schedule   | in_app_message                                     | push_message                                                              |
+|-----------|-------------------------------|------------|----------------------------------------------------|---------------------------------------------------------------------------|
+| PID       | will expire in 14 days        | 10:00 AM   | In 14 days, your app will not be working           | In 14 days, your app will not working. Solve this in the app.             |
+| PID       | has expired                   | immediate  | Attention: your NL Wallet is not working right now | Attention: your NL Wallet does not work right now. Solve this in the app. |
+| PID       | is revoked by issuer          | immediate  | Attention: your NL Wallet is not working right now | Attention: your NL Wallet does not work right now. Solve this in the app. |
+| EAA       | will expire in 14 days        | 10:00 AM   | {Card} expires in 14 days                          | {Card} expires in 14 days. Replace this card if you still need it.        |
+| EAA       | has expired                   | immediate  | {Card} expired                                     | {Card} expired. Replace this card if you still need it.                   |
+| EAA       | is revoked by issuer          | immediate  | {Card} withdrawn by issuer                         | {Card} withdrawn by issuer. Replace this card if you still need it.       |
 
 ---
 
 ### LTC72
 
-#### User confirms logout on inactivity prompt
+#### Configure notifications
 
-**Given** system displays inactivity prompt  
-**When** user selects 'Log out'  
-**Then** system logs out the user  
-**And** displays the PIN screen
+**Given** notifications are turned off<br>
+**And** OS notifications are not scheduled<br>
+**When** user enables notifications<br>
+**Then** OS notifications are scheduled<br>
 
 ---
 
 ### LTC73
 
-#### User dismisses inactivity prompt
+#### View revocation code in settings
 
-**Given** system displays inactivity prompt  
-**When** user selects 'Yes, continue'  
-**Then** prompt is dismissed  
-**And** system displays the currently active screen
+**Given** user has completed PID setup and opened the app<br>
+**When** user selects 'View your deletion code' from the settings menu<br>
+**And** use confirms with PIN to view the revocation code<br>
+**Then** system displays the revocation code<br>
 
 ---
 
 ### LTC74
 
-#### User skips setting up biometrics
+#### Revoke wallet with revocation code
 
-**Given** user has set up pin  
-**And** device supports biometrics  
-**When** user skips setting up biometrics  
-**Then** system displays message wallet is secured by pin
+**Given** user visits the revocation portal<br>
+**When** user submits the revocation code<br>
+**And** user opens the app<br>
+**Then** a wallet is deleted message is displayed<br>
 
 ---
 
 ### LTC75
 
-#### Device does not support biometrics
+#### Revoke wallet by wallet id
 
-**Given** device does not support biometrics  
-**When** user open apps settings menu  
-**Then** system does not display biometric configuration option
+**When** wallet is revoked by wallet id<br>
+**And** user opens the app<br>
+**Then** a your wallet is blocked message is displayed<br>
 
 ---
 
 ### LTC76
 
-#### User disables biometrics
+#### Revoke wallet by recovery id
 
-**Given** user has enabled biometrics  
-**When** user disables biometrics  
-**Then** biometrics is disabled  
-**And** user can not use biometric login
+**Given** user visits the revocation portal<br>
+**When** user submits the revocation code<br>
+**And** user opens the app<br>
+**Then** a you have been blocked message is displayed<br>
 
 ---
 
 ### LTC77
 
-#### Setup biometrics in settings
+#### Revoke wallet solution
 
-**Given** user has not enabled biometrics  
-**And** device supports biometrics  
-**When** user enables biometrics  
-**Then** system requests pin  
-**When** user enters pin  
-**And** user enter biometric  
-**Then** biometrics is enabled  
-**And** user can use biometric login
+**Given** user visits the revocation portal<br>
+**When** user submits the revocation code<br>
+**And** user opens the app<br>
+**Then** a wallet solution is revoked message is displayed<br>
 
 ---
 
 ### LTC78
 
-#### User enters invalid current PIN
+#### Delete EAA card
 
-**Given** user has completed PID and opened the app  
-**And** device supports biometrics  
-**When** user enables biometrics  
-**And** user enters correct biometric  
-**And** user enters invalid PIN  
-**Then** system handles it according to retry policy
+**Given** wallet contains an eaa card<br>
+**When** user deletes the card<br>
+**Then** wallet does not contain the deleted card<br>
+**And** a delete event is added to the history<br>
 
 ---
 
 ### LTC79
 
-#### Wallet transfer happy flow
+#### Close proximity data sharing
 
-**Given** user has an existing active source wallet  
-**And** user has completed PID issuance on its destination wallet  
-**When** user completes wallet transfer  
-**Then** the destination wallet contains the data of the source wallet  
-**And** the destination wallet is active  
-**And** the source wallet does not contain data  
-**And** the source wallet is inactive
+**Given** user has completed PID setup and opened the app<br>
+**When** user starts disclosure process by showing its QR code to a third party verifier<br>
+**Then** system requests user consent<br>
+**When** user approves with PIN<br>
+**Then** system discloses attributes to relying party<br>
+**And** system displays data shared message<br>
 
 ---
 
 ### LTC80
 
-#### User stops transfer flow on source device
+#### Wallet does not contain requested attributes at close proximity disclosure
 
-**Given** user has an existing active source wallet  
-**And** user has completed PID issuance on its destination wallet  
-**When** user aborts wallet transfer on the source device  
-**Then** the source wallet displays the dashboard screen  
-**And** user is prompted on the destination device to try again  
+**Given** wallet does not contain attributes to fulfill a disclosure request<br>
+**When** user starts disclosure process by showing its QR code to a third party verifier<br>
+**Then** System displays an error message with instructions<br>
 
 ---
 
 ### LTC81
 
-#### User stops transfer flow on destination device
+#### BLE connection lost from reader during close proximity disclosure
 
-**Given** user has an existing active source wallet  
-**And** user has completed PID issuance on its destination wallet  
-**When** user aborts wallet transfer on the destination device  
-**Then** user is prompted on the destination device to try again  
-**And** the source wallet displays the dashboard screen
+**Given** user has completed PID setup and opened the app<br>
+**When** user starts disclosure process by showing its QR code to a third party verifier<br>
+**Then** system requests user consent<br>
+**When** reader disconnect BLE connection<br>
+**When** user approves with PIN<br>
+**Then** System displays an error message with instructions<br>
 
 ---
 
 ### LTC82
 
-#### User selects another card to be disclosed
+#### Pre-authorized code flow issuance
 
-**Given** user has multiple cards that can fulfill a disclosure request  
-**When** user starts disclosure  
-**Then** system offers user option to select another card    
-**When** user selects a card  
-**Then** the requested attributes are disclosed from the previously selected card
+**Given** user has completed PID setup and opened the app<br>
+**When** user opens a credential offer containing a pre-authorized code from a (Q)EAA issuer<br>
+**Then** system displays the offered cards without requesting disclosure<br>
+**When** user approves with PIN<br>
+**Then** system issues card and displays it to user<br>
+**And** provides a link to the dashboard<br>
 
 ---
 
 ### LTC83
 
-#### Recover PIN happy flow
+#### Authorization code flow issuance
 
-**Given** user start PIN recovery  
-**When** user changes PIN successfully  
-**Then** user can use new PIN  
-**And** user can not use old PIN
+**Given** user has completed PID setup and opened the app<br>
+**When** user opens a credential offer requiring authorization from a (Q)EAA issuer<br>
+**Then** system opens the browser for authentication at the issuer<br>
+**When** the issuer authenticates the user and the browser returns control to the app<br>
+**Then** system displays the offered cards<br>
+**When** user approves with PIN<br>
+**Then** system issues card and displays it to user<br>
+**And** provides a link to the dashboard<br>
+
+---
+
+### LTC84
+
+#### Authorization code flow issuance with consent
+
+**Given** user has completed PID setup and opened the app<br>
+**When** user opens a credential offer requiring authorization from a (Q)EAA issuer<br>
+**Then** system opens the browser for authentication at the issuer<br>
+**When** user gives consent at the issuer in the browser<br>
+**Then** browser returns control to the app<br>
+**And** system displays the offered cards<br>
+**When** user approves with PIN<br>
+**Then** system issues card and displays it to user<br>
+**And** provides a link to the dashboard<br>
+
+---
+
+### LTC85
+
+% manual: ios
+
+#### Camera permission granted one time only is re-requested
+
+**Given** user has completed PID setup and opened the app<br>
+**When** user opens the in-app QR scanner<br>
+**And** user grants the camera permission one time only<br>
+**Then** system displays the QR scanner<br>
+**When** user restarts the app<br>
+**And** user opens the in-app QR scanner<br>
+**Then** system asks permission to use the device camera again<br>
+
+---
+
+### LTC86
+
+#### Camera permission is not granted
+
+**Given** user has completed PID setup and opened the app<br>
+**When** user opens the in-app QR scanner<br>
+**And** user rejects the camera permission<br>
+**Then** system displays an in-app permission screen<br>
+**And** provides a button to grant the camera permission<br>
+
+---
+
+### LTC87
+
+% manual: ios
+
+#### Bluetooth permission is not granted
+
+**Given** user has completed PID setup and opened the app<br>
+**When** user shows their QR code to a third party verifier<br>
+**And** user rejects the Bluetooth permission<br>
+**Then** system displays an in-app permission screen<br>
+**And** the screen explains why the permission is needed<br>
+**And** provides a button to open the device settings<br>
+
+---
+
+### LTC88
+
+#### Notification permission is not granted
+
+**Given** notifications are turned off<br>
+**When** user enables notifications<br>
+**And** user rejects the notification permission<br>
+**Then** notifications remain turned off<br>

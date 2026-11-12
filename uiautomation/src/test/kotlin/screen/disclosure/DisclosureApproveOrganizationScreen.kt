@@ -1,5 +1,6 @@
 package screen.disclosure
 
+import domain.Platform
 import util.MobileActions
 
 class DisclosureApproveOrganizationScreen : MobileActions() {
@@ -7,20 +8,22 @@ class DisclosureApproveOrganizationScreen : MobileActions() {
     private val loginButton = l10n.getString("organizationApprovePageLoginCta")
     private val goToWebsiteButton = l10n.getString("disclosureSuccessPageToWebsiteCta")
     private val shareButton = l10n.getString("disclosureConfirmDataAttributesPageApproveCta")
-    private val closeButton = l10n.getString("disclosureSuccessPageCloseCta")
-    private val attributesMissingMessage = l10n.getString("missingAttributesPageTitle")
+    private val closeButton = l10n.getString("generalClose")
     private val viewLoginDisclosureDetailsButton = l10n.getString("organizationApprovePageMoreInfoLoginCta")
-    private val viewDisclosureOrganizationDetailsButton = l10n.getString("organizationButtonLabel")
+    private val loginDetailsTitle = l10n.getString("loginDetailScreenCredentialsTitle")
+    private val viewDisclosureOrganizationDetailsButton = l10n.getString("requestDetailScreenAboutOrganizationCta")
     private val goBackButton = l10n.getString("generalBottomBackCta")
     private val stopRequestButton = l10n.getString("missingAttributesPageCloseCta")
-    private val readTermsButton = l10n.getString("loginDetailScreenAgreementCta")
-    private val termsSubtitle = l10n.getString("policyScreenSubtitle")
     private val organizationApprovePageDenyCta = l10n.getString("organizationApprovePageDenyCta")
     private val disclosureStopSheetReportIssueCta = l10n.getString("disclosureStopSheetReportIssueCta")
-    private val disclosureConfirmDataAttributesSubtitleTerms = l10n.getString("disclosureConfirmDataAttributesSubtitleTerms")
-    private val disclosureConfirmDataAttributesCheckConditionsCta = l10n.getString("disclosureConfirmDataAttributesCheckConditionsCta")
+    private val privacySectionTitle = l10n.getString("privacySectionTitle")
+    private val privacySectionCta = l10n.getString("privacySectionCta")
     private val reportOptionSuspiciousOrganization = l10n.getString("reportOptionSuspiciousOrganization")
     private val swapCardButton = l10n.getString("sharedAttributesCardChangeCardCta")
+    private val stopButton = l10n.getString("organizationApprovePageDenyCta")
+    private val bottomSheetConfirmStopButton = l10n.getString("disclosureStopSheetPositiveCta")
+    private val disclosureSuccessPageToDashboardCta = l10n.getString("disclosureSuccessPageToDashboardCta")
+    private val toDashboardButton = l10n.getString("disclosureSuccessPageToDashboardCta")
 
     fun login() = clickElementWithText(loginButton)
 
@@ -39,11 +42,9 @@ class DisclosureApproveOrganizationScreen : MobileActions() {
         switchToWebViewContext()
     }
 
-    fun attributesMissingMessageVisible() = elementWithTextVisible(attributesMissingMessage)
-
-    fun organizationNameForSharingFlowVisible(organizationName: String): Boolean {
+    fun organizationNameForSharingFlowVisible(organizationName: String, timeoutInSeconds: Long = 5): Boolean {
         val selectorText = l10n.getString("disclosureConfirmDataAttributesShareWithTitle").replace("{organization}", organizationName)
-        return elementWithTextVisible(selectorText);
+        return elementWithTextVisible(selectorText, timeoutInSeconds);
     }
 
     fun organizationNameForLoginFlowVisible(organizationName: String): Boolean {
@@ -51,9 +52,14 @@ class DisclosureApproveOrganizationScreen : MobileActions() {
         return elementWithTextVisible(selectorText);
     }
 
-    fun viewDisclosureOrganizationDetails() = clickElementContainingText(viewDisclosureOrganizationDetailsButton)
+    fun viewDisclosureOrganizationDetails(organization: String) {
+        clickElementContainingText(viewDisclosureOrganizationDetailsButton.replace("{organization}", organization))
+    }
+
 
     fun viewLoginDisclosureDetails() = clickElementContainingText(viewLoginDisclosureDetailsButton)
+
+    fun loginDetailsVisible() = elementWithTextVisible(loginDetailsTitle)
 
     fun organizationDescriptionOnDetailsVisible(description: String): Boolean = elementWithTextVisible(description);
 
@@ -61,23 +67,12 @@ class DisclosureApproveOrganizationScreen : MobileActions() {
 
     fun stopRequestAfterMissingAttributeFailure() = clickElementWithText(stopRequestButton)
 
-    fun closeDisclosureAfterCompletedOrUncompleted() = clickElementWithText(closeButton)
-
     fun viewSharedData(count: String, cardTitle: String) {
         val title = l10n.getString("sharedAttributesCardTitle").replace("{count}", count).replace("{cardTitle}", cardTitle)
-        clickElementContainingText(title)
+        scrollToElementContainingText(title).click()
     }
 
     fun bsnVisible(bsn: String) = elementContainingTextVisible(bsn)
-
-    fun readTerms() {
-        scrollToElementWithText(readTermsButton)
-        clickElementWithText(readTermsButton)
-    }
-
-    fun termsVisible() = elementWithTextVisible(termsSubtitle)
-
-    fun viewOrganization(organization: String) = clickElementContainingText(organization)
 
     fun cancel() {
         scrollToElementWithText(organizationApprovePageDenyCta)
@@ -99,24 +94,48 @@ class DisclosureApproveOrganizationScreen : MobileActions() {
 
     fun dataVisible(data: String) = elementContainingTextVisible(data)
 
-    fun sharingReasonVisible(reason: String) = elementWithTextVisible(reason)
+    fun sharingReasonVisible(reason: String) = elementContainingTextVisible(reason)
 
-    fun conditionsHeaderVisible(): Boolean {
-        scrollToElementWithText(disclosureConfirmDataAttributesSubtitleTerms)
-        return elementWithTextVisible(disclosureConfirmDataAttributesSubtitleTerms)
+    fun privacyHeaderVisible(): Boolean {
+        scrollToElementWithText(privacySectionTitle)
+        return elementWithTextVisible(privacySectionTitle)
     }
 
-    fun conditionsButtonVisible(): Boolean  {
-        scrollToElementWithText(disclosureConfirmDataAttributesCheckConditionsCta)
-        return elementWithTextVisible(disclosureConfirmDataAttributesCheckConditionsCta)
+    fun privacyButtonVisible(): Boolean  {
+        scrollToElementWithText(privacySectionCta)
+        return elementWithTextVisible(privacySectionCta)
     }
 
     fun clickSwapCardButton() {
-        scrollToElementWithText(swapCardButton)
-        clickElementWithText(swapCardButton)
+        val element = scrollToElementWithText(swapCardButton)
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
+        if (platform() == Platform.IOS) {
+            // On iOS the accessibility frame of this button is shifted up relative
+            // to its rendered position, so a tap at the reported center lands on a
+            // non-interactive area. Probe downwards (never up, to avoid hitting the
+            // card above) until the select-card sheet actually opens.
+            val selectCardSheetTitle = l10n.getString("selectCardSheetTitle")
+            val centerX = element.location.x + element.size.width / 2
+            val centerY = element.location.y + element.size.height / 2
+            for (offsetY in listOf(0, 30, 60, 90)) {
+                tapAt(centerX, centerY + offsetY)
+                if (elementWithTextVisible(selectCardSheetTitle, 2)) return
+            }
+            throw AssertionError("Select card sheet did not open after probing taps around '$swapCardButton'")
+        } else {
+            clickElementWithText(swapCardButton)
+        }
     }
 
     fun swapCardTo(cardIdentifier: String) {
         clickElementContainingText(cardIdentifier)
     }
+
+    fun stop() = clickElementWithText(stopButton)
+
+    fun bottomSheetConfirmStop() = clickElementWithText(bottomSheetConfirmStopButton)
+
+    fun goToDashboard() = clickElementWithText(toDashboardButton)
+
+    fun goToDashBoard() =clickElementWithText(disclosureSuccessPageToDashboardCta)
 }

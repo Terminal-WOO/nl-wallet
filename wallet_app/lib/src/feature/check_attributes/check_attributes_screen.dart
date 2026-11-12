@@ -12,7 +12,6 @@ import '../common/widget/animation/animated_card_switcher.dart';
 import '../common/widget/attribute/attribute_row.dart';
 import '../common/widget/button/bottom_back_button.dart';
 import '../common/widget/button/confirm/confirm_buttons.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
 import '../common/widget/button/list_button.dart';
 import '../common/widget/button/secondary_button.dart';
 import '../common/widget/button/tertiary_button.dart';
@@ -53,7 +52,6 @@ class CheckAttributesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: WalletAppBar(
-        actions: const [HelpIconButton()],
         title: FadeInAtOffset(
           appearOffset: 120,
           visibleOffset: 150,
@@ -99,66 +97,11 @@ class CheckAttributesScreen extends StatelessWidget {
               child: CustomScrollView(
                 key: ValueKey<int>(state.card.hashCode),
                 slivers: [
-                  SliverToBoxAdapter(
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      alignment: AlignmentDirectional.centerStart,
-                      child: SizedBox(
-                        width: 110,
-                        child: ExcludeSemantics(
-                          child: WalletCardItem.fromWalletCard(
-                            context,
-                            state.card,
-                            scaleText: false,
-                            showText: false,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          TitleText(_generateTitle(context, state)),
-                          const SizedBox(height: 8),
-                          BlocBuilder<CheckAttributesBloc, CheckAttributesState>(
-                            builder: (context, state) {
-                              switch (state) {
-                                case CheckAttributesInitial():
-                                  return const SizedBox.shrink();
-                                case CheckAttributesSuccess():
-                                  return SizedBox(
-                                    width: double.infinity,
-                                    child: BodyText(
-                                      context.l10n.checkAttributesScreenSubtitle(
-                                        state.card.issuer.displayName.l10nValue(context),
-                                      ),
-                                      textAlign: TextAlign.start,
-                                    ),
-                                  );
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  _buildCardSliver(context, state),
+                  _buildTitleAndSubtitleSliver(context, state),
                   const SliverSizedBox(height: 24),
                   const SliverDivider(),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(vertical: 24),
-                    sliver: SliverList.separated(
-                      itemCount: state.attributes.length,
-                      itemBuilder: (context, i) {
-                        final attribute = state.attributes[i];
-                        return AttributeRow(attribute: attribute);
-                      },
-                      separatorBuilder: (context, i) => const SizedBox(height: 24),
-                    ),
-                  ),
+                  _buildAttributesSliver(state),
                   SliverToBoxAdapter(child: _buildDataIncorrectButton(context)),
                   const SliverSizedBox(height: 32),
                 ],
@@ -168,6 +111,68 @@ class CheckAttributesScreen extends StatelessWidget {
         ),
         _buildBottomSection(context, state),
       ],
+    );
+  }
+
+  Widget _buildCardSliver(BuildContext context, CheckAttributesSuccess state) {
+    return SliverToBoxAdapter(
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        alignment: AlignmentDirectional.centerStart,
+        child: SizedBox(
+          width: 110,
+          child: ExcludeSemantics(
+            child: WalletCardItem.fromWalletCard(
+              context,
+              state.card,
+              scaleText: false,
+              showText: false,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTitleAndSubtitleSliver(BuildContext context, CheckAttributesSuccess state) {
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TitleText(_generateTitle(context, state)),
+            const SizedBox(height: 8),
+            _buildSubtitle(context, state.card),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubtitle(BuildContext context, WalletCard card) {
+    return SizedBox(
+      width: double.infinity,
+      child: BodyText(
+        context.l10n.checkAttributesScreenSubtitle(
+          card.issuer.displayName,
+        ),
+        textAlign: TextAlign.start,
+      ),
+    );
+  }
+
+  Widget _buildAttributesSliver(CheckAttributesSuccess state) {
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(vertical: 24),
+      sliver: SliverList.separated(
+        itemCount: state.attributes.length,
+        itemBuilder: (context, i) {
+          final attribute = state.attributes[i];
+          return AttributeRow(attribute: attribute);
+        },
+        separatorBuilder: (context, i) => const SizedBox(height: 24),
+      ),
     );
   }
 

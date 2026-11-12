@@ -7,15 +7,21 @@ import 'package:wallet_mock/mock.dart' as core show Document;
 import '../domain/model/app_image_data.dart';
 import '../domain/model/attribute/attribute.dart';
 import '../domain/model/card/metadata/card_display_metadata.dart';
+import '../domain/model/card/status/card_status.dart';
 import '../domain/model/card/wallet_card.dart';
+import '../domain/model/close_proximity/ble_connection_event.dart';
+import '../domain/model/configuration/flutter_app_configuration.dart';
+import '../domain/model/configuration/maintenance_window.dart';
 import '../domain/model/disclosure/disclosure_session_type.dart';
 import '../domain/model/document.dart';
 import '../domain/model/event/wallet_event.dart';
+import '../domain/model/help/topic_block.dart';
+import '../domain/model/notification/app_notification.dart';
 import '../domain/model/organization.dart';
+import '../domain/model/pid/pid_attestation.dart';
 import '../domain/model/pin/pin_validation_error.dart';
-import '../domain/model/policy/organization_policy.dart';
-import '../domain/model/policy/policy.dart';
 import '../domain/model/update/version_state.dart';
+import '../domain/model/wallet_state.dart';
 import '../util/mapper/card/attribute/card_attribute_mapper.dart';
 import '../util/mapper/card/attribute/card_attribute_value_mapper.dart';
 import '../util/mapper/card/attribute/claim_display_metadata_mapper.dart';
@@ -23,18 +29,25 @@ import '../util/mapper/card/attribute/localized_labels_mapper.dart';
 import '../util/mapper/card/attribute/missing_attribute_mapper.dart';
 import '../util/mapper/card/card_mapper.dart';
 import '../util/mapper/card/metadata_mapper.dart';
-import '../util/mapper/context_mapper.dart';
+import '../util/mapper/card/status/card_status_mapper.dart';
+import '../util/mapper/close_proximity/close_proximity_disclosure_update_mapper.dart';
+import '../util/mapper/configuration/flutter_app_configuration_mapper.dart';
+import '../util/mapper/configuration/maintenance_window_mapper.dart';
+import '../util/mapper/configuration/pid_attestation_mapper.dart';
 import '../util/mapper/disclosure/disclosure_session_type_mapper.dart';
 import '../util/mapper/disclosure/disclosure_type_mapper.dart';
 import '../util/mapper/document/document_mapper.dart';
 import '../util/mapper/event/wallet_event_mapper.dart';
+import '../util/mapper/help/topic_block_mapper.dart';
 import '../util/mapper/image/image_mapper.dart';
 import '../util/mapper/mapper.dart';
+import '../util/mapper/notification/app_notification_mapper.dart';
+import '../util/mapper/notification/notification_display_target_mapper.dart';
+import '../util/mapper/notification/notification_type_mapper.dart';
 import '../util/mapper/organization/organization_mapper.dart';
 import '../util/mapper/pin/pin_validation_error_mapper.dart';
-import '../util/mapper/policy/policy_body_text_mapper.dart';
-import '../util/mapper/policy/request_policy_mapper.dart';
 import '../util/mapper/version/flutter_version_state_mapper.dart';
+import '../util/mapper/wallet/wallet_state_mapper.dart';
 import '../wallet_core/error/core_error.dart';
 import '../wallet_core/error/core_error_mapper.dart';
 
@@ -55,6 +68,17 @@ class WalletMapperProvider extends StatelessWidget {
           create: (context) => ImageMapper(),
         ),
 
+        /// Configuration
+        RepositoryProvider<Mapper<core.FlutterMaintenanceWindow?, MaintenanceWindow?>>(
+          create: (context) => MaintenanceWindowMapper(),
+        ),
+        RepositoryProvider<Mapper<core.PidAttestation, PidAttestation>>(
+          create: (context) => PidAttestationMapper(),
+        ),
+        RepositoryProvider<Mapper<core.FlutterConfiguration, FlutterAppConfiguration>>(
+          create: (context) => FlutterAppConfigurationMapper(context.read(), context.read()),
+        ),
+
         /// Card attribute mappers
         RepositoryProvider<Mapper<List<LocalizedString>, LocalizedText>>(
           create: (context) => LocalizedLabelsMapper(),
@@ -63,7 +87,7 @@ class WalletMapperProvider extends StatelessWidget {
           create: (context) => ClaimDisplayMetadataMapper(),
         ),
         RepositoryProvider<Mapper<core.AttributeValue, AttributeValue>>(
-          create: (context) => CardAttributeValueMapper(),
+          create: (context) => CardAttributeValueMapper(context.read()),
         ),
         RepositoryProvider<Mapper<CardAttributeWithCardId, DataAttribute>>(
           create: (context) => CardAttributeMapper(context.read(), context.read()),
@@ -74,10 +98,13 @@ class WalletMapperProvider extends StatelessWidget {
 
         /// Organization / Relying party mappers
         RepositoryProvider<Mapper<core.Organization, Organization>>(
-          create: (context) => OrganizationMapper(context.read(), context.read()),
+          create: (context) => OrganizationMapper(),
         ),
 
         /// Card mappers
+        RepositoryProvider<Mapper<core.AttestationPresentation, CardStatus>>(
+          create: (context) => CardStatusMapper(),
+        ),
         RepositoryProvider<Mapper<core.DisplayMetadata, CardDisplayMetadata>>(
           create: (context) => DisplayMetadataMapper(context.read()),
         ),
@@ -86,15 +113,13 @@ class WalletMapperProvider extends StatelessWidget {
             context.read(),
             context.read(),
             context.read(),
+            context.read(),
           ),
         ),
 
-        /// Policy
-        RepositoryProvider<Mapper<core.RequestPolicy, Policy>>(
-          create: (context) => RequestPolicyMapper(),
-        ),
-        RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-          create: (context) => PolicyBodyTextMapper(),
+        /// Wallet
+        RepositoryProvider<Mapper<core.WalletState, WalletState>>(
+          create: (context) => WalletStateMapper(),
         ),
 
         /// Document
@@ -122,13 +147,31 @@ class WalletMapperProvider extends StatelessWidget {
             context.read(),
             context.read(),
             context.read(),
-            context.read(),
           ),
         ),
 
         /// Version state mapper
         RepositoryProvider<Mapper<core.FlutterVersionState, VersionState>>(
           create: (context) => FlutterVersionStateMapper(),
+        ),
+
+        /// Notification mappers
+        RepositoryProvider<Mapper<core.NotificationType, NotificationType>>(
+          create: (context) => NotificationTypeMapper(context.read()),
+        ),
+        RepositoryProvider<Mapper<core.DisplayTarget, NotificationDisplayTarget>>(
+          create: (context) => NotificationDisplayTargetMapper(),
+        ),
+        RepositoryProvider<Mapper<core.AppNotification, AppNotification>>(
+          create: (context) => AppNotificationMapper(context.read(), context.read()),
+        ),
+        RepositoryProvider<Mapper<core.CloseProximityDisclosureFlutterUpdate, BleConnectionEvent>>(
+          create: (context) => CloseProximityDisclosureUpdateMapper(context.read()),
+        ),
+
+        /// Help topic markdown mapper
+        RepositoryProvider<Mapper<String, List<TopicBlock>>>(
+          create: (context) => TopicBlockMapper(),
         ),
       ],
       child: child,

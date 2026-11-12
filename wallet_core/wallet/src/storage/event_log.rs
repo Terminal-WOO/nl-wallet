@@ -1,11 +1,9 @@
+use attestation_data::disclosure_type::DisclosureType;
+use attestation_data::organization::Organization;
 use chrono::DateTime;
 use chrono::Utc;
-use uuid::Uuid;
-
-use attestation_data::auth::reader_auth::ReaderRegistration;
-use attestation_data::disclosure_type::DisclosureType;
-use crypto::x509::BorrowingCertificate;
 use entity::disclosure_event::EventStatus;
+use uuid::Uuid;
 
 use crate::attestation::AttestationPresentation;
 
@@ -23,11 +21,14 @@ pub enum WalletEvent {
         id: Uuid,
         attestations: Vec<AttestationPresentation>,
         timestamp: DateTime<Utc>,
-        // TODO (PVW-4135): Only store reader registration in event.
-        reader_certificate: Box<BorrowingCertificate>,
-        reader_registration: Box<ReaderRegistration>,
+        organization: Box<Organization>,
         status: DisclosureStatus,
         r#type: DisclosureType,
+    },
+    Deletion {
+        id: Uuid,
+        timestamp: DateTime<Utc>,
+        attestation: Box<AttestationPresentation>,
     },
 }
 
@@ -36,6 +37,7 @@ impl WalletEvent {
         match self {
             Self::Issuance { timestamp, .. } => timestamp,
             Self::Disclosure { timestamp, .. } => timestamp,
+            Self::Deletion { timestamp, .. } => timestamp,
         }
     }
 }

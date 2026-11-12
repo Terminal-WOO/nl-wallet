@@ -6,7 +6,6 @@ import '../../../../domain/model/disclosure/disclose_card_request.dart';
 import '../../../../domain/model/disclosure/disclosure_session_type.dart';
 import '../../../../domain/model/disclosure/disclosure_type.dart';
 import '../../../../domain/model/organization.dart';
-import '../../../../domain/model/policy/policy.dart';
 import '../../../../util/mapper/mapper.dart';
 import '../../../../wallet_core/typed/typed_wallet_core.dart';
 import '../disclosure_repository.dart';
@@ -17,7 +16,6 @@ class CoreDisclosureRepository implements DisclosureRepository {
   final Mapper<core.AttestationPresentation, WalletCard> _attestationMapper;
   final Mapper<core.MissingAttribute, MissingAttribute> _missingAttributeMapper;
   final Mapper<core.Organization, Organization> _relyingPartyMapper;
-  final Mapper<core.RequestPolicy, Policy> _requestPolicyMapper;
   final Mapper<List<core.LocalizedString>, LocalizedText> _localizedStringMapper;
   final Mapper<core.DisclosureSessionType, DisclosureSessionType> _disclosureSessionTypeMapper;
   final Mapper<core.DisclosureType, DisclosureType> _disclosureTypeMapper;
@@ -27,7 +25,6 @@ class CoreDisclosureRepository implements DisclosureRepository {
     this._attestationMapper,
     this._relyingPartyMapper,
     this._missingAttributeMapper,
-    this._requestPolicyMapper,
     this._localizedStringMapper,
     this._disclosureSessionTypeMapper,
     this._disclosureTypeMapper,
@@ -36,21 +33,28 @@ class CoreDisclosureRepository implements DisclosureRepository {
   @override
   Future<StartDisclosureResult> startDisclosure(String disclosureUri, {bool isQrCode = false}) async {
     final result = await _walletCore.startDisclosure(disclosureUri, isQrCode: isQrCode);
+    return _processDisclosureResult(result);
+  }
+
+  @override
+  Future<StartDisclosureResult> continueCloseProximityDisclosure() async {
+    final result = await _walletCore.continueCloseProximityDisclosure();
+    return _processDisclosureResult(result).copyWith(sessionType: .closeProximity);
+  }
+
+  StartDisclosureResult _processDisclosureResult(core.StartDisclosureResult result) {
     switch (result) {
       case core.StartDisclosureResult_Request():
         final List<DiscloseCardRequest> requests = result.disclosureOptions
             .map((it) => DiscloseCardRequest(candidates: _attestationMapper.mapList(it.field0)))
             .toList();
         final relyingParty = _relyingPartyMapper.map(result.relyingParty);
-        final policy = _requestPolicyMapper.map(result.policy);
         return StartDisclosureReadyToDisclose(
           relyingParty: relyingParty,
-          originUrl: result.requestOriginBaseUrl,
           requestPurpose: _localizedStringMapper.map(result.requestPurpose),
           sessionType: _disclosureSessionTypeMapper.map(result.sessionType),
           type: _disclosureTypeMapper.map(result.requestType),
           cardRequests: requests,
-          policy: policy,
           sharedDataWithOrganizationBefore: result.sharedDataWithRelyingPartyBefore,
         );
       case core.StartDisclosureResult_RequestAttributesMissing():
@@ -58,20 +62,11 @@ class CoreDisclosureRepository implements DisclosureRepository {
         final missingAttributes = _missingAttributeMapper.mapList(result.missingAttributes);
         return StartDisclosureMissingAttributes(
           relyingParty: relyingParty,
-          originUrl: result.requestOriginBaseUrl,
-          requestPurpose: _localizedStringMapper.map(result.requestPurpose),
           sessionType: _disclosureSessionTypeMapper.map(result.sessionType),
           missingAttributes: missingAttributes,
-          sharedDataWithOrganizationBefore: result.sharedDataWithRelyingPartyBefore,
         );
     }
   }
-
-  @override
-  Future<String?> cancelDisclosure() => _walletCore.cancelDisclosure();
-
-  @override
-  Future<bool> hasActiveDisclosureSession() => _walletCore.hasActiveDisclosureSession();
 
   @override
   Future<String?> acceptDisclosure(String pin, List<int> selectedIndices) async {

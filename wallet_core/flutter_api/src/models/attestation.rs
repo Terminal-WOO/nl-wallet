@@ -1,15 +1,21 @@
-use wallet::attestation_data;
-use wallet::sd_jwt_vc_metadata::LogoMetadata;
+use chrono::Utc;
+use svg_sanitize::SanitizedSvg;
+use tracing::warn;
+use wallet::display::Logo;
 
-use crate::models::disclosure::Organization;
 use crate::models::image::Image;
 use crate::models::image::ImageWithMetadata;
+use crate::models::organization::Organization;
+use crate::models::revocation::RevocationStatus;
 
 pub struct AttestationPresentation {
     pub identity: AttestationIdentity,
+    pub format: Format,
     pub attestation_type: String,
     pub display_metadata: Vec<DisplayMetadata>,
     pub issuer: Organization,
+    pub revocation_status: Option<RevocationStatus>,
+    pub validity_status: ValidityStatus,
     pub attributes: Vec<AttestationAttribute>,
 }
 
@@ -17,9 +23,12 @@ impl From<wallet::AttestationPresentation> for AttestationPresentation {
     fn from(value: wallet::AttestationPresentation) -> Self {
         Self {
             identity: value.identity.into(),
+            format: value.format.into(),
             attestation_type: value.attestation_type,
             display_metadata: value.display_metadata.into_iter().map(DisplayMetadata::from).collect(),
-            issuer: value.issuer.into(),
+            issuer: (*value.issuer).into(),
+            revocation_status: value.validity.revocation_status.map(Into::into),
+            validity_status: wallet::ValidityStatus::from_window(&value.validity.validity_window, Utc::now()).into(),
             attributes: value.attributes.into_iter().map(AttestationAttribute::from).collect(),
         }
     }
@@ -39,18 +48,59 @@ impl From<wallet::AttestationIdentity> for AttestationIdentity {
     }
 }
 
+pub enum Format {
+    MsoMdoc,
+    SdJwt,
+}
+
+impl From<wallet::attestation_types::Format> for Format {
+    fn from(value: wallet::attestation_types::Format) -> Self {
+        match value {
+            wallet::attestation_types::Format::MsoMdoc => Self::MsoMdoc,
+            wallet::attestation_types::Format::SdJwt => Self::SdJwt,
+        }
+    }
+}
+
+pub enum ValidityStatus {
+    NotYetValid { valid_from: String },    // ISO8601
+    Valid { valid_until: Option<String> }, // ISO8601
+    ExpiresSoon { valid_until: String },   // ISO8601
+    Expired { valid_until: String },       // ISO8601
+}
+
+impl From<wallet::ValidityStatus> for ValidityStatus {
+    fn from(value: wallet::ValidityStatus) -> Self {
+        match value {
+            wallet::ValidityStatus::NotYetValid { valid_from } => ValidityStatus::NotYetValid {
+                valid_from: valid_from.to_rfc3339(),
+            },
+            wallet::ValidityStatus::AlwaysValid => ValidityStatus::Valid { valid_until: None },
+            wallet::ValidityStatus::ValidUntil { expires_at, .. } => ValidityStatus::Valid {
+                valid_until: Some(expires_at.to_rfc3339()),
+            },
+            wallet::ValidityStatus::ExpiresSoon { expires_at, .. } => ValidityStatus::ExpiresSoon {
+                valid_until: expires_at.to_rfc3339(),
+            },
+            wallet::ValidityStatus::Expired { expired_at } => ValidityStatus::Expired {
+                valid_until: expired_at.to_rfc3339(),
+            },
+        }
+    }
+}
+
 pub struct DisplayMetadata {
-    pub lang: String,
+    pub locale: String,
     pub name: String,
     pub description: Option<String>,
     pub summary: Option<String>,
     pub rendering: Option<RenderingMetadata>,
 }
 
-impl From<wallet::sd_jwt_vc_metadata::DisplayMetadata> for DisplayMetadata {
-    fn from(value: wallet::sd_jwt_vc_metadata::DisplayMetadata) -> Self {
+impl From<wallet::display::AttestationDisplayMetadata> for DisplayMetadata {
+    fn from(value: wallet::display::AttestationDisplayMetadata) -> Self {
         Self {
-            lang: value.lang,
+            locale: value.locale,
             name: value.name,
             description: value.description,
             summary: value.summary,
@@ -62,52 +112,67 @@ impl From<wallet::sd_jwt_vc_metadata::DisplayMetadata> for DisplayMetadata {
 pub enum RenderingMetadata {
     Simple {
         logo: Option<ImageWithMetadata>,
+        background_image: Option<Image>,
         background_color: Option<String>,
         text_color: Option<String>,
     },
     SvgTemplates,
 }
 
-impl From<wallet::sd_jwt_vc_metadata::RenderingMetadata> for RenderingMetadata {
-    fn from(value: wallet::sd_jwt_vc_metadata::RenderingMetadata) -> Self {
+impl From<wallet::display::Rendering> for RenderingMetadata {
+    fn from(value: wallet::display::Rendering) -> Self {
         match value {
-            wallet::sd_jwt_vc_metadata::RenderingMetadata::Simple {
+            wallet::display::Rendering::Simple {
                 logo,
+                background_image,
                 background_color,
                 text_color,
             } => RenderingMetadata::Simple {
-                logo: logo.map(ImageWithMetadata::from),
+                logo: logo.and_then(|l| {
+                    ImageWithMetadata::try_from(l)
+                        .inspect_err(|e| warn!("error converting logo, not showing: {e}"))
+                        .ok()
+                }),
+                background_image: background_image.and_then(|b| {
+                    Image::try_from(b.image)
+                        .inspect_err(|e| warn!("error converting background image, not showing: {e}"))
+                        .ok()
+                }),
                 background_color,
                 text_color,
             },
-            wallet::sd_jwt_vc_metadata::RenderingMetadata::SvgTemplates => RenderingMetadata::SvgTemplates,
+            wallet::display::Rendering::SvgTemplates => RenderingMetadata::SvgTemplates,
         }
     }
 }
 
-impl From<LogoMetadata> for ImageWithMetadata {
-    fn from(value: LogoMetadata) -> Self {
-        ImageWithMetadata {
+impl TryFrom<Logo> for ImageWithMetadata {
+    type Error = svg_sanitize::Error;
+
+    fn try_from(value: Logo) -> Result<Self, Self::Error> {
+        Ok(ImageWithMetadata {
             image: match value.image {
-                wallet::sd_jwt_vc_metadata::Image::Svg(xml) => Image::Svg { xml },
-                wallet::sd_jwt_vc_metadata::Image::Png(data) => Image::Png { data },
-                wallet::sd_jwt_vc_metadata::Image::Jpeg(data) => Image::Jpeg { data },
+                wallet::attestation_types::Image::Jpeg(data) => Image::Jpeg { data },
+                wallet::attestation_types::Image::Png(data) => Image::Png { data },
+                wallet::attestation_types::Image::Svg(xml) => Image::Svg {
+                    svg: SanitizedSvg::try_new(&xml)?.into(),
+                },
             },
-            alt_text: value.alt_text.into_inner(),
-        }
+            alt_text: value.alt_text,
+        })
     }
 }
 
 pub struct ClaimDisplayMetadata {
-    pub lang: String,
+    pub locale: String,
     pub label: String,
     pub description: Option<String>,
 }
 
-impl From<wallet::sd_jwt_vc_metadata::ClaimDisplayMetadata> for ClaimDisplayMetadata {
-    fn from(value: wallet::sd_jwt_vc_metadata::ClaimDisplayMetadata) -> Self {
+impl From<wallet::display::ClaimDisplay> for ClaimDisplayMetadata {
+    fn from(value: wallet::display::ClaimDisplay) -> Self {
         Self {
-            lang: value.lang,
+            locale: value.locale,
             label: value.label,
             description: value.description,
         }
@@ -136,31 +201,41 @@ pub enum AttributeValue {
     String { value: String },
     Boolean { value: bool },
     Number { value: i64 },
-    Date { value: String },
     Array { value: Vec<AttributeValue> },
     Null,
+
+    // only available for mdocs
+    Date { value: String },
+    Bytes { value: Vec<u8> },
+    Image { value: Image }, // bytes that represent an image
+
+    // TODO this should probably be `Map { value: Vec<AttestationAttribute> }`, for it to contain metadata (PVW-6241)
+    Map { value: Vec<(String, Box<AttributeValue>)> },
 }
 
-impl From<wallet::AttestationAttributeValue> for AttributeValue {
-    fn from(value: wallet::AttestationAttributeValue) -> Self {
+impl From<wallet::AttributeValue> for AttributeValue {
+    fn from(value: wallet::AttributeValue) -> Self {
         match value {
-            wallet::AttestationAttributeValue::Basic(value) => value.into(),
-            wallet::AttestationAttributeValue::Date(value) => AttributeValue::Date {
-                value: value.format("%Y-%m-%d").to_string(),
+            wallet::AttributeValue::Null => Self::Null,
+            wallet::AttributeValue::Number(value) => Self::Number { value },
+            wallet::AttributeValue::Bool(value) => Self::Boolean { value },
+            wallet::AttributeValue::Text(value) => Self::String { value },
+            wallet::AttributeValue::Array(entries) => Self::Array {
+                value: entries.into_iter().map(Self::from).collect(),
             },
-        }
-    }
-}
-
-impl From<attestation_data::AttributeValue> for AttributeValue {
-    fn from(value: attestation_data::AttributeValue) -> Self {
-        match value {
-            attestation_data::AttributeValue::Bool(value) => AttributeValue::Boolean { value },
-            attestation_data::AttributeValue::Integer(value) => AttributeValue::Number { value },
-            attestation_data::AttributeValue::Text(value) => AttributeValue::String { value },
-            attestation_data::AttributeValue::Null => AttributeValue::Null,
-            attestation_data::AttributeValue::Array(entries) => AttributeValue::Array {
-                value: entries.into_iter().map(AttributeValue::from).collect(),
+            wallet::AttributeValue::Object(entries) => Self::Map {
+                value: entries
+                    .into_iter()
+                    .map(|(key, value)| (key, Box::new(value.into())))
+                    .collect(),
+            },
+            wallet::AttributeValue::Date(date) => Self::Date {
+                value: date.format("%Y-%m-%d").to_string(),
+            },
+            wallet::AttributeValue::Bytes(value) => Self::Bytes { value },
+            wallet::AttributeValue::Image(image) => match Image::try_from(image) {
+                Ok(value) => Self::Image { value },
+                Err(value) => Self::Bytes { value },
             },
         }
     }

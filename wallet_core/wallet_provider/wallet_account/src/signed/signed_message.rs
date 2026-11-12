@@ -1,12 +1,11 @@
 use std::borrow::Cow;
 
+use crypto::keys::AppleAssertion;
+use crypto::p256_der::DerSignature;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::base64::Base64;
 use serde_with::serde_as;
-
-use crypto::keys::AppleAssertion;
-use crypto::p256_der::DerSignature;
 
 use super::TypedRawValue;
 
@@ -78,13 +77,10 @@ pub struct SignedSubjectMessage<T>(SignedMessage<PayloadWithSubject<T>>);
 pub mod client {
     use std::borrow::Cow;
 
-    use p256::ecdsa::Signature;
-    use serde::Serialize;
-
     use crypto::keys::EcdsaKey;
+    use p256::ecdsa::Signature;
     use platform_support::attested_key::AppleAttestedKey;
-
-    use crate::error::EncodeError;
+    use serde::Serialize;
 
     use super::super::TypedRawValue;
     use super::EcdsaSignatureType;
@@ -93,6 +89,7 @@ pub mod client {
     use super::SignedMessage;
     use super::SignedSubjectMessage;
     use super::SubjectPayload;
+    use crate::error::EncodeError;
 
     impl MessageSignature {
         fn new_ecdsa(r#type: EcdsaSignatureType, signature: Signature) -> Self {
@@ -187,17 +184,14 @@ pub mod client {
 
 #[cfg(feature = "server")]
 pub mod server {
-    use p256::ecdsa::Signature;
-    use p256::ecdsa::VerifyingKey;
-    use p256::ecdsa::signature::Verifier;
-    use serde::de::DeserializeOwned;
-
     use apple_app_attest::AppIdentifier;
     use apple_app_attest::AssertionCounter;
     use apple_app_attest::ClientData;
     use apple_app_attest::VerifiedAssertion;
-
-    use crate::error::DecodeError;
+    use p256::ecdsa::Signature;
+    use p256::ecdsa::VerifyingKey;
+    use p256::ecdsa::signature::Verifier;
+    use serde::de::DeserializeOwned;
 
     use super::EcdsaSignatureType;
     use super::MessageSignature;
@@ -207,6 +201,7 @@ pub mod server {
     use super::SignedSubjectMessage;
     use super::SubjectPayload;
     use super::TypedRawValue;
+    use crate::error::DecodeError;
 
     /// Used internally within this submodule to represent a payload that contains a challenge.
     pub trait ContainsChallenge {
@@ -418,19 +413,17 @@ pub mod server {
 
 #[cfg(all(test, feature = "client", feature = "server"))]
 mod tests {
-    use assert_matches::assert_matches;
-    use futures::FutureExt;
-    use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
-    use rstest::rstest;
-    use serde::Deserialize;
-    use serde::Serialize;
+    use std::assert_matches;
 
     use apple_app_attest::AppIdentifier;
     use apple_app_attest::AssertionCounter;
+    use futures::FutureExt;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
     use platform_support::attested_key::mock::MockAppleAttestedKey;
-
-    use crate::error::DecodeError;
+    use rstest::rstest;
+    use serde::Deserialize;
+    use serde::Serialize;
 
     use super::EcdsaSignatureType;
     use super::SignatureType;
@@ -438,6 +431,7 @@ mod tests {
     use super::SignedSubjectMessage;
     use super::SubjectPayload;
     use super::server::ContainsChallenge;
+    use crate::error::DecodeError;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct ToyPayload {
@@ -469,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_ecdsa_signed_message() {
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         let signed_message = SignedMessage::sign_ecdsa(&ToyPayload::default(), EcdsaSignatureType::Google, &key)
             .now_or_never()
             .unwrap()
@@ -506,14 +500,14 @@ mod tests {
 
     #[test]
     fn test_signed_message_signature_verification_error() {
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         let signed_message = SignedMessage::sign_ecdsa(&ToyPayload::default(), EcdsaSignatureType::Google, &key)
             .now_or_never()
             .unwrap()
             .expect("should sign message with ECDSA key");
 
         // Verifying with a wrong public key should return a `Error::SignatureVerification`.
-        let other_key = SigningKey::random(&mut OsRng);
+        let other_key = SigningKey::generate();
         let error = signed_message
             .parse_and_verify_ecdsa(EcdsaSignatureType::Google, other_key.verifying_key())
             .expect_err("verifying SignedMessage should return an error");
@@ -559,7 +553,7 @@ mod tests {
             SignatureType::AppleAssertion => SignatureType::Ecdsa(EcdsaSignatureType::Pin),
         };
 
-        let ecdsa_key = SigningKey::random(&mut OsRng);
+        let ecdsa_key = SigningKey::generate();
         let attested_key = create_mock_apple_attested_key();
         let payload = ToyPayload::default();
 
@@ -595,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_subject_ecdsa_signed_message() {
-        let key = SigningKey::random(&mut OsRng);
+        let key = SigningKey::generate();
         let signed_message = SignedSubjectMessage::sign_ecdsa(ToyPayload::default(), EcdsaSignatureType::Google, &key)
             .now_or_never()
             .unwrap()
@@ -653,7 +647,7 @@ mod tests {
             }
         }
 
-        let ecdsa_key = SigningKey::random(&mut OsRng);
+        let ecdsa_key = SigningKey::generate();
         let attested_key = create_mock_apple_attested_key();
         let payload = WrongToyPayload {
             string: "WRONG!".to_string(),

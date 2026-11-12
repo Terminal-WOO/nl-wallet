@@ -13,8 +13,9 @@ class CardStatusMetadataMapper {
   static CardStatusMetadata? map(
     BuildContext context,
     WalletCard card,
-    CardStatusRenderType renderType,
-  ) {
+    CardStatusRenderType renderType, {
+    bool isPidCard = false,
+  }) {
     final CardStatusMetadataFormatter formatter;
     switch (renderType) {
       case CardStatusRenderType.walletCardItem:
@@ -29,9 +30,10 @@ class CardStatusMetadataMapper {
 
     if (formatter.show(card.status)) {
       return CardStatusMetadata(
-        text: formatter.text(context, card),
+        text: formatter.text(context, card, isPidCard: isPidCard),
         textColor: formatter.textColor(context, card.status),
         icon: formatter.icon(card.status),
+        iconSemanticsLabel: formatter.iconSemanticsLabel(context, card),
         iconColor: formatter.iconColor(context, card.status),
         backgroundColor: formatter.backgroundColor(context, card.status),
       );

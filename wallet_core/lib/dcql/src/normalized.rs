@@ -1,21 +1,23 @@
+use attestation_types::credential_format::Format;
+use crypto::x509::KeyIdentifier;
 use derive_more::IntoIterator;
+use error_category::ErrorCategory;
 use itertools::Either;
 use itertools::Itertools;
 use serde::Deserialize;
 use serde::Serialize;
-
-use error_category::ErrorCategory;
+use utils::vec_at_least::Iter;
 use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
 
 use crate::ClaimPath;
 use crate::ClaimsQuery;
 use crate::ClaimsSelection;
-use crate::CredentialFormat;
 use crate::CredentialQuery;
 use crate::CredentialQueryFormat;
 use crate::CredentialQueryIdentifier;
 use crate::Query;
+use crate::TrustedAuthoritiesQuery;
 use crate::unique_id_vec::MayHaveUniqueId;
 use crate::unique_id_vec::UniqueIdVec;
 use crate::unique_id_vec::UniqueIdVecError;
@@ -28,6 +30,12 @@ impl AsRef<[NormalizedCredentialRequest]> for NormalizedCredentialRequests {
         let Self(unique_vec) = self;
 
         unique_vec.as_ref()
+    }
+}
+
+impl NormalizedCredentialRequests {
+    pub fn nonempty_iter(&self) -> Iter<'_, NormalizedCredentialRequest> {
+        self.0.nonempty_iter()
     }
 }
 
@@ -48,20 +56,22 @@ pub enum NormalizedCredentialRequest {
         id: CredentialQueryIdentifier,
         doctype_value: String,
         claims: VecNonEmpty<MdocAttributeRequest>,
+        aki: Vec<KeyIdentifier>,
     },
     #[serde(rename = "dc+sd-jwt")]
     SdJwt {
         id: CredentialQueryIdentifier,
         vct_values: VecNonEmpty<String>,
         claims: VecNonEmpty<SdJwtAttributeRequest>,
+        aki: Vec<KeyIdentifier>,
     },
 }
 
 impl NormalizedCredentialRequest {
-    pub fn format(&self) -> CredentialFormat {
+    pub fn format(&self) -> Format {
         match self {
-            Self::MsoMdoc { .. } => CredentialFormat::MsoMdoc,
-            Self::SdJwt { .. } => CredentialFormat::SdJwt,
+            Self::MsoMdoc { .. } => Format::MsoMdoc,
+            Self::SdJwt { .. } => Format::SdJwt,
         }
     }
 
@@ -85,6 +95,13 @@ impl NormalizedCredentialRequest {
         match self {
             Self::MsoMdoc { claims, .. } => Either::Left(claims.iter().map(|claim| &claim.path)),
             Self::SdJwt { claims, .. } => Either::Right(claims.iter().map(|claim| &claim.path)),
+        }
+    }
+
+    pub fn aki(&self) -> &[KeyIdentifier] {
+        match self {
+            NormalizedCredentialRequest::MsoMdoc { aki, .. } => aki,
+            NormalizedCredentialRequest::SdJwt { aki, .. } => aki,
         }
     }
 }
@@ -122,8 +139,8 @@ pub enum UnsupportedDcqlFeatures {
     ClaimSets,
     #[error("claim query with 'values' is not supported")]
     ClaimValues,
-    #[error("'trusted_authorities' is not suported")]
-    TrustedAuthorities,
+    #[error("received unsupported 'trusted_authorities' variant: {0:?}")]
+    UnsupportedTrustedAuthority(VecNonEmpty<String>),
     #[error("requests that do not require a cryptographic holder binding proof are not supported")]
     CryptographicHolderBindingNotRequired,
     #[error("unsupported ClaimPath variant, only SelectByKey is supported")]
@@ -171,9 +188,6 @@ impl TryFrom<CredentialQuery> for NormalizedCredentialRequest {
         if source.multiple {
             return Err(UnsupportedDcqlFeatures::MultipleCredentialQueries);
         }
-        if !source.trusted_authorities.is_empty() {
-            return Err(UnsupportedDcqlFeatures::TrustedAuthorities);
-        }
         if !source.require_cryptographic_holder_binding {
             return Err(UnsupportedDcqlFeatures::CryptographicHolderBindingNotRequired);
         }
@@ -188,6 +202,20 @@ impl TryFrom<CredentialQuery> for NormalizedCredentialRequest {
             ClaimsSelection::All { claims } => claims,
         };
 
+        let aki = source
+            .trusted_authorities
+            .into_iter()
+            .map(|trusted_authority| match trusted_authority {
+                TrustedAuthoritiesQuery::Aki(aki) => Ok(aki.into_inner()),
+                TrustedAuthoritiesQuery::Other(unsupported) => {
+                    Err(UnsupportedDcqlFeatures::UnsupportedTrustedAuthority(unsupported))
+                }
+            })
+            .collect::<Result<Vec<Vec<_>>, _>>()? // check for failures
+            .into_iter()
+            .flatten()
+            .collect();
+
         let request = match source.format {
             CredentialQueryFormat::MsoMdoc { doctype_value } => {
                 let claims = claims
@@ -199,6 +227,7 @@ impl TryFrom<CredentialQuery> for NormalizedCredentialRequest {
                     id: source.id,
                     doctype_value,
                     claims,
+                    aki,
                 }
             }
             CredentialQueryFormat::SdJwt { vct_values } => {
@@ -211,6 +240,7 @@ impl TryFrom<CredentialQuery> for NormalizedCredentialRequest {
                     id: source.id,
                     vct_values,
                     claims,
+                    aki,
                 }
             }
         };
@@ -221,28 +251,48 @@ impl TryFrom<CredentialQuery> for NormalizedCredentialRequest {
 
 impl From<NormalizedCredentialRequest> for CredentialQuery {
     fn from(value: NormalizedCredentialRequest) -> Self {
-        let (id, format, claims) = match value {
+        let (id, format, claims, aki) = match value {
             NormalizedCredentialRequest::MsoMdoc {
                 id,
                 doctype_value,
                 claims,
+                aki,
             } => (
                 id,
                 CredentialQueryFormat::MsoMdoc { doctype_value },
                 claims.into_iter().map(ClaimsQuery::from).collect_vec(),
+                aki,
             ),
-            NormalizedCredentialRequest::SdJwt { id, vct_values, claims } => (
+            NormalizedCredentialRequest::SdJwt {
+                id,
+                vct_values,
+                claims,
+                aki,
+            } => (
                 id,
                 CredentialQueryFormat::SdJwt { vct_values },
                 claims.into_iter().map(ClaimsQuery::from).collect_vec(),
+                aki,
             ),
         };
+
+        // The reverse mapping, in `TryFrom<CredentialQuery> for NormalizedCredentialRequest` above, flattens multiple
+        // AKI values in the `trusted_authorities` array of the `CredentialQuery`, resulting in a `Vec<KeyIdentifier>`
+        // as opposed to what otherwise might be a `Vec<Vec<KeyIdentifier>>`.
+        // As a result, this conversion here will always yield a single AKI value in the `trusted_authorities` array.
+        // Therefore, converting a CredentialQuery to a NormalizedCredentialRequest and then back again would not
+        // yield an identical result if the `trusted_authorities` array contained multiple AKI values, although
+        // semantically the difference has no effect.
+        let trusted_authorities = VecNonEmpty::try_from(aki)
+            .into_iter()
+            .map(TrustedAuthoritiesQuery::Aki)
+            .collect();
 
         Self {
             id,
             format,
             multiple: false,
-            trusted_authorities: vec![],
+            trusted_authorities,
             require_cryptographic_holder_binding: true,
             claims_selection: ClaimsSelection::All {
                 claims: claims
@@ -255,10 +305,6 @@ impl From<NormalizedCredentialRequest> for CredentialQuery {
 }
 
 fn check_claims_query(claims_query: &ClaimsQuery) -> Result<(), UnsupportedDcqlFeatures> {
-    if !claims_query.values.is_empty() {
-        return Err(UnsupportedDcqlFeatures::ClaimValues);
-    }
-
     if claims_query
         .path
         .nonempty_iter()
@@ -300,7 +346,16 @@ impl From<MdocAttributeRequest> for ClaimsQuery {
 impl TryFrom<ClaimsQuery> for SdJwtAttributeRequest {
     type Error = UnsupportedDcqlFeatures;
 
-    fn try_from(source: ClaimsQuery) -> Result<Self, Self::Error> {
+    fn try_from(mut source: ClaimsQuery) -> Result<Self, Self::Error> {
+        // TODO(PVW-6271): interim workaround. A trailing null selects all array elements; we request the whole array
+        // instead. Array elements that an issuer conceals separately are therefore not disclosed.
+        if let ClaimPath::SelectAll = source.path.last() {
+            let (path, _) = source.path.into_inner_last();
+            source.path = path
+                .try_into()
+                .map_err(|_| UnsupportedDcqlFeatures::UnsupportedClaimPathVariant)?;
+        }
+
         check_claims_query(&source)?;
 
         if source.intent_to_retain.is_some() {
@@ -327,27 +382,27 @@ impl From<SdJwtAttributeRequest> for ClaimsQuery {
 
 #[cfg(any(test, feature = "mock"))]
 pub mod mock {
-    use itertools::Itertools;
-
-    use attestation_types::pid_constants::EUDI_PID_ATTESTATION_TYPE;
     use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
+    use attestation_types::pid_constants::PID_MDOC_DOCTYPE;
+    use attestation_types::pid_constants::ROOT_PID_ATTESTATION_TYPE;
+    use crypto::x509::KeyIdentifier;
+    use itertools::Itertools;
     use mdoc::examples::EXAMPLE_ATTRIBUTES;
     use mdoc::examples::EXAMPLE_DOC_TYPE;
     use mdoc::examples::EXAMPLE_NAMESPACE;
     use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
 
+    use super::MdocAttributeRequest;
+    use super::NormalizedCredentialRequest;
+    use super::NormalizedCredentialRequests;
+    use super::SdJwtAttributeRequest;
     use crate::ClaimPath;
     use crate::ClaimsQuery;
     use crate::ClaimsSelection;
     use crate::CredentialQuery;
     use crate::CredentialQueryFormat;
     use crate::Query;
-
-    use super::MdocAttributeRequest;
-    use super::NormalizedCredentialRequest;
-    use super::NormalizedCredentialRequests;
-    use super::SdJwtAttributeRequest;
 
     impl Query {
         pub fn new_mock_single(credential_query: CredentialQuery) -> Self {
@@ -371,7 +426,24 @@ pub mod mock {
     }
 
     impl CredentialQuery {
-        pub fn new_mock_mdoc(id: &str, doc_type: &str, name_space: &str, attributes: &[&str]) -> Self {
+        pub fn new_mock_mdoc<'a>(
+            id: &str,
+            doc_type: &str,
+            name_space: &'a str,
+            attributes: impl IntoIterator<Item = &'a str>,
+        ) -> Self {
+            Self::new_mock_mdoc_with_name_spaces(
+                id,
+                doc_type,
+                attributes.into_iter().map(|attribute| (name_space, attribute)),
+            )
+        }
+
+        pub fn new_mock_mdoc_with_name_spaces<'a>(
+            id: &str,
+            doc_type: &str,
+            attributes: impl IntoIterator<Item = (&'a str, &'a str)>,
+        ) -> Self {
             CredentialQuery {
                 id: id.try_into().expect("identifier should be valid"),
                 format: CredentialQueryFormat::MsoMdoc {
@@ -382,8 +454,8 @@ pub mod mock {
                 require_cryptographic_holder_binding: true,
                 claims_selection: ClaimsSelection::All {
                     claims: attributes
-                        .iter()
-                        .map(|attribute| ClaimsQuery {
+                        .into_iter()
+                        .map(|(name_space, attribute)| ClaimsQuery {
                             id: None,
                             path: vec_nonempty![
                                 ClaimPath::SelectByKey(name_space.to_string()),
@@ -409,7 +481,7 @@ pub mod mock {
                         .map(str::to_string)
                         .collect_vec()
                         .try_into()
-                        .expect("should contain at least one vct"),
+                        .expect("`new_mock_sd_jwt` should be called with a non-empty slice of VCTs"),
                 },
                 multiple: false,
                 trusted_authorities: vec![],
@@ -424,7 +496,10 @@ pub mod mock {
                                 .map(|attribute| ClaimPath::SelectByKey(attribute.to_string()))
                                 .collect_vec()
                                 .try_into()
-                                .expect("should contain at least one path element"),
+                                .expect(
+                                    "`new_mock_sd_jwt` should be called with a slice of non-empty slices of claim \
+                                     paths",
+                                ),
                             values: vec![],
                             intent_to_retain: None,
                         })
@@ -440,16 +515,16 @@ pub mod mock {
                 "mdoc_iso_example",
                 EXAMPLE_DOC_TYPE,
                 EXAMPLE_NAMESPACE,
-                &EXAMPLE_ATTRIBUTES,
+                EXAMPLE_ATTRIBUTES.iter().copied(),
             )
         }
 
         pub fn new_mock_mdoc_pid_example() -> Self {
             Self::new_mock_mdoc(
                 "mdoc_pid_example",
-                PID_ATTESTATION_TYPE,
-                PID_ATTESTATION_TYPE,
-                &["bsn", "given_name", "family_name"],
+                PID_MDOC_DOCTYPE,
+                PID_MDOC_DOCTYPE,
+                ["bsn", "given_name", "family_name"],
             )
         }
 
@@ -464,7 +539,7 @@ pub mod mock {
         pub fn new_mock_sd_jwt_eu_pid_example() -> Self {
             Self::new_mock_sd_jwt(
                 "mock_sd_jwt_example",
-                &[EUDI_PID_ATTESTATION_TYPE],
+                &[ROOT_PID_ATTESTATION_TYPE],
                 &[&["given_name"], &["family_name"]],
             )
         }
@@ -529,10 +604,26 @@ pub mod mock {
             vec![NormalizedCredentialRequest::new_mock_from_slices(
                 "my_credential",
                 MockCredentialFormat::MsoMdoc { intent_to_retain: None },
-                &["org.iso.7367.1.mVRC"],
+                &["org.iso.7367.2.1.mVC"],
                 &[
-                    &["org.iso.7367.1", "vehicle_holder"],
+                    &["org.iso.7367.2.1", "vehicle_holder"],
                     &["org.iso.18013.5.1", "first_name"],
+                ],
+            )]
+            .try_into()
+            .unwrap()
+        }
+
+        pub fn example_with_name_and_address() -> Self {
+            vec![NormalizedCredentialRequest::new_mock_from_slices(
+                "my_credential",
+                MockCredentialFormat::SdJwt,
+                &["https://credentials.example.com/identity_credential"],
+                &[
+                    &["last_name"],
+                    &["first_name"],
+                    &["address", "street_address"],
+                    &["postal_code"],
                 ],
             )]
             .try_into()
@@ -550,9 +641,9 @@ pub mod mock {
                 NormalizedCredentialRequest::new_mock_from_slices(
                     "mdl",
                     MockCredentialFormat::MsoMdoc { intent_to_retain: None },
-                    &["org.iso.7367.1.mVRC"],
+                    &["org.iso.7367.2.1.mVC"],
                     &[
-                        &["org.iso.7367.1", "vehicle_holder"],
+                        &["org.iso.7367.2.1", "vehicle_holder"],
                         &["org.iso.18013.5.1", "first_name"],
                     ],
                 ),
@@ -569,6 +660,30 @@ pub mod mock {
     }
 
     impl NormalizedCredentialRequest {
+        pub fn with_aki(self, aki: Vec<KeyIdentifier>) -> Self {
+            match self {
+                Self::MsoMdoc {
+                    id,
+                    doctype_value,
+                    claims,
+                    ..
+                } => Self::MsoMdoc {
+                    id,
+                    doctype_value,
+                    claims,
+                    aki,
+                },
+                Self::SdJwt {
+                    id, vct_values, claims, ..
+                } => Self::SdJwt {
+                    id,
+                    vct_values,
+                    claims,
+                    aki,
+                },
+            }
+        }
+
         fn new_mock_from_slices(
             id: &str,
             format: MockCredentialFormat,
@@ -599,6 +714,7 @@ pub mod mock {
                         .collect_vec()
                         .try_into()
                         .expect("should contain at least one claim"),
+                    aki: vec![],
                 },
                 MockCredentialFormat::SdJwt => Self::SdJwt {
                     id,
@@ -611,6 +727,7 @@ pub mod mock {
                         .collect_vec()
                         .try_into()
                         .expect("should contain at least one claim"),
+                    aki: vec![],
                 },
             }
         }
@@ -633,11 +750,11 @@ pub mod mock {
             Self::new_mock_from_slices(
                 "mdoc_pid_example",
                 MockCredentialFormat::MsoMdoc { intent_to_retain: None },
-                &[PID_ATTESTATION_TYPE],
+                &[PID_MDOC_DOCTYPE],
                 &[
-                    &[PID_ATTESTATION_TYPE, "bsn"],
-                    &[PID_ATTESTATION_TYPE, "given_name"],
-                    &[PID_ATTESTATION_TYPE, "family_name"],
+                    &[PID_MDOC_DOCTYPE, "bsn"],
+                    &[PID_MDOC_DOCTYPE, "given_name"],
+                    &[PID_MDOC_DOCTYPE, "family_name"],
                 ],
             )
         }
@@ -656,18 +773,21 @@ pub mod mock {
 #[cfg(test)]
 mod test {
     use rstest::rstest;
-
+    use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
 
+    use super::MdocAttributeRequest;
+    use super::NormalizedCredentialRequest;
+    use super::NormalizedCredentialRequests;
+    use super::SdJwtAttributeRequest;
+    use super::UnsupportedDcqlFeatures;
     use crate::ClaimPath;
     use crate::ClaimsQuery;
+    use crate::ClaimsQueryValue;
     use crate::ClaimsSelection;
     use crate::CredentialQuery;
     use crate::Query;
     use crate::TrustedAuthoritiesQuery;
-
-    use super::NormalizedCredentialRequests;
-    use super::UnsupportedDcqlFeatures;
 
     #[rstest]
     #[case(
@@ -680,7 +800,10 @@ mod test {
     )]
     #[case(Query::example_with_credential_sets(), Err(UnsupportedDcqlFeatures::CredentialSets))]
     #[case(Query::example_with_claim_sets(), Err(UnsupportedDcqlFeatures::ClaimSets))]
-    #[case(Query::example_with_values(), Err(UnsupportedDcqlFeatures::ClaimValues))]
+    #[case(
+        Query::example_with_values(),
+        Ok(NormalizedCredentialRequests::example_with_name_and_address())
+    )]
     #[case(
         Query::new_mock_mdoc_iso_example(),
         Ok(NormalizedCredentialRequests::new_mock_mdoc_iso_example())
@@ -694,8 +817,8 @@ mod test {
         Err(UnsupportedDcqlFeatures::MultipleCredentialQueries)
     )]
     #[case(
-        mdoc_query_with_trusted_authorities(),
-        Err(UnsupportedDcqlFeatures::TrustedAuthorities)
+        mdoc_query_with_unsupported_trusted_authorities(),
+        Err(UnsupportedDcqlFeatures::UnsupportedTrustedAuthority(vec_nonempty!["unsupported".to_string()]))
     )]
     #[case(mdoc_query_without_claims(), Err(UnsupportedDcqlFeatures::NoClaims))]
     #[case(mdoc_query_with_claim_sets(), Err(UnsupportedDcqlFeatures::ClaimSets))]
@@ -707,13 +830,13 @@ mod test {
         mdoc_query_with_invalid_claim_path_variant_by_index(),
         Err(UnsupportedDcqlFeatures::UnsupportedClaimPathVariant)
     )]
-    #[case(mdoc_query_with_values(), Err(UnsupportedDcqlFeatures::ClaimValues))]
+    #[case(mdoc_query_with_values(), Ok(normalized_mdoc_with_ns_attr()))]
     #[case(
         mdoc_query_without_cryptographic_holder_binding_requirement(),
         Err(UnsupportedDcqlFeatures::CryptographicHolderBindingNotRequired)
     )]
     #[case(sd_jwt_single_query(), Ok(sd_jwt_single_request()))]
-    #[case(sd_jwt_values_query(), Err(UnsupportedDcqlFeatures::ClaimValues))]
+    #[case(sd_jwt_values_query(), Ok(normalized_sd_jwt_family_name()))]
     #[case(sd_jwt_no_selectively_disclosable_query(), Err(UnsupportedDcqlFeatures::NoClaims))]
     #[case(sd_jwt_intent_to_retain_query(), Err(UnsupportedDcqlFeatures::IntentToRetainPresent))]
     fn test_conversion(
@@ -725,10 +848,50 @@ mod test {
         assert_eq!(result, expected);
 
         // If the conversion succeeds, test that the conversion back matches the input.
-        // Note that this requires that the input does not use `ClaimsQuery` identifiers.
+        // Note: this requires that the input does not use `ClaimsQuery` identifiers, and that
+        // claim values are stripped from the input before comparing, since normalization drops them.
         if let Ok(normalized) = result {
-            assert_eq!(Query::from(normalized), query);
+            assert_eq!(Query::from(normalized), strip_claim_values(query));
         }
+    }
+
+    fn key(key: &str) -> ClaimPath {
+        ClaimPath::SelectByKey(key.to_string())
+    }
+
+    #[rstest]
+    #[case(vec_nonempty![key("nationalities"), ClaimPath::SelectAll], Ok(vec_nonempty![key("nationalities")]))]
+    #[case(
+        vec_nonempty![key("nationalities"), ClaimPath::SelectAll, ClaimPath::SelectAll],
+        Err(UnsupportedDcqlFeatures::UnsupportedClaimPathVariant)
+    )]
+    #[case(vec_nonempty![ClaimPath::SelectAll], Err(UnsupportedDcqlFeatures::UnsupportedClaimPathVariant))]
+    #[case(
+        vec_nonempty![ClaimPath::SelectAll, ClaimPath::SelectAll],
+        Err(UnsupportedDcqlFeatures::UnsupportedClaimPathVariant)
+    )]
+    #[case(
+        vec_nonempty![key("degrees"), ClaimPath::SelectAll, key("type")],
+        Err(UnsupportedDcqlFeatures::UnsupportedClaimPathVariant)
+    )]
+    #[case(
+        vec_nonempty![key("nationalities"), ClaimPath::SelectByIndex(0)],
+        Err(UnsupportedDcqlFeatures::UnsupportedClaimPathVariant)
+    )]
+    fn test_sd_jwt_trailing_select_all(
+        #[case] path: VecNonEmpty<ClaimPath>,
+        #[case] expected: Result<VecNonEmpty<ClaimPath>, UnsupportedDcqlFeatures>,
+    ) {
+        let claims_query = ClaimsQuery {
+            id: None,
+            path,
+            values: vec![],
+            intent_to_retain: None,
+        };
+
+        let result = SdJwtAttributeRequest::try_from(claims_query).map(|request| request.path);
+
+        assert_eq!(result, expected);
     }
 
     fn mdoc_example_query_mutate_first_credential_query<F>(mutate: F) -> Query
@@ -749,10 +912,10 @@ mod test {
         })
     }
 
-    fn mdoc_query_with_trusted_authorities() -> Query {
+    fn mdoc_query_with_unsupported_trusted_authorities() -> Query {
         mdoc_example_query_mutate_first_credential_query(|mut c| {
             c.trusted_authorities
-                .push(TrustedAuthoritiesQuery::Other("placeholder".to_string()));
+                .push(TrustedAuthoritiesQuery::Other(vec_nonempty!["unsupported".to_string()]));
             c
         })
     }
@@ -768,9 +931,7 @@ mod test {
         mdoc_example_query_mutate_first_credential_query(|mut c| {
             c.claims_selection = ClaimsSelection::Combinations {
                 claims: vec![mdoc_claims_query()].try_into().unwrap(),
-                claim_sets: vec![vec!["1".to_string().try_into().unwrap()].try_into().unwrap()]
-                    .try_into()
-                    .unwrap(),
+                claim_sets: vec_nonempty![vec!["1".to_string().try_into().unwrap()].try_into().unwrap()],
             };
             c
         })
@@ -779,9 +940,7 @@ mod test {
     fn mdoc_query_with_invalid_claim_path_variant_all() -> Query {
         let claims_query = {
             let mut claims_query = mdoc_claims_query();
-            claims_query.path = vec![ClaimPath::SelectByKey("ns".to_string()), ClaimPath::SelectAll]
-                .try_into()
-                .unwrap();
+            claims_query.path = vec_nonempty![ClaimPath::SelectByKey("ns".to_string()), ClaimPath::SelectAll];
             claims_query
         };
         mdoc_example_query_mutate_first_credential_query(move |mut c| {
@@ -795,9 +954,7 @@ mod test {
     fn mdoc_query_with_invalid_claim_path_variant_by_index() -> Query {
         let claims_query = {
             let mut claims_query = mdoc_claims_query();
-            claims_query.path = vec![ClaimPath::SelectByKey("ns".to_string()), ClaimPath::SelectByIndex(1)]
-                .try_into()
-                .unwrap();
+            claims_query.path = vec_nonempty![ClaimPath::SelectByKey("ns".to_string()), ClaimPath::SelectByIndex(1)];
             claims_query
         };
         mdoc_example_query_mutate_first_credential_query(move |mut c| {
@@ -811,7 +968,7 @@ mod test {
     fn mdoc_query_with_values() -> Query {
         let claims_query = {
             let mut claims_query = mdoc_claims_query();
-            claims_query.values = vec![serde_json::Value::Bool(true)];
+            claims_query.values = vec![ClaimsQueryValue::Boolean(true)];
             claims_query
         };
         mdoc_example_query_mutate_first_credential_query(move |mut c| {
@@ -832,12 +989,10 @@ mod test {
     fn mdoc_claims_query() -> ClaimsQuery {
         ClaimsQuery {
             id: None,
-            path: vec![
+            path: vec_nonempty![
                 ClaimPath::SelectByKey("ns".to_string()),
                 ClaimPath::SelectByKey("attr".to_string()),
-            ]
-            .try_into()
-            .unwrap(),
+            ],
             values: vec![],
             intent_to_retain: Some(true),
         }
@@ -858,6 +1013,36 @@ mod test {
         )])
     }
 
+    fn normalized_mdoc_with_ns_attr() -> NormalizedCredentialRequests {
+        vec![NormalizedCredentialRequest::MsoMdoc {
+            id: "mdoc_iso_example".try_into().unwrap(),
+            doctype_value: "org.iso.18013.5.1.mDL".to_string(),
+            aki: vec![],
+            claims: vec_nonempty![MdocAttributeRequest {
+                path: vec_nonempty![
+                    ClaimPath::SelectByKey("ns".to_string()),
+                    ClaimPath::SelectByKey("attr".to_string()),
+                ],
+                intent_to_retain: Some(true),
+            }],
+        }]
+        .try_into()
+        .unwrap()
+    }
+
+    fn normalized_sd_jwt_family_name() -> NormalizedCredentialRequests {
+        vec![NormalizedCredentialRequest::SdJwt {
+            id: "intent_to_retain".try_into().unwrap(),
+            vct_values: vec_nonempty!["pid".to_string()],
+            aki: vec![],
+            claims: vec_nonempty![SdJwtAttributeRequest {
+                path: vec_nonempty![ClaimPath::SelectByKey("family_name".to_string())],
+            }],
+        }]
+        .try_into()
+        .unwrap()
+    }
+
     fn sd_jwt_values_query() -> Query {
         let mut credential_query = CredentialQuery::new_mock_sd_jwt("intent_to_retain", &["pid"], &[&["family_name"]]);
 
@@ -865,7 +1050,7 @@ mod test {
             claims: vec![ClaimsQuery {
                 id: None,
                 path: vec_nonempty![ClaimPath::SelectByKey("family_name".to_string())],
-                values: vec![serde_json::Value::String("Name".to_string())],
+                values: vec![ClaimsQueryValue::String("Name".to_string())],
                 intent_to_retain: None,
             }]
             .try_into()
@@ -906,6 +1091,34 @@ mod test {
         Query {
             credentials: vec![credential_query].try_into().unwrap(),
             credential_sets: vec![],
+        }
+    }
+
+    fn strip_claim_values(query: Query) -> Query {
+        Query {
+            credentials: query
+                .credentials
+                .into_iter()
+                .map(|mut cq| {
+                    if let ClaimsSelection::All { claims } = cq.claims_selection {
+                        cq.claims_selection = ClaimsSelection::All {
+                            claims: claims
+                                .into_iter()
+                                .map(|mut c| {
+                                    c.values = vec![];
+                                    c
+                                })
+                                .collect::<Vec<_>>()
+                                .try_into()
+                                .unwrap(),
+                        };
+                    }
+                    cq
+                })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+            credential_sets: query.credential_sets,
         }
     }
 }

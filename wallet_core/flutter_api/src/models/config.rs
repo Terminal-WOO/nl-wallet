@@ -1,12 +1,17 @@
+use chrono::SecondsFormat;
 use wallet::configuration::WalletConfiguration;
+
+use super::attestation::Format;
 
 pub struct FlutterConfiguration {
     pub inactive_warning_timeout: u16,
     pub inactive_lock_timeout: u16,
     pub background_lock_timeout: u16,
-    pub pid_attestation_types: Vec<String>,
+    pub pid_attestations: Vec<PidAttestation>,
     pub static_assets_base_url: String,
-    pub version: u64,
+    pub maintenance_window: Option<FlutterMaintenanceWindow>,
+    pub version: String,
+    pub environment: String,
 }
 
 impl From<&WalletConfiguration> for FlutterConfiguration {
@@ -15,9 +20,49 @@ impl From<&WalletConfiguration> for FlutterConfiguration {
             inactive_warning_timeout: value.lock_timeouts.warning_timeout,
             inactive_lock_timeout: value.lock_timeouts.inactive_timeout,
             background_lock_timeout: value.lock_timeouts.background_timeout,
-            pid_attestation_types: value.pid_attributes.pid_attestation_types(),
+            pid_attestations: PidAttestation::pid_attestations_from_config(value.pid_attributes.clone()),
             static_assets_base_url: value.static_assets_base_url.to_string(),
-            version: value.version,
+            maintenance_window: value
+                .maintenance_window
+                .as_ref()
+                .map(|window| FlutterMaintenanceWindow {
+                    start: window.start.to_rfc3339_opts(SecondsFormat::Secs, true),
+                    end: window.end.to_rfc3339_opts(SecondsFormat::Secs, true),
+                }),
+            version: value.version.to_string(),
+            environment: value.environment.clone(),
         }
+    }
+}
+
+// A struct rather than a tuple, as flutter_rust_bridge generates a broken Dart decoder for `Option<(String, String)>`.
+pub struct FlutterMaintenanceWindow {
+    pub start: String,
+    pub end: String,
+}
+
+pub struct PidAttestation {
+    pub format: Format,
+    pub attestation_type: String,
+}
+
+impl PidAttestation {
+    /// Flutter should interpet this `Vec` as a prioritised list of formats / attestation types. The first PID
+    /// credential that matches this tuple should be shown, while any following ones that match should be hidden from
+    /// the user. Note that SD-JWT is prioritized as a format, meaning that if any SD-JWT PID credential is present, an
+    /// mdoc credential will be hidden.
+    fn pid_attestations_from_config(pid_config: wallet::configuration::PidAttributesConfiguration) -> Vec<Self> {
+        pid_config
+            .sd_jwt
+            .into_keys()
+            .map(|attestation_type| Self {
+                format: Format::SdJwt,
+                attestation_type,
+            })
+            .chain(pid_config.mso_mdoc.into_keys().map(|attestation_type| Self {
+                format: Format::MsoMdoc,
+                attestation_type,
+            }))
+            .collect()
     }
 }

@@ -1,12 +1,11 @@
 use futures::TryFutureExt;
-use reqwest::Response;
-use serde::Serialize;
-use url::ParseError;
-
 use http_utils::error::HttpJsonErrorBody;
 use http_utils::reqwest::default_reqwest_client_builder;
 use http_utils::reqwest::is_problem_json_response;
 use http_utils::urls::BaseUrl;
+use reqwest::Response;
+use serde::Serialize;
+use url::ParseError;
 
 use crate::pid::brp::data::*;
 
@@ -22,6 +21,7 @@ pub enum BrpError {
     Conversion(String),
 }
 
+#[trait_variant::make(Send)]
 pub trait BrpClient {
     async fn get_person_by_bsn(&self, bsn: &str) -> Result<BrpPersons, BrpError>;
 }
@@ -34,6 +34,7 @@ pub struct HttpBrpClient {
 impl HttpBrpClient {
     pub fn new(base_url: BaseUrl) -> Self {
         Self {
+            // Note that this specifically allows HTTP, as this service is meant to be run on an internal network.
             http_client: default_reqwest_client_builder()
                 .build()
                 .expect("Could not build reqwest HTTP client"),
@@ -74,7 +75,7 @@ struct GetByBsnRequest<'a> {
 
 impl GetByBsnRequest<'_> {
     const TYPE: &'static str = "RaadpleegMetBurgerservicenummer";
-    const FIELDS: [&'static str; 18] = [
+    const FIELDS: [&'static str; 20] = [
         "burgerservicenummer",
         "geslacht",
         "naam.voornamen",
@@ -86,6 +87,8 @@ impl GetByBsnRequest<'_> {
         "verblijfplaats.verblijfadres.officieleStraatnaam",
         "verblijfplaats.verblijfadres.korteStraatnaam",
         "verblijfplaats.verblijfadres.huisnummer",
+        "verblijfplaats.verblijfadres.huisletter",
+        "verblijfplaats.verblijfadres.huisnummertoevoeging",
         "verblijfplaats.verblijfadres.postcode",
         "verblijfplaats.verblijfadres.woonplaats",
         "leeftijd",

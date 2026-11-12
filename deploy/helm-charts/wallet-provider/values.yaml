@@ -1,0 +1,317 @@
+## Global Docker image parameters
+## Please, note that this will override the image parameters, including dependencies, configured to use the global value
+## Current available global Docker image parameters: imageRegistry
+## @section Global parameters
+## @param global.imageRegistry Global Docker image registry
+##
+global:
+  imageRegistry: ""
+
+## @section Common parameters
+## @param nameOverride String to partially override chart's fullname
+##
+nameOverride: ""
+
+## @section Common parameters
+## @param replicaCount Number of replicas
+##
+replicaCount: 2
+
+## @section Image parameters
+## @param image.repository Repository for the container image
+## @param image.pullPolicy Image pull policy
+## @param image.tag Image tag
+##
+image:
+  repository: null
+  pullPolicy: IfNotPresent
+  tag: null
+
+## @section Image migration parameters
+## @param imageMigrations.repository Repository for the migration container image
+## @param imageMigrations.pullPolicy Image pull policy for the migration container
+##
+imageMigrations:
+  repository: null
+  pullPolicy: IfNotPresent
+
+## @section Audit Log Image migration parameters
+## @param imageAuditLogMigrations.repository Repository for the migration container image
+## @param imageAuditLogMigrations.pullPolicy Image pull policy for the migration container
+##
+imageAuditLogMigrations:
+  repository: null
+  pullPolicy: IfNotPresent
+
+## @section Image pull secrets
+## @param imagePullSecrets Array of secret names for private registries
+##
+imagePullSecrets: []
+
+## @section Deployment parameters
+## @param deployment.strategy Strategy used to replace old pods by new one
+## @param deployment.revisionHistoryLimit The number of old ReplicaSets to retain to allow rollback
+## @param deployment.progressDeadlineSeconds The number of seconds you want to wait for your Deployment to progress
+##
+deployment:
+  strategy: null
+  revisionHistoryLimit: 2
+  progressDeadlineSeconds: 300
+
+## @section Security parameters
+## @param serviceAccountName Name of the service account
+## @param podSecurityContext Security context for the pod
+## @param securityContext Security context for the container
+##
+serviceAccountName: ""
+podSecurityContext: {}
+securityContext: {}
+
+## @section Annotations and labels
+## Additional annotations and labels
+## @param extraAnnotations Additional annotations for the deployment
+## @param extraPodLabels Additional labels for the pods
+##
+extraAnnotations: {}
+extraPodLabels: {}
+
+## @section Resource requests and limits
+## @param resources.requests.cpu CPU request
+## @param resources.requests.memory Memory request
+## @param resources.limits.cpu CPU limit
+## @param resources.limits.memory Memory limit
+##
+resources:
+  requests:
+    cpu: "100m"
+    memory: "32Mi"
+  limits:
+    cpu: "400m"
+    memory: "64Mi"
+
+## @section HTTP route parameters
+## Parameters for the HTTPRoute configuration
+## @param httpRoute.enabled Enable or disable the route
+## @param httpRoute.parentRefs Parent references to the gateway
+## @param httpRoute.hostnames Hostnames for the route
+## @param httpRoute.contextPath Optional context path for the route
+## @param httpRoute.labels Additional labels for the route
+## @param httpRoute.annotations Additional annotations for the route
+## @param httpRoute.nginxClientSettingsPolicy Nginx specific client settings policy for this route
+##
+httpRoute:
+  enabled: true
+  parentRefs: []
+  hostnames: []
+  contextPath: null
+  labels: {}
+  annotations: {}
+  nginxClientSettingsPolicy: {}
+
+## @section HTTP route admin-portal parameters
+## Parameters for the admin-portal HTTPRoute configuration
+## @param httpRouteAdminPortal.enabled Enable or disable the route
+## @param httpRouteAdminPortal.parentRefs Parent references to the gateway
+## @param httpRouteAdminPortal.hostnames Hostnames for the route
+## @param httpRouteAdminPortal.labels Additional labels for the route
+## @param httpRouteAdminPortal.annotations Additional annotations for the route
+##
+httpRouteAdminPortal:
+  enabled: true
+  parentRefs: []
+  hostnames: []
+  labels: {}
+  annotations: {}
+
+## @section HTTP route internal parameters
+## Parameters for the internal HTTPRoute configuration
+## @param httpRouteInternal.enabled Enable or disable the route
+## @param httpRouteInternal.parentRefs Parent references to the gateway
+## @param httpRouteInternal.hostnames Hostnames for the route
+## @param httpRouteInternal.labels Additional labels for the route
+## @param httpRouteInternal.annotations Additional annotations for the route
+##
+httpRouteInternal:
+  enabled: true
+  parentRefs: []
+  hostnames: []
+  labels: {}
+  annotations: {}
+
+## @section Container probes
+## @param probes.config.liveness Additional configuration for liveness probe
+## @param probes.config.readiness Additional configuration for readiness probe
+## @param probes.config.startup Additional configuration for startup probe
+## @param probes.disableLiveness Disable liveness probe
+## @param probes.useLivenessAsReadiness Use liveness endpoint for readiness
+##
+probes:
+  config:
+    liveness: {}
+    readiness: {}
+    startup: {}
+  disableLiveness: false
+  useLivenessAsReadiness: false
+
+## @section Database parameters
+## Parameters for database configuration
+## @param database.secretName The secret name that contains the connection url for the database
+##
+database:
+  secretName: null
+
+## @section Audit Log Database parameters
+## Parameters for database configuration
+## @param auditLog.secretName The secret name that contains the connection url for the database
+##
+auditLog:
+  secretName: null
+
+## @section HSM parameters
+## @param hsm.maxSessions Maximum HSM sessions
+## @param hsm.maxSessionLifeTimeInSec The maximum lifetime of a HSM session in seconds
+## @param hsm.configMapName Name to the the ConfigMap containing the hsm config file
+## @param hsm.configMapKey Key of the the ConfigMap containing the hsm config file
+##
+hsm:
+  configMapName: nl-wallet-hsm-pkcs11
+  configMapKey: cs_pkcs11_R3.cfg
+  maxSessions: 10
+  maxSessionLifeTimeInSec: 900
+
+## @section Key identifiers
+## @param keyIdentifiers.currentCertificateKid The KID of the current certificate signing key and pin HMAC key combination
+## @param keyIdentifiers.previousCertificateKids A map of previous KIDs with expiry dates to be used for wallet certificate validation
+## @param keyIdentifiers.currentInstructionResultKid The KID of the current instruction result signing key
+## @param keyIdentifiers.currentAttestationWrappingKid The KID of the current attestation wrapping key
+## @param keyIdentifiers.previousAttestationWrappingKid The KID of the previous attestation wrapping key, still accepted to unwrap already-stored attestation keys during a rollover
+## @param keyIdentifiers.currentPinPubkeyEncryptionKid The KID of the current PIN public key encryption key
+## @param keyIdentifiers.previousPinPubkeyEncryptionKid The KID of the previous PIN public key encryption key, still accepted to decrypt already-stored PIN public keys during a rollover
+##
+keyIdentifiers:
+  currentCertificateKid: 0
+  previousCertificateKids: {}
+  currentInstructionResultKid: 0
+  currentAttestationWrappingKid: 0
+  previousAttestationWrappingKid: null
+  currentPinPubkeyEncryptionKid: 0
+  previousPinPubkeyEncryptionKid: null
+
+## @section Android parameters
+## Parameters for the Android configuration
+## @param android.rootPublicKeys Android root public keys
+## @param android.playstoreCertificateHashes Google Play Store certificate hashes
+## @param android.allowSideLoading Allow installing apps from sources other than the Play Store
+## @param android.serviceAccount.secretName Name to the the Secret containing the Google Cloud service account file
+## @param android.serviceAccount.secretKey Key of the the Secret containing the Google Cloud service account file
+##
+android:
+  rootPublicKeys: []
+  playstoreCertificateHashes: []
+  allowSideLoading: false
+  serviceAccount:
+    secretName: nl-wallet-gcloud-service-account
+    secretKey: google-cloud-service-account.json
+
+## @section iOS parameters
+## Parameters for the iOS configuration
+## @param ios.rootCertificates iOS root certificates
+## @param ios.teamIdentifier Team identifier for iOS
+##
+ios:
+  rootCertificates: []
+  teamIdentifier: null
+
+## @section Application parameters
+## @param appIdentifier Application identifier
+## @param flagsRefreshDelayInSeconds Interval in seconds of background job that refreshes flags
+## @param recoveryCodePaths.urn:eudi:pid:nl:1 Recovery code path for default PID attestation
+## @param revokeSolutionEnabled Whether the revoke-solution API is enabled
+##
+appIdentifier: null
+flagsRefreshDelayInSeconds: null
+recoveryCodePaths:
+  "urn:eudi:pid:nl:1": ["recovery_code"]
+revokeSolutionEnabled: false
+
+## @section Admin portal settings
+## @param adminPortal.keycloakUrl Keycloak URL
+## @param adminPortal.keycloakRealm Keycloak realm
+## @param adminPortal.keycloakClientId Keycloak client ID
+## @param adminPortal.keycloakTrustAnchors Keycloak trust anchors
+##
+adminPortal:
+  keycloakUrl: null
+  keycloakRealm: "nl-wallet"
+  keycloakClientId: "wallet-backend"
+  keycloakTrustAnchors: []
+
+## @section WIA parameters
+## @param wiaCertificate WIA signing certificate (base64-encoded DER)
+## @param wiaWalletVersion Version of the wallet solution
+##
+wiaCertificate: null
+wiaWalletVersion: null
+
+## @section WIA status list parameters
+## Parameters for the WIA status list configuration
+## @param wiaStatusList.baseUrl WIA status list base url
+## @param wiaStatusList.certificate WIA status list certificate
+## @param wiaStatusList.volumeClaimName Name of PVC where the WIA status lists are published
+## @param wiaStatusList.volumeClaimPath Path in the PVC where the WIA status lists are published
+##
+wiaStatusList:
+  baseUrl: null
+  certificate: null
+  volumeClaimName: null
+  volumeClaimPath: null
+
+## @section Key Attestation parameters
+## @param keyAttestationCertificate Key Attestation signing certificate (base64-encoded DER)
+##
+keyAttestationCertificate: null
+
+## @section KKey Storage status list parameters
+## @param keyStorageStatusList.certificate Key Storage status list certificate (base64-encoded DER)
+##
+keyStorageStatusList:
+  certificate: null
+
+## @section Migration parameters
+## Parameters for the migration configuration
+## @param migration.labels Additional labels for the migration job
+## @param migration.reset Enable reset cron job
+##
+migration:
+  labels: {}
+  reset: true
+
+## @section Service monitor
+## @param serviceMonitor.enabled Enable service monitor
+##
+serviceMonitor:
+  enabled: true
+
+## @section Log sidecar
+## @param logSidecar.image.repository Repository for the log container image
+## @param logSidecar.image.pullPolicy Image pull policy for the log container
+## @param logSidecar.image.tag Image tag for the log container
+## @param logSidecar.resources.requests.cpu CPU request of log sidecar
+## @param logSidecar.resources.requests.memory Memory request of log sidecar
+## @param logSidecar.resources.limits.cpu CPU limit of log sidecar
+## @param logSidecar.resources.limits.memory Memory limit of log sidecar
+## @param logSidecar.securityContext Security context for the log sidecar
+##
+logSidecar:
+  image:
+    repository: null
+    pullPolicy: IfNotPresent
+    tag: null
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "64Mi"
+    limits:
+      cpu: "400m"
+      memory: "128Mi"
+  securityContext: {}

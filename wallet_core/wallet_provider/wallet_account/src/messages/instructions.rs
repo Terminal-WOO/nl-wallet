@@ -1,35 +1,33 @@
-use std::num::NonZeroUsize;
+use std::num::NonZeroU8;
 
 use chrono::DateTime;
 use chrono::Utc;
 use chrono::serde::ts_seconds;
+use crypto::p256_der::DerSignature;
+use crypto::p256_der::DerVerifyingKey;
 use derive_more::Constructor;
+use jwt::JwtSub;
+use jwt::JwtTyp;
+use jwt::UnverifiedJwt;
+use jwt::headers::HeaderWithKid;
+use jwt::nonce::Nonce;
+use sd_jwt::sd_jwt::UnverifiedSdJwt;
 use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_with::base64::Base64;
 use serde_with::serde_as;
-use uuid::Uuid;
-
-use crypto::p256_der::DerSignature;
-use crypto::p256_der::DerVerifyingKey;
-use jwt::JwtSub;
-use jwt::JwtTyp;
-use jwt::UnverifiedJwt;
-use jwt::headers::HeaderWithJwk;
-use jwt::pop::JwtPopClaims;
-use jwt::wua::WuaDisclosure;
-use sd_jwt::sd_jwt::UnverifiedSdJwt;
 use utils::vec_at_least::VecNonEmpty;
-use wscd::Poa;
+use uuid::Uuid;
+use wscd::payload::key_attestation::KeyAttestation;
+use wscd::payload::wia::WiaDisclosure;
 
+use super::registration::WalletCertificate;
 use crate::messages::transfer::TransferSessionState;
 use crate::signed::ChallengeRequest;
 use crate::signed::ChallengeResponse;
 use crate::signed::HwSignedChallengeResponse;
-
-use super::registration::WalletCertificate;
 
 /// Request for a challenge, sent by wallet to account server before sending an instruction.
 #[derive(Debug, Serialize, Deserialize, Constructor)]
@@ -57,7 +55,7 @@ pub struct InstructionResultMessage<R> {
     pub result: InstructionResult<R>,
 }
 
-pub type InstructionResult<R> = UnverifiedJwt<InstructionResultClaims<R>>;
+pub type InstructionResult<R> = UnverifiedJwt<InstructionResultClaims<R>, HeaderWithKid>;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstructionResultClaims<R> {
@@ -78,7 +76,6 @@ impl<R> JwtTyp for InstructionResultClaims<R> {}
 /// Links an instruction with its result type and name string.
 pub trait InstructionAndResult: Serialize + DeserializeOwned {
     const NAME: &'static str;
-    const COMPRESS: bool = false;
 
     type Result: Serialize + DeserializeOwned;
 }
@@ -92,6 +89,17 @@ impl InstructionAndResult for CheckPin {
     const NAME: &'static str = "check_pin";
 
     type Result = ();
+}
+
+// RefreshWalletCertificate instruction.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RefreshWalletCertificate;
+
+impl InstructionAndResult for RefreshWalletCertificate {
+    const NAME: &'static str = "refresh_wallet_certificate";
+
+    type Result = WalletCertificate;
 }
 
 // ChangePinStart instruction.
@@ -139,7 +147,7 @@ impl InstructionAndResult for ChangePinRollback {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartPinRecovery {
     #[serde(flatten)]
-    pub issuance_with_wua_instruction: PerformIssuanceWithWua,
+    pub issuance_instruction: PerformIssuance,
     #[serde_as(as = "Base64")]
     pub pin_pubkey: DerVerifyingKey,
 }
@@ -148,7 +156,7 @@ pub struct StartPinRecovery {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StartPinRecoveryResult {
     #[serde(flatten)]
-    pub issuance_with_wua_result: PerformIssuanceWithWuaResult,
+    pub issuance_result: PerformIssuanceResult,
     pub certificate: WalletCertificate,
 }
 
@@ -160,20 +168,33 @@ impl InstructionAndResult for StartPinRecovery {
 
 // PerformIssuance instruction.
 
-#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PerformIssuance {
-    pub key_count: NonZeroUsize,
-    pub aud: String,
-    pub nonce: Option<String>,
+    pub key_requests: VecNonEmpty<IssuanceKeySetRequest>,
 }
 
-#[serde_as]
+/// A request for the creation of a set of keys and for each key a proof that optionally contains a provided nonce, as
+/// part of the [`PerformIssuance`] instruction.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IssuanceKeySetRequest {
+    pub key_count: NonZeroU8,
+    pub proof_nonce: Option<Nonce>,
+}
+
+/// The result of a [`PerformIssuance`] issuance instruction, which contains a list of [`IssuanceKeySetResult`]s, one
+/// for each of the inciting instruction's [`IssuanceKeySetRequest`]s.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PerformIssuanceResult {
-    pub key_identifiers: VecNonEmpty<String>,
-    pub pops: VecNonEmpty<UnverifiedJwt<JwtPopClaims, HeaderWithJwk>>,
-    pub poa: Option<Poa>,
+    pub key_sets: VecNonEmpty<IssuanceKeySetResult>,
+}
+
+/// Part of [`PerformIssuanceResult`], reflects the result of the generation of a particular set of keys, consisting of
+/// both the identifiers for that set and the OpenID4VCI key attestation, which contains the requested nonce, if
+/// provided.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IssuanceKeySetResult {
+    pub identifiers: VecNonEmpty<String>,
+    pub attestation: KeyAttestation,
 }
 
 impl InstructionAndResult for PerformIssuance {
@@ -182,25 +203,21 @@ impl InstructionAndResult for PerformIssuance {
     type Result = PerformIssuanceResult;
 }
 
-#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PerformIssuanceWithWua {
-    #[serde(flatten)]
-    pub issuance_instruction: PerformIssuance,
+pub struct IssueWia {
+    pub nonce: Option<Nonce>,
+    pub aud: String,
 }
 
-#[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PerformIssuanceWithWuaResult {
-    #[serde(flatten)]
-    pub issuance_result: PerformIssuanceResult,
-    pub wua_disclosure: WuaDisclosure,
+pub struct IssueWiaResult {
+    pub wia_disclosure: WiaDisclosure,
 }
 
-impl InstructionAndResult for PerformIssuanceWithWua {
-    const NAME: &'static str = "perform_issuance_with_wua";
+impl InstructionAndResult for IssueWia {
+    const NAME: &'static str = "issue_wia";
 
-    type Result = PerformIssuanceWithWuaResult;
+    type Result = IssueWiaResult;
 }
 
 // Sign instruction.
@@ -209,9 +226,7 @@ impl InstructionAndResult for PerformIssuanceWithWua {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sign {
     #[serde_as(as = "Vec<(Base64, _)>")]
-    pub messages_with_identifiers: Vec<(Vec<u8>, Vec<String>)>,
-    pub poa_nonce: Option<String>,
-    pub poa_aud: String,
+    pub messages_with_identifiers: Vec<([u8; 32], Vec<String>)>,
 }
 
 #[serde_as]
@@ -219,7 +234,6 @@ pub struct Sign {
 pub struct SignResult {
     #[serde_as(as = "Vec<Vec<Base64>>")]
     pub signatures: Vec<Vec<DerSignature>>,
-    pub poa: Option<Poa>,
 }
 
 impl InstructionAndResult for Sign {
@@ -342,7 +356,6 @@ pub struct SendWalletPayload {
 
 impl InstructionAndResult for SendWalletPayload {
     const NAME: &'static str = "send_wallet_payload";
-    const COMPRESS: bool = true;
 
     type Result = ();
 }
@@ -378,25 +391,37 @@ impl InstructionAndResult for CompleteTransfer {
     type Result = ();
 }
 
+// DeleteKeys instruction.
+
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteKeys {
+    pub identifiers: VecNonEmpty<String>,
+}
+
+impl InstructionAndResult for DeleteKeys {
+    const NAME: &'static str = "delete_keys";
+
+    type Result = ();
+}
+
 #[cfg(feature = "client")]
 mod client {
-    use serde::Serialize;
-    use serde::de::DeserializeOwned;
-
     use crypto::keys::EphemeralEcdsaKey;
     use crypto::keys::SecureEcdsaKey;
     use platform_support::attested_key::AppleAttestedKey;
-
-    use crate::error::EncodeError;
-    use crate::messages::registration::WalletCertificate;
-    use crate::signed::ChallengeRequest;
-    use crate::signed::ChallengeResponse;
-    use crate::signed::HwSignedChallengeResponse;
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
 
     use super::HwSignedInstruction;
     use super::Instruction;
     use super::InstructionAndResult;
     use super::InstructionChallengeRequest;
+    use crate::error::EncodeError;
+    use crate::messages::registration::WalletCertificate;
+    use crate::signed::ChallengeRequest;
+    use crate::signed::ChallengeResponse;
+    use crate::signed::HwSignedChallengeResponse;
 
     // Constructors for Instruction.
     impl<T> Instruction<T>

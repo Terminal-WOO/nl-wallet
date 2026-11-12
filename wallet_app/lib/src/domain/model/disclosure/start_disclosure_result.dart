@@ -1,52 +1,27 @@
+import 'package:freezed_annotation/freezed_annotation.dart';
+
 import '../attribute/attribute.dart';
 import '../organization.dart';
-import '../policy/policy.dart';
 import 'disclose_card_request.dart';
 import 'disclosure_session_type.dart';
 import 'disclosure_type.dart';
 
-sealed class StartDisclosureResult {
-  final Organization relyingParty;
-  final String originUrl;
-  final LocalizedText requestPurpose;
-  final bool sharedDataWithOrganizationBefore;
-  final DisclosureSessionType sessionType;
+part 'start_disclosure_result.freezed.dart';
 
-  StartDisclosureResult({
-    required this.relyingParty,
-    required this.originUrl,
-    required this.requestPurpose,
-    required this.sessionType,
-    required this.sharedDataWithOrganizationBefore,
-  });
-}
+@freezed
+sealed class StartDisclosureResult with _$StartDisclosureResult {
+  const factory StartDisclosureResult.readyToDisclose({
+    required Organization relyingParty,
+    required LocalizedText requestPurpose,
+    required bool sharedDataWithOrganizationBefore,
+    required DisclosureSessionType sessionType,
+    required List<DiscloseCardRequest> cardRequests,
+    required DisclosureType type,
+  }) = StartDisclosureReadyToDisclose;
 
-class StartDisclosureReadyToDisclose extends StartDisclosureResult {
-  final List<DiscloseCardRequest> cardRequests;
-  final Policy policy;
-  final DisclosureType type;
-
-  StartDisclosureReadyToDisclose({
-    required super.relyingParty,
-    required super.originUrl,
-    required super.requestPurpose,
-    required super.sessionType,
-    required this.type,
-    required this.cardRequests,
-    required this.policy,
-    required super.sharedDataWithOrganizationBefore,
-  });
-}
-
-class StartDisclosureMissingAttributes extends StartDisclosureResult {
-  final List<MissingAttribute> missingAttributes;
-
-  StartDisclosureMissingAttributes({
-    required super.relyingParty,
-    required super.originUrl,
-    required super.requestPurpose,
-    required super.sessionType,
-    required this.missingAttributes,
-    required super.sharedDataWithOrganizationBefore,
-  });
+  const factory StartDisclosureResult.missingAttributes({
+    required Organization relyingParty,
+    required DisclosureSessionType sessionType,
+    required List<MissingAttribute> missingAttributes,
+  }) = StartDisclosureMissingAttributes;
 }

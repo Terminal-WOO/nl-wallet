@@ -4,14 +4,13 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wallet/src/domain/model/app_image_data.dart';
 import 'package:wallet/src/domain/model/card/status/card_status.dart';
+import 'package:wallet/src/feature/common/widget/button/tertiary_button.dart';
 import 'package:wallet/src/feature/common/widget/card/card_holograph.dart';
 import 'package:wallet/src/feature/common/widget/card/card_logo.dart';
 import 'package:wallet/src/feature/common/widget/card/mock_card_background.dart';
 import 'package:wallet/src/feature/common/widget/card/status/card_status_info_label.dart';
 import 'package:wallet/src/feature/common/widget/card/wallet_card_item.dart';
 import 'package:wallet/src/feature/common/widget/svg_or_image.dart';
-import 'package:wallet/src/theme/dark_wallet_theme.dart';
-import 'package:wallet/src/theme/light_wallet_theme.dart';
 import 'package:wallet/src/wallet_assets.dart';
 import 'package:wallet_mock/mock.dart';
 
@@ -19,6 +18,9 @@ import '../../../../../wallet_app_test_widget.dart';
 import '../../../../mocks/wallet_mock_data.dart';
 import '../../../../test_util/golden_utils.dart';
 import '../../../../test_util/test_utils.dart';
+
+const _kLightTextColor = Color(0xFFFFFFFF);
+const _kDarkTextColor = Color(0xFF152A62);
 
 void _voidCallback() {}
 
@@ -55,7 +57,7 @@ void main() {
                 subtitle: 'subtitle',
                 background: MockCardBackground(attestationType: MockAttestationTypes.address),
                 logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
-                textColor: DarkWalletTheme.textColor,
+                textColor: _kLightTextColor,
                 onPressed: _voidCallback,
               ),
               WalletCardItem(
@@ -63,7 +65,7 @@ void main() {
                 subtitle: 'subtitle',
                 background: MockCardBackground(attestationType: MockAttestationTypes.pid),
                 logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
-                textColor: LightWalletTheme.textColor,
+                textColor: _kDarkTextColor,
                 onPressed: _voidCallback,
               ),
             ],
@@ -89,7 +91,7 @@ void main() {
                 subtitle: '50 characters loong subtitle is considered the max',
                 background: MockCardBackground(attestationType: MockAttestationTypes.address),
                 logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
-                textColor: DarkWalletTheme.textColor,
+                textColor: _kLightTextColor,
                 onPressed: _voidCallback,
               ),
               MediaQuery(
@@ -99,7 +101,7 @@ void main() {
                   subtitle: '50 characters loong subtitle is considered the max',
                   background: MockCardBackground(attestationType: MockAttestationTypes.pid),
                   logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
-                  textColor: LightWalletTheme.textColor,
+                  textColor: _kDarkTextColor,
                   onPressed: _voidCallback,
                 ),
               ),
@@ -121,7 +123,7 @@ void main() {
               WalletCardItem(
                 title: 'TITLE',
                 subtitle: 'SUBTITLE',
-                textColor: LightWalletTheme.textColor,
+                textColor: _kDarkTextColor,
                 background: MockCardBackground(attestationType: MockAttestationTypes.pid),
                 logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
                 onPressed: _voidCallback,
@@ -129,20 +131,20 @@ void main() {
               WalletCardItem(
                 title: 'TITLE',
                 subtitle: 'SUBTITLE',
-                textColor: LightWalletTheme.textColor,
+                textColor: _kDarkTextColor,
                 onPressed: _voidCallback,
                 background: MockCardBackground(attestationType: MockAttestationTypes.pid),
               ),
               WalletCardItem(
                 title: 'TITLE - NO SUBTITLE',
-                textColor: LightWalletTheme.textColor,
+                textColor: _kDarkTextColor,
                 background: MockCardBackground(attestationType: MockAttestationTypes.pid),
                 logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
                 onPressed: _voidCallback,
               ),
               WalletCardItem(
                 title: 'TITLE - NO SHOW DETAILS',
-                textColor: LightWalletTheme.textColor,
+                textColor: _kDarkTextColor,
                 background: MockCardBackground(attestationType: MockAttestationTypes.pid),
                 logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
               ),
@@ -164,7 +166,7 @@ void main() {
               builder: (context) {
                 return Column(
                   spacing: 16,
-                  children: CardStatus.values
+                  children: WalletMockData.cardStatusList
                       .mapIndexed(
                         (index, status) => WalletCardItem.fromWalletCard(
                           context,
@@ -194,7 +196,7 @@ void main() {
               builder: (context) {
                 return Column(
                   spacing: 16,
-                  children: CardStatus.values
+                  children: WalletMockData.cardStatusList
                       .mapIndexed(
                         (index, status) => WalletCardItem.fromWalletCard(
                           context,
@@ -225,7 +227,7 @@ void main() {
                   data: const MediaQueryData(textScaler: TextScaler.linear(2)),
                   child: Column(
                     spacing: 16,
-                    children: CardStatus.values
+                    children: WalletMockData.cardStatusList
                         .mapIndexed(
                           (index, status) => WalletCardItem.fromWalletCard(
                             context,
@@ -252,7 +254,7 @@ void main() {
         await tester.pumpWidgetWithAppWrapper(
           const WalletCardItem(
             title: 'Holograph',
-            textColor: DarkWalletTheme.textColor,
+            textColor: _kLightTextColor,
             background: MockCardBackground(attestationType: MockAttestationTypes.address),
             logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
             holograph: CardHolograph(holograph: WalletAssets.svg_rijks_card_holo, brightness: Brightness.dark),
@@ -279,6 +281,43 @@ void main() {
       );
       expect(find.text('title'), findsOneWidget);
       expect(find.text('subtitle1'), findsOneWidget);
+    });
+
+    testWidgets('verify footer is a separate, tappable button', (tester) async {
+      var cardPressed = false;
+      var footerPressed = false;
+      await tester.pumpWidgetWithAppWrapper(
+        WalletCardItem(
+          title: 'title',
+          onPressed: () => cardPressed = true,
+          footer: TertiaryButton(text: const Text('footer'), onPressed: () => footerPressed = true),
+        ),
+      );
+
+      // Skips the invisible copy that reserves the footer's height.
+      final footer = find.text('footer').hitTestable();
+      expect(tester.getSemantics(footer), isSemantics(label: 'footer', isButton: true));
+      await tester.tap(footer);
+      expect(footerPressed, isTrue);
+      expect(cardPressed, isFalse);
+    });
+
+    testWidgets('verify footer leaves the subtitle and status uncovered at large text sizes', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        Builder(
+          builder: (context) => WalletCardItem.fromWalletCard(
+            context,
+            WalletMockData.card.copyWith(status: CardStatusValidSoon(validFrom: WalletMockData.validFrom)),
+            footer: const TertiaryButton(text: Text('footer'), onPressed: _voidCallback),
+          ),
+        ),
+        textScaleSize: 2,
+      );
+
+      final footerTop = tester.getRect(find.byType(TertiaryButton).hitTestable()).top;
+      expect(tester.getRect(find.text('Subtitle')).bottom, lessThanOrEqualTo(footerTop));
+      // .last skips the Opacity copy in the card content that reserves the label's height.
+      expect(tester.getRect(find.byType(CardStatusInfoLabel).last).bottom, lessThanOrEqualTo(footerTop));
     });
 
     testWidgets('verify title, subtitle are shown in shuttle card', (tester) async {

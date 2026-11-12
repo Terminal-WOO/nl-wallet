@@ -2,14 +2,15 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter;
 
+use attestation_types::claim_path::ClaimPath;
+use attestation_types::credential_format::Format;
+use crypto::x509::KeyIdentifier;
 use itertools::Either;
 use itertools::Itertools;
-
-use attestation_types::claim_path::ClaimPath;
 use utils::vec_at_least::VecNonEmpty;
 
-use crate::CredentialFormat;
 use crate::CredentialQueryIdentifier;
+use crate::normalized::NormalizedCredentialRequest;
 use crate::normalized::NormalizedCredentialRequests;
 
 #[derive(Debug, thiserror::Error)]
@@ -24,7 +25,7 @@ pub enum CredentialValidationError {
     #[error("received incorrect format for identifier(s): {}", .0.iter().map(|(id, (expected, received))| {
         format!("({id}): expected \"{expected}\", received \"{received}\"")
     }).join(" / "))]
-    FormatMismatch(HashMap<CredentialQueryIdentifier, (CredentialFormat, CredentialFormat)>),
+    FormatMismatch(HashMap<CredentialQueryIdentifier, (Format, Format)>),
     #[error("received incorrect credential type for identifier(s): {}", .0.iter().map(|(id, (expected, received))| {
         format!(
             "({}): expected {}, received \"{}\"",
@@ -40,12 +41,22 @@ pub enum CredentialValidationError {
         }).join(", "))
     }).join(" / "))]
     MissingAttributes(HashMap<CredentialQueryIdentifier, HashSet<VecNonEmpty<ClaimPath>>>),
+    #[error("requested AKIs did not match any of the returned credential(s): {}", .0.iter().map(|(id, (expected, received))| {
+        format!(
+            "({}): requested {}, received {}",
+            id,
+            expected.iter().map(KeyIdentifier::to_string).join(", "),
+            received.iter().map(KeyIdentifier::to_string).join(", ")
+        )
+    }).join(" / "))]
+    UnmatchedAkis(HashMap<CredentialQueryIdentifier, (Vec<KeyIdentifier>, Vec<KeyIdentifier>)>),
 }
 
 /// This should be implemented on a credential that a verifier receives from the holder.
 pub trait DisclosedCredential {
-    fn format(&self) -> CredentialFormat;
+    fn format(&self) -> Format;
     fn credential_type(&self) -> &str;
+    fn aki(&self) -> &[KeyIdentifier];
     fn missing_claim_paths<'a, 'b>(
         &'a self,
         request_claim_paths: impl IntoIterator<Item = &'b VecNonEmpty<ClaimPath>>,
@@ -56,15 +67,21 @@ pub trait ExtendingVctRetriever {
     fn retrieve(&self, vct_value: &str) -> impl Iterator<Item = &str>;
 }
 
+/// Helper type used by [`NormalizedCredentialRequests`] methods when validating a DCQL request against disclosed
+/// credentials. It represents combinations of DCQL credential queries and disclosed credentials, indexed by the
+/// identifier of the credential request.
+type RequestsAndCredentialsById<'a, C> =
+    HashMap<&'a CredentialQueryIdentifier, (&'a NormalizedCredentialRequest, &'a C)>;
+
 impl NormalizedCredentialRequests {
-    /// Match keyed credentials received from the holder against a set of normalized DQCL requests.
+    /// Match keyed credentials received from the holder against a set of normalized DCQL requests.
     pub fn is_satisfied_by_disclosed_credentials(
         &self,
         disclosed_credentials: &HashMap<CredentialQueryIdentifier, VecNonEmpty<impl DisclosedCredential>>,
         extending_vct_values: &impl ExtendingVctRetriever,
     ) -> Result<(), CredentialValidationError> {
         // Credential queries that allow for multiple responses are not supported, so make the `HashMap` resolve to a
-        // single credential. If at least one of the values has more than one credential, this consitutes an error.
+        // single credential. If at least one of the values has more than one credential, this constitutes an error.
         let (mut single_credentials, multiple_credential_ids): (HashMap<_, _>, HashSet<_>) =
             disclosed_credentials.iter().partition_map(|(id, credentials)| {
                 if let Ok(credential) = credentials.iter().exactly_one() {
@@ -79,7 +96,7 @@ impl NormalizedCredentialRequests {
         }
 
         // Combine the queries and credentials into a single `HashMap`. If a query identifier is not found in the
-        // credential response, this consitutes an error, as optional credentials are not supported.
+        // credential response, this constitutes an error, as optional credentials are not supported.
         let (requests_and_credentials, missing_ids): (HashMap<_, _>, HashSet<_>) =
             self.as_ref().iter().partition_map(|request| {
                 if let Some(credential) = single_credentials.remove(request.id()) {
@@ -101,6 +118,25 @@ impl NormalizedCredentialRequests {
         }
 
         // Each received credential should be of the requested format.
+        Self::check_requested_formats(&requests_and_credentials)?;
+
+        // Each received credential should be of (one of) the requested credential type(s) for that query.
+        Self::check_requested_credential_types(&requests_and_credentials, extending_vct_values)?;
+
+        // For each of the requested credentials, any one of the specified AKIs (if present) should be present in any
+        // of the certificates of the received credential.
+        Self::check_requested_akis(&requests_and_credentials)?;
+
+        // Finally, each received credential should contain all of the requested attributes, as optional attributes are
+        // not supported.
+        Self::check_requested_claim_paths(&requests_and_credentials)?;
+
+        Ok(())
+    }
+
+    fn check_requested_formats(
+        requests_and_credentials: &RequestsAndCredentialsById<'_, impl DisclosedCredential>,
+    ) -> Result<(), CredentialValidationError> {
         let format_mismatches = requests_and_credentials
             .iter()
             .filter_map(|(id, (request, credential))| {
@@ -115,7 +151,13 @@ impl NormalizedCredentialRequests {
             return Err(CredentialValidationError::FormatMismatch(format_mismatches));
         }
 
-        // Each received credential should be of (one of) the requested credential type(s) for that query.
+        Ok(())
+    }
+
+    fn check_requested_credential_types(
+        requests_and_credentials: &RequestsAndCredentialsById<'_, impl DisclosedCredential>,
+        extending_vct_values: &impl ExtendingVctRetriever,
+    ) -> Result<(), CredentialValidationError> {
         let credential_type_mismatches = requests_and_credentials
             .iter()
             .filter_map(|(id, (request, credential))| {
@@ -123,7 +165,7 @@ impl NormalizedCredentialRequests {
 
                 (!request
                     .credential_types()
-                    .chain(if credential.format() == CredentialFormat::SdJwt {
+                    .chain(if credential.format() == Format::SdJwt {
                         Either::Left(
                             request
                                 .credential_types()
@@ -151,14 +193,36 @@ impl NormalizedCredentialRequests {
             ));
         }
 
-        // Finally, each received credential should contain all of the requested attributes,
-        // as optional attributes are not supported.
+        Ok(())
+    }
+
+    fn check_requested_akis(
+        requests_and_credentials: &RequestsAndCredentialsById<'_, impl DisclosedCredential>,
+    ) -> Result<(), CredentialValidationError> {
+        let unmatched_akis = requests_and_credentials
+            .iter()
+            .filter(|&(_, (request, credential))| {
+                !(request.aki().is_empty() || request.aki().iter().any(|aki| credential.aki().contains(aki)))
+            })
+            .map(|(id, (request, credential))| ((*id).clone(), (request.aki().to_vec(), credential.aki().to_vec())))
+            .collect::<HashMap<_, _>>();
+
+        if !unmatched_akis.is_empty() {
+            return Err(CredentialValidationError::UnmatchedAkis(unmatched_akis));
+        }
+
+        Ok(())
+    }
+
+    fn check_requested_claim_paths(
+        requests_and_credentials: &RequestsAndCredentialsById<'_, impl DisclosedCredential>,
+    ) -> Result<(), CredentialValidationError> {
         let missing_attribute_credentials = requests_and_credentials
-            .into_iter()
+            .iter()
             .filter_map(|(id, (request, credential))| {
                 let missing_attributes = credential.missing_claim_paths(request.claim_paths());
 
-                (!missing_attributes.is_empty()).then(|| (id.clone(), missing_attributes))
+                (!missing_attributes.is_empty()).then(|| ((*id).clone(), missing_attributes))
             })
             .collect::<HashMap<_, _>>();
 
@@ -177,37 +241,37 @@ mod tests {
     use std::collections::HashMap;
     use std::collections::HashSet;
 
-    use rstest::rstest;
-
     use attestation_types::claim_path::ClaimPath;
+    use attestation_types::credential_format::Format;
+    use crypto::x509::KeyIdentifier;
     use mdoc::examples::EXAMPLE_ATTRIBUTES;
     use mdoc::examples::EXAMPLE_DOC_TYPE;
     use mdoc::examples::EXAMPLE_NAMESPACE;
+    use rstest::rstest;
     use utils::vec_at_least::VecNonEmpty;
     use utils::vec_nonempty;
-
-    use crate::CredentialFormat;
-    use crate::CredentialQueryIdentifier;
-    use crate::normalized::NormalizedCredentialRequests;
 
     use super::CredentialValidationError;
     use super::DisclosedCredential;
     use super::ExtendingVctRetriever;
+    use crate::CredentialQueryIdentifier;
+    use crate::normalized::NormalizedCredentialRequests;
 
     const EXAMPLE_VCT: &str = "com.example.pid";
     const EXTENDING_EXAMPLE_VCT: &str = "com.example.pid_extending";
 
     /// A very simple type that implements [`MockDisclosedCredential`] for testing.
     struct MockDisclosedCredential {
-        format: CredentialFormat,
+        format: Format,
         credential_type: String,
         claim_paths: HashSet<VecNonEmpty<ClaimPath>>,
+        aki: Vec<KeyIdentifier>,
     }
 
     impl MockDisclosedCredential {
         pub fn example_mdoc() -> Self {
             Self {
-                format: CredentialFormat::MsoMdoc,
+                format: Format::MsoMdoc,
                 credential_type: EXAMPLE_DOC_TYPE.to_string(),
                 claim_paths: EXAMPLE_ATTRIBUTES
                     .iter()
@@ -218,28 +282,34 @@ mod tests {
                         ]
                     })
                     .collect(),
+                aki: vec![],
             }
         }
 
         pub fn example_sd_jwt(vct: &str) -> Self {
             Self {
-                format: CredentialFormat::SdJwt,
+                format: Format::SdJwt,
                 credential_type: String::from(vct),
                 claim_paths: EXAMPLE_ATTRIBUTES
                     .iter()
                     .map(|attribute| vec_nonempty![ClaimPath::SelectByKey(attribute.to_string())])
                     .collect(),
+                aki: vec![],
             }
         }
     }
 
     impl DisclosedCredential for MockDisclosedCredential {
-        fn format(&self) -> CredentialFormat {
+        fn format(&self) -> Format {
             self.format
         }
 
         fn credential_type(&self) -> &str {
             &self.credential_type
+        }
+
+        fn aki(&self) -> &[KeyIdentifier] {
+            &self.aki
         }
 
         fn missing_claim_paths<'a, 'b>(
@@ -385,7 +455,7 @@ mod tests {
         HashMap::from([("sd_jwt_0".try_into().unwrap(), vec_nonempty![MockDisclosedCredential::example_mdoc()])]),
         Err(CredentialValidationError::FormatMismatch(
             HashMap::from([("sd_jwt_0".try_into().unwrap(),
-            (CredentialFormat::SdJwt, CredentialFormat::MsoMdoc),
+            (Format::SdJwt, Format::MsoMdoc),
         )]))),
     )]
     #[case::extended_vct_in_response_is_allowed_if_configured(

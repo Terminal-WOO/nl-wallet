@@ -1,0 +1,240 @@
+import 'dart:io';
+
+import 'package:bluetooth/bluetooth.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import '../../../domain/model/result/application_error.dart';
+import '../../../navigation/wallet_routes.dart';
+import '../../../util/extension/build_context_extension.dart';
+import '../../../util/extension/string_extension.dart';
+import '../../../util/helper/dialog_helper.dart';
+import '../../../wallet_assets.dart';
+import '../../../wallet_constants.dart';
+import '../../common/dialog/qr_code_dialog.dart';
+import '../../common/page/generic_loading_page.dart';
+import '../../common/screen/placeholder_screen.dart';
+import '../../common/widget/button/bottom_back_button.dart';
+import '../../common/widget/button/confirm/confirm_buttons.dart';
+import '../../common/widget/button/icon/back_icon_button.dart';
+import '../../common/widget/button/icon/close_icon_button.dart';
+import '../../common/widget/button/list_button.dart';
+import '../../common/widget/button/primary_button.dart';
+import '../../common/widget/button/tertiary_button.dart';
+import '../../common/widget/centered_loading_indicator.dart';
+import '../../common/widget/utility/check_permissions_on_resume.dart';
+import '../../common/widget/utility/scroll_offset_provider.dart';
+import '../../common/widget/wallet_app_bar.dart';
+import '../../common/widget/wallet_qr_view.dart';
+import '../../common/widget/wallet_scrollbar.dart';
+import '../../disclosure/argument/disclosure_screen_argument.dart';
+import '../../error/error_button_builder.dart';
+import '../../error/error_page.dart';
+import 'bloc/qr_present_bloc.dart';
+
+class QrPresentScreen extends StatelessWidget {
+  const QrPresentScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<QrPresentBloc>().state;
+    final content = switch (state) {
+      QrPresentInitial() => _buildInitial(context),
+      QrPresentServerStarted(:final qrContents) => _buildServerStarted(context, qrContents),
+      QrPresentConnected() => _buildConnected(context),
+      QrPresentConnectionFailed() => _buildConnectionFailed(context),
+      QrPresentError(:final error) => _buildError(context, error),
+      QrPresentBluetoothDisabled() => _buildBluetoothDisabled(context, context.theme.platform),
+    };
+    return ScrollOffsetProvider(
+      debugLabel: 'qr_present_screen',
+      child: Scaffold(
+        appBar: WalletAppBar(
+          fadeInTitleOnScroll: _fadeInTitleOnScroll(state),
+          title: Text(_resolveTitle(context, state)),
+          actions: _actions(state),
+          automaticallyImplyLeading: false,
+          leading: _leadingButton(state),
+        ),
+        body: BlocListener<QrPresentBloc, QrPresentState>(
+          listener: (context, state) {
+            DialogHelper.dismissOpenDialogs(context);
+            final navigateToDisclosure = (state as QrPresentConnected).deviceRequestReceived;
+            if (navigateToDisclosure) _navigateToDisclosure(context);
+          },
+          listenWhen: (prev, current) => current is QrPresentConnected,
+          child: CheckPermissionsOnResume(
+            onPermissionDenied: () => context.read<QrPresentBloc>().add(const QrPresentPermissionDenied()),
+            permissions: Platform.isAndroid ? kAndroidBlePermissions : kIosBlePermissions,
+            child: SafeArea(child: content),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _navigateToDisclosure(BuildContext context) {
+    Navigator.pushReplacementNamed(
+      context,
+      WalletRoutes.disclosureRoute,
+      arguments: const DisclosureScreenArgument(type: .closeProximity()),
+    );
+  }
+
+  bool _fadeInTitleOnScroll(QrPresentState state) => switch (state) {
+    QrPresentInitial() => false,
+    QrPresentServerStarted() => false,
+    QrPresentConnected() => true,
+    QrPresentConnectionFailed() => true,
+    QrPresentError() => true,
+    QrPresentBluetoothDisabled() => true,
+  };
+
+  Widget? _leadingButton(QrPresentState state) {
+    return switch (state) {
+      QrPresentInitial() => const BackIconButton(),
+      QrPresentServerStarted() => const BackIconButton(),
+      QrPresentConnected() => null,
+      QrPresentConnectionFailed() => null,
+      QrPresentError() => const BackIconButton(),
+      QrPresentBluetoothDisabled() => null,
+    };
+  }
+
+  List<Widget>? _actions(QrPresentState state) {
+    return switch (state) {
+      QrPresentInitial() => null,
+      QrPresentServerStarted() => null,
+      QrPresentConnected() => null,
+      QrPresentConnectionFailed() => null,
+      QrPresentError() => null,
+      QrPresentBluetoothDisabled() => const [CloseIconButton()],
+    };
+  }
+
+  Widget _buildInitial(BuildContext context) {
+    return const Column(
+      children: [
+        Expanded(child: CenteredLoadingIndicator()),
+        BottomBackButton(),
+      ],
+    );
+  }
+
+  String _resolveTitle(BuildContext context, QrPresentState state) {
+    return switch (state) {
+      QrPresentInitial() => context.l10n.qrPresentScreenTitle,
+      QrPresentServerStarted() => context.l10n.qrPresentScreenTitle,
+      QrPresentConnected() => '',
+      QrPresentConnectionFailed() => context.l10n.qrPresentScreenConnectionFailedPageTitle,
+      QrPresentError(:final error) => _buildError(context, error).title,
+      QrPresentBluetoothDisabled() => context.l10n.qrPresentScreenBluetoothDisabledPageTitle,
+    };
+  }
+
+  Widget _buildServerStarted(BuildContext context, String qrContents) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return WalletScrollbar(
+          child: SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    children: [
+                      const SizedBox(height: 12),
+                      ListButton(
+                        text: Text(context.l10n.qrPresentScreenCenterQrCodeCta),
+                        onPressed: () => QrCodeDialog.show(
+                          context,
+                          title: context.l10n.qrPresentScreenTitle,
+                          semanticsLabel: context.l10n.qrPresentScreenQrWCAGLabel,
+                          data: qrContents,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        child: WalletQrView(
+                          data: qrContents,
+                          semanticsLabel: context.l10n.qrPresentScreenQrWCAGLabel,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      ListButton(
+                        text: Text(context.l10n.qrPresentScreenReportIssueCta),
+                        onPressed: () => PlaceholderScreen.showGeneric(context),
+                      ),
+                    ],
+                  ),
+                  const BottomBackButton(),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  ErrorPage _buildError(BuildContext context, ApplicationError error) {
+    return ErrorPage.fromError(
+      context,
+      error,
+      onPrimaryActionPressed: () => Navigator.pop(context),
+      style: .close,
+    );
+  }
+
+  Widget _buildConnected(BuildContext context) {
+    return GenericLoadingPage(
+      title: context.l10n.qrPresentScreenConnectedTitle,
+      description: '',
+      cancelCta: context.l10n.generalStop,
+      onCancel: () => Navigator.pop(context),
+    );
+  }
+
+  Widget _buildConnectionFailed(BuildContext context) {
+    return ErrorPage(
+      title: context.l10n.qrPresentScreenConnectionFailedPageTitle,
+      description: context.l10n.qrPresentScreenConnectionFailedPageDescription,
+      illustration: WalletAssets.svg_error_bluetooth,
+      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(
+        context,
+        .retry,
+        onPressed: () => context.read<QrPresentBloc>().add(const QrPresentStartRequested()),
+      ),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
+    );
+  }
+
+  /// Builds the state for when the user has not enabled bluetooth on the device.
+  Widget _buildBluetoothDisabled(BuildContext context, TargetPlatform platform) {
+    final bool isIos = platform == TargetPlatform.iOS;
+    return ErrorPage(
+      title: context.l10n.qrPresentScreenBluetoothDisabledPageTitle,
+      description: isIos
+          ? context.l10n.qrPresentScreenBluetoothDisabledPageDescriptioniOSVariant
+          : context.l10n.qrPresentScreenBluetoothDisabledPageDescription,
+      illustration: WalletAssets.svg_error_bluetooth,
+      secondaryButton: isIos ? null : _buildEnableBluetoothButton(context),
+      primaryButton: TertiaryButton(
+        text: Text.rich(context.l10n.generalClose.toTextSpan(context)),
+        icon: const Icon(Icons.close_outlined),
+        onPressed: () => Navigator.maybePop(context),
+      ),
+    );
+  }
+
+  /// Builds the 'enable bluetooth' action button
+  FitsWidthWidget _buildEnableBluetoothButton(BuildContext context) {
+    return PrimaryButton(
+      text: Text.rich(context.l10n.qrPresentScreenBluetoothDisabledPageEnableCta.toTextSpan(context)),
+      icon: const Icon(Icons.bluetooth_audio_outlined),
+      onPressed: () => context.read<Bluetooth>().enable(),
+    );
+  }
+}

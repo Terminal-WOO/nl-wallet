@@ -13,8 +13,11 @@ ephemeral_id_secret = ""
 # Array of CAs with trusted issuers
 issuer_trust_anchors = ["MII..."]
 
-# Array of CAs which sign use case certificates
-reader_trust_anchors = ["MII..."]
+# Array of CAs for WRPAC certificates
+wrpac_trust_anchors = ["MII..."]
+
+# Array of CAs for WRPRC certificates
+wrprc_trust_anchors = ["MII..."]
 
 # The wallet must be able to reach the server at this URL
 public_url = "http://localhost:8001/"
@@ -23,33 +26,29 @@ public_url = "http://localhost:8001/"
 # Default value: walletdebuginteraction://wallet.edi.rijksoverheid.nl/
 universal_link_base_url = "walletdebuginteraction://wallet.edi.rijksoverheid.nl/"
 
-# The `client_id` values that this server accepts, identifying the wallet
-# implementation (not individual instances, i.e., the `client_id` value of
-# a wallet implementation is constant across all wallets of that implementation)
-# Default value: https://wallet.edi.rijksoverheid.nl
-wallet_client_ids = ["https://wallet.edi.rijksoverheid.nl"]
-
 # Optional, can be used to accept disclosed attestations having a vct that extends the one being requested.
 [extending_vct_values]
-"eudi:pid:1" = [
-    "eudi:pid:extended:1",
-    "eudi:pid:extended:2",
-    "eudi:pid:extended:3"
-]
+"eudi:pid:1" = ["eudi:pid:extended:1", "eudi:pid:extended:2", "eudi:pid:extended:3"]
+
+# Settings for caching status list tokens (values are the defaults if unset)
+[status_list_token_cache_settings]
+capacity = 100
+default_ttl_in_sec = 0
+error_ttl_in_sec = 0
 
 # CORS settings. To allow all origins: allow_origins = "*"
 allow_origins = ["http://localhost:8080"]
 
-# Optional, but required if the `requester_server` section is absent
-[requester_server.authentication]
+# Optional, but required if the `internal_server` section is absent
+[internal_server.authentication]
 api_key = "your_secret_key"
 
 # Optional private endpoint for the requester, wallet_server is used if absent
-[requester_server]
+[internal_server]
 ip = "127.0.0.1"
 port = 8002
 
-# Public endpoint for the wallet, also private if requester_server is absent
+# Public endpoint for the wallet, also private if internal_server is absent
 [wallet_server]
 ip = "127.0.0.1"
 port = 8001
@@ -75,7 +74,10 @@ max_session_lifetime_in_sec = 900
 #   should contain a string identifying the private key in the HSM
 # * private_key: Base64 encoded DER format private key, or string
 # * certificate: Base64 encoded DER format certificate
-# * session_type_return_url: Can be both, same_device (default), or neither
+# * registration_certificate: Base64url encoded WRPRC in JWT or CWT format
+# * session_type_return_url: Can be `both` or `same_device` (default)
+# * accept_undetermined_revocation_status: boolean to indicate whether attestations having an undetermined revocation
+#   status are accepted. Defaults to false
 #
 
 # Example driving_license usecase
@@ -83,11 +85,15 @@ max_session_lifetime_in_sec = 900
 private_key_type = "software"
 private_key = "MII..."
 certificate = "MII..."
+registration_certificate = "eyJ..."
 session_type_return_url = "both"
+accept_undetermined_revocation_status = false
 
 # Example parking_permit usecase
 [usecases.parking_permit]
 private_key_type = "hsm"
 private_key = "some_private_key"
 certificate = "MII..."
+registration_certificate = "2E2..."
 session_type_return_url = "same_device"
+accept_undetermined_revocation_status = true

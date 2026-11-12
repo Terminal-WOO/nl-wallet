@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,11 +10,13 @@ import 'package:wallet/src/feature/common/widget/card/shared_attributes_card.dar
 import '../../../../../wallet_app_test_widget.dart';
 import '../../../../mocks/wallet_mock_data.dart';
 import '../../../../test_util/golden_utils.dart';
+import '../../../../test_util/test_utils.dart';
 
-const _defaultTestSurfaceSize = Size(328, 208);
-const _outdatedFooterTestSurfaceSize = Size(328, 239);
+const _defaultTestSurfaceSize = Size(328, 206);
+const _expiredFooterTestSurfaceSize = Size(328, 243);
 const _largeTestSurfaceSize = Size(328, 261);
-const _extraLargeTestSurfaceSize = Size(328, 320);
+const _extraLargeTestSurfaceSize = Size(328, 316);
+const _noCtaTestSurfaceSize = Size(328, 140);
 
 void main() {
   group('widgets', () {
@@ -84,9 +88,85 @@ void main() {
       // Validate the onTap listener was called
       expect(listenerTriggered, isTrue);
     });
+
+    testWidgets('card is exposed as a single named button, without a nested unnamed View button', (tester) async {
+      final semanticsHandle = tester.ensureSemantics();
+      final l10n = await TestUtils.englishLocalizations;
+      await tester.pumpWidgetWithAppWrapper(
+        SharedAttributesCard(
+          card: WalletMockData.card,
+          attributes: WalletMockData.card.attributes,
+          onPressed: () {},
+        ),
+      );
+
+      final buttonFinder = find.semantics.byFlag(SemanticsFlag.isButton);
+      expect(buttonFinder, findsOne);
+      final button = buttonFinder.evaluate().single;
+      expect(button, isSemantics(isButton: true, isFocusable: true, hasTapAction: true));
+      expect(button.label, startsWith(l10n.sharedAttributesCardTitle(WalletMockData.card.title.testValue, 1)));
+      expect(button.label, endsWith(l10n.sharedAttributesCardCtaSemanticsLabel(WalletMockData.card.title.testValue)));
+      semanticsHandle.dispose();
+    });
+
+    testWidgets('showCta: false hides the View call-to-action', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        SharedAttributesCard(
+          card: WalletMockData.card,
+          attributes: WalletMockData.card.attributes,
+          showCta: false,
+        ),
+      );
+
+      // The View label and forward arrow should be absent.
+      expect(find.byIcon(Icons.arrow_forward), findsNothing);
+      // The card title and attributes should still render.
+      expect(find.textContaining(WalletMockData.card.title.testValue), findsOneWidget);
+    });
   });
 
   group('goldens', () {
+    testGoldens(
+      'shared attributes without CTA - light mode',
+      (tester) async {
+        await tester.pumpWidgetWithAppWrapper(
+          surfaceSize: _noCtaTestSurfaceSize,
+          Container(
+            height: _noCtaTestSurfaceSize.height,
+            width: _noCtaTestSurfaceSize.width,
+            padding: const EdgeInsets.only(bottom: 8) /* to allow shadow to render */,
+            child: SharedAttributesCard(
+              card: WalletMockData.card,
+              attributes: WalletMockData.card.attributes,
+              showCta: false,
+            ),
+          ),
+        );
+        await screenMatchesGolden('shared_attributes/no_cta.light');
+      },
+    );
+
+    testGoldens(
+      'shared attributes without CTA - dark mode',
+      (tester) async {
+        await tester.pumpWidgetWithAppWrapper(
+          surfaceSize: _noCtaTestSurfaceSize,
+          Container(
+            height: _noCtaTestSurfaceSize.height,
+            width: _noCtaTestSurfaceSize.width,
+            padding: const EdgeInsets.only(bottom: 8),
+            child: SharedAttributesCard(
+              card: WalletMockData.card,
+              attributes: WalletMockData.card.attributes,
+              showCta: false,
+            ),
+          ),
+          brightness: Brightness.dark,
+        );
+        await screenMatchesGolden('shared_attributes/no_cta.dark');
+      },
+    );
+
     testGoldens(
       'shared attributes with simple rendering card - light mode',
       (tester) async {
@@ -132,13 +212,15 @@ void main() {
       'shared attributes with expired footer - light mode',
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
-          surfaceSize: _outdatedFooterTestSurfaceSize,
+          surfaceSize: _expiredFooterTestSurfaceSize,
           Container(
-            height: _outdatedFooterTestSurfaceSize.height,
-            width: _outdatedFooterTestSurfaceSize.width,
+            height: _expiredFooterTestSurfaceSize.height,
+            width: _expiredFooterTestSurfaceSize.width,
             padding: const EdgeInsets.only(bottom: 8) /* to allow shadow to render */,
             child: SharedAttributesCard(
-              card: WalletMockData.cardWithStatus(CardStatus.expired),
+              card: WalletMockData.cardWithStatus(
+                CardStatusExpired(validUntil: WalletMockData.validUntil),
+              ),
               attributes: WalletMockData.card.attributes,
               onPressed: () {},
             ),
@@ -152,13 +234,15 @@ void main() {
       'shared attributes with expired footer - dark mode - focused',
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
-          surfaceSize: _outdatedFooterTestSurfaceSize,
+          surfaceSize: _expiredFooterTestSurfaceSize,
           Container(
-            height: _outdatedFooterTestSurfaceSize.height,
-            width: _outdatedFooterTestSurfaceSize.width,
+            height: _expiredFooterTestSurfaceSize.height,
+            width: _expiredFooterTestSurfaceSize.width,
             padding: const EdgeInsets.only(bottom: 8) /* to allow shadow to render */,
             child: SharedAttributesCard(
-              card: WalletMockData.cardWithStatus(CardStatus.expired),
+              card: WalletMockData.cardWithStatus(
+                CardStatusExpired(validUntil: WalletMockData.validUntil),
+              ),
               attributes: WalletMockData.card.attributes,
               onPressed: () {},
             ),
@@ -175,13 +259,15 @@ void main() {
       'shared attributes with expired footer - dark mode',
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
-          surfaceSize: _outdatedFooterTestSurfaceSize,
+          surfaceSize: _expiredFooterTestSurfaceSize,
           Container(
-            height: _largeTestSurfaceSize.height,
-            width: _largeTestSurfaceSize.width,
+            height: _expiredFooterTestSurfaceSize.height,
+            width: _expiredFooterTestSurfaceSize.width,
             padding: const EdgeInsets.only(bottom: 8) /* to allow shadow to render */,
             child: SharedAttributesCard(
-              card: WalletMockData.cardWithStatus(CardStatus.expired),
+              card: WalletMockData.cardWithStatus(
+                CardStatusExpired(validUntil: WalletMockData.validUntil),
+              ),
               attributes: WalletMockData.card.attributes,
               onPressed: () {},
               //showOutdatedFooter: true,
@@ -203,7 +289,9 @@ void main() {
             width: _extraLargeTestSurfaceSize.width,
             padding: const EdgeInsets.only(bottom: 8) /* to allow shadow to render */,
             child: SharedAttributesCard(
-              card: WalletMockData.cardWithStatus(CardStatus.expired),
+              card: WalletMockData.cardWithStatus(
+                CardStatusExpired(validUntil: WalletMockData.validUntil),
+              ),
               attributes: WalletMockData.card.attributes,
               onPressed: () {},
               onChangeCardPressed: () {},
@@ -211,6 +299,28 @@ void main() {
           ),
         );
         await screenMatchesGolden('shared_attributes/change_card_expired_footer.light');
+      },
+    );
+
+    testGoldens(
+      'shared attributes with undetermined footer - light mode',
+      (tester) async {
+        await tester.pumpWidgetWithAppWrapper(
+          surfaceSize: _largeTestSurfaceSize,
+          Container(
+            height: _largeTestSurfaceSize.height,
+            width: _largeTestSurfaceSize.width,
+            padding: const EdgeInsets.only(bottom: 8) /* to allow shadow to render */,
+            child: SharedAttributesCard(
+              card: WalletMockData.cardWithStatus(
+                const CardStatusUndetermined(),
+              ),
+              attributes: WalletMockData.card.attributes,
+              onPressed: () {},
+            ),
+          ),
+        );
+        await screenMatchesGolden('shared_attributes/undetermined_footer.light');
       },
     );
 

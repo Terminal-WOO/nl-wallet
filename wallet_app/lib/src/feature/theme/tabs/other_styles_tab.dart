@@ -1,24 +1,30 @@
 import 'package:clock/clock.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
 
 import '../../../domain/model/app_image_data.dart';
 import '../../../domain/model/attribute/attribute.dart';
+import '../../../domain/model/card/format/attestation_format.dart';
 import '../../../domain/model/card/metadata/card_display_metadata.dart';
 import '../../../domain/model/card/metadata/card_rendering.dart';
 import '../../../domain/model/card/status/card_status.dart';
 import '../../../domain/model/card/wallet_card.dart';
 import '../../../domain/model/event/wallet_event.dart';
 import '../../../domain/model/flow_progress.dart';
+import '../../../domain/model/notification/notification_channel.dart';
 import '../../../domain/model/organization.dart';
-import '../../../domain/model/policy/policy.dart';
+import '../../../domain/model/person_type.dart';
 import '../../../domain/model/result/application_error.dart';
-import '../../../theme/dark_wallet_theme.dart';
-import '../../../theme/light_wallet_theme.dart';
+import '../../../domain/usecase/permission/request_permission_usecase.dart';
+import '../../../navigation/wallet_routes.dart';
 import '../../../util/extension/build_context_extension.dart';
 import '../../../util/extension/string_extension.dart';
 import '../../../util/mapper/card/status/card_status_metadata_mapper.dart';
 import '../../../util/mapper/card/status/card_status_render_type.dart';
 import '../../../wallet_assets.dart';
+import '../../banner/widget/tour_banner.dart';
 import '../../common/screen/placeholder_screen.dart';
 import '../../common/sheet/confirm_action_sheet.dart';
 import '../../common/sheet/error_details_sheet.dart';
@@ -29,7 +35,6 @@ import '../../common/widget/attribute/attribute_row.dart';
 import '../../common/widget/bullet_list.dart';
 import '../../common/widget/button/animated_visibility_back_button.dart';
 import '../../common/widget/button/icon/back_icon_button.dart';
-import '../../common/widget/button/icon/help_icon_button.dart';
 import '../../common/widget/card/card_logo.dart';
 import '../../common/widget/card/shared_attributes_card.dart';
 import '../../common/widget/card/status/card_status_info_label.dart';
@@ -46,10 +51,8 @@ import '../../common/widget/numbered_list.dart';
 import '../../common/widget/pin_field_demo.dart';
 import '../../common/widget/pin_header.dart';
 import '../../common/widget/policy/policy_row.dart';
-import '../../common/widget/policy/policy_section.dart';
 import '../../common/widget/select_card_row.dart';
 import '../../common/widget/stacked_wallet_cards.dart';
-import '../../common/widget/status_icon.dart';
 import '../../common/widget/stepper_indicator.dart';
 import '../../common/widget/version/app_version_text.dart';
 import '../../common/widget/wallet_app_bar.dart';
@@ -57,18 +60,15 @@ import '../../common/widget/wallet_logo.dart';
 import '../../disclosure/widget/card_attribute_row.dart';
 import '../../disclosure/widget/disclosure_stop_sheet.dart';
 import '../../error/error_screen.dart';
+import '../../error/invariant/argument/invariant_error_screen_argument.dart';
 import '../../history/detail/widget/wallet_event_status_header.dart';
-import '../../tour/widget/tour_banner.dart';
-import '../../wallet/personalize/bloc/wallet_personalize_bloc.dart';
+import '../../revocation/widget/revocation_code_text.dart';
 import '../theme_screen.dart';
 
 const _kMockPurpose = 'Kaart uitgifte';
-const _kMockUrl = 'https://www.example.org';
 const _kMockOtherKey = 'mock_other';
 
-const _kSampleCardStatus = CardStatus.valid;
-final _kSampleCardValidFrom = clock.now().add(const Duration(days: 5));
-final _kSampleCardValidUntil = clock.now().add(const Duration(days: 35));
+final _kSampleCardStatus = CardStatusValid(validUntil: clock.now().add(const Duration(days: 35)));
 
 final _kSampleCardMetaData = [
   const CardDisplayMetadata(
@@ -77,7 +77,7 @@ final _kSampleCardMetaData = [
     rawSummary: 'Subtitle',
     rendering: SimpleCardRendering(
       logo: AppAssetImage(WalletAssets.illustration_digid_failure),
-      textColor: DarkWalletTheme.textColor,
+      textColor: Color(0xFFFFFFFF),
     ),
   ),
 ];
@@ -89,7 +89,7 @@ final _kAltSampleCardMetaData = [
     rawSummary: 'Alt Subtitle',
     rendering: SimpleCardRendering(
       logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid),
-      textColor: LightWalletTheme.textColor,
+      textColor: Color(0xFF152A62),
     ),
   ),
 ];
@@ -112,10 +112,9 @@ final _kSampleAttributes = [
 final _kSampleCard = WalletCard(
   attestationId: 'id',
   attestationType: 'attestationType',
+  format: AttestationFormat.sdJwt,
   issuer: _kSampleOrganization,
   status: _kSampleCardStatus,
-  validFrom: _kSampleCardValidFrom,
-  validUntil: _kSampleCardValidUntil,
   metadata: _kSampleCardMetaData,
   attributes: _kSampleAttributes,
 );
@@ -123,21 +122,23 @@ final _kSampleCard = WalletCard(
 final _kAltSampleCard = WalletCard(
   attestationId: 'alt_id',
   attestationType: 'alt_attestationType',
+  format: AttestationFormat.sdJwt,
   issuer: _kSampleOrganization,
   status: _kSampleCardStatus,
-  validFrom: _kSampleCardValidFrom,
-  validUntil: _kSampleCardValidUntil,
   metadata: _kAltSampleCardMetaData,
   attributes: _kSampleAttributes,
 );
 
 final _kSampleOrganization = Organization(
   id: 'id',
-  legalName: 'Organization Legal Name'.untranslated,
-  displayName: 'Organization Display Name'.untranslated,
-  category: 'Category'.untranslated,
+  legalName: 'Organization Legal Name',
+  displayName: 'Organization Display Name',
+  publicBody: true,
+  personType: PersonType.legalPerson,
+  supportUri: 'https://example.org/support',
   description: 'Organization description'.untranslated,
-  logo: const AppAssetImage(WalletAssets.logo_rijksoverheid),
+  countryCode: 'NL',
+  organizationId: 'NLID-123456',
 );
 
 final _kSampleIssuanceEvent = WalletEvent.issuance(
@@ -152,13 +153,6 @@ final _kSampleInteractionAttribute = WalletEvent.disclosure(
   relyingParty: _kSampleOrganization,
   cards: [_kSampleCard],
   status: EventStatus.success,
-  policy: const Policy(
-    storageDuration: Duration(days: 90),
-    dataPurpose: _kMockPurpose,
-    dataIsShared: false,
-    deletionCanBeRequested: true,
-    privacyPolicyUrl: _kMockUrl,
-  ),
   purpose: _kMockPurpose.untranslated,
   type: DisclosureType.regular,
 );
@@ -172,14 +166,15 @@ class OtherStylesTab extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 32),
       children: [
         _buildAppBarSection(context),
+        _buildNotificationsSection(context),
         _buildSheetSection(context),
         _buildErrorScreensSection(context),
         _buildAttributeSection(context),
-        _buildCardSection(context),
+        ..._buildCardSection(context),
         _buildPlaceholderSection(context),
         _buildHistorySection(context),
         _buildPolicySection(context),
-        _buildMiscellaneousSection(context),
+        ..._buildMiscellaneousSection(context),
       ],
     );
   }
@@ -198,6 +193,66 @@ class OtherStylesTab extends StatelessWidget {
         TextButton(
           onPressed: () => _showWalletAppBarPageWithFadeInTitle(context),
           child: const Text('WalletAppBar + FadeInAtOffset'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNotificationsSection(BuildContext context) {
+    return Column(
+      children: [
+        const ThemeSectionHeader(title: 'Notifications'),
+        const SizedBox(height: 12),
+        const ThemeSectionSubHeader(title: 'Request permission'),
+        TextButton(
+          onPressed: () => context.read<RequestPermissionUseCase>().invoke([.notification]),
+          child: const Text('Request'),
+        ),
+        const ThemeSectionSubHeader(title: 'Show sample notification'),
+        TextButton(
+          onPressed: () async {
+            await FlutterLocalNotificationsPlugin().show(
+              id: DateTime.now().millisecondsSinceEpoch % 10000,
+              title: 'Sample',
+              body: 'Notification Body',
+              notificationDetails: NotificationDetails(
+                android: AndroidNotificationDetails(
+                  NotificationChannel.cardUpdates.name,
+                  context.l10n.cardNotificationsChannelName,
+                  channelDescription: context.l10n.cardNotificationsChannelDescription,
+                  autoCancel: true,
+                  importance: .high,
+                ),
+                iOS: const DarwinNotificationDetails(presentAlert: true),
+              ),
+              payload: 'instant',
+            );
+          },
+          child: const Text('Show'),
+        ),
+        const ThemeSectionSubHeader(title: 'Schedule sample notification'),
+        TextButton(
+          onPressed: () async {
+            await FlutterLocalNotificationsPlugin().zonedSchedule(
+              id: DateTime.now().millisecondsSinceEpoch % 10000,
+              title: 'Sample Scheduled',
+              body: 'Notification Body',
+              scheduledDate: tz.TZDateTime.from(
+                DateTime.now().add(const Duration(minutes: 1)),
+                tz.getLocation('Europe/Amsterdam'),
+              ),
+              notificationDetails: NotificationDetails(
+                android: AndroidNotificationDetails(
+                  NotificationChannel.cardUpdates.name,
+                  context.l10n.cardNotificationsChannelName,
+                ),
+                iOS: const DarwinNotificationDetails(presentAlert: true),
+              ),
+              androidScheduleMode: .inexact,
+              payload: 'scheduled',
+            );
+          },
+          child: const Text('Schedule'),
         ),
       ],
     );
@@ -270,35 +325,44 @@ class OtherStylesTab extends StatelessWidget {
         const SizedBox(height: 12),
         const ThemeSectionSubHeader(title: 'Generic Error Screen'),
         TextButton(
-          onPressed: () => ErrorScreen.showGeneric(context),
+          onPressed: () => ErrorScreen.show(context, const GenericError('generic test', sourceError: 'test')),
           child: const Text('Generic Error Screen'),
         ),
         const ThemeSectionSubHeader(title: 'Network Error Screen'),
         TextButton(
-          onPressed: () {
-            // Simulate a network error from the personalize flow
-            const networkError = WalletPersonalizeNetworkError(
-              hasInternet: false,
-              error: NetworkError(hasInternet: false, sourceError: 'sourceError'),
-            );
-            ErrorScreen.showNetwork(context, networkError: networkError);
-          },
+          onPressed: () => ErrorScreen.show(context, const NetworkError(hasInternet: false, sourceError: 'test')),
           child: const Text('Network Error Screen'),
         ),
         const ThemeSectionSubHeader(title: 'No Internet Error Screen'),
         TextButton(
-          onPressed: () => ErrorScreen.showNetwork(context),
+          onPressed: () => ErrorScreen.show(context, const NetworkError(hasInternet: true, sourceError: 'test')),
           child: const Text('No Internet Error Screen'),
         ),
         const ThemeSectionSubHeader(title: 'Device Incompatible Screen'),
         TextButton(
-          onPressed: () => ErrorScreen.showDeviceIncompatible(context),
+          onPressed: () => ErrorScreen.show(context, const HardwareUnsupportedError(sourceError: 'error')),
           child: const Text('Device Incompatible Screen'),
+        ),
+        const ThemeSectionSubHeader(title: 'Attestation Failed Screen'),
+        TextButton(
+          onPressed: () => ErrorScreen.show(context, const AttestationFailedError(sourceError: 'error')),
+          child: const Text('Attestation Failed Screen'),
         ),
         const ThemeSectionSubHeader(title: 'Session Expired Screen'),
         TextButton(
-          onPressed: () => ErrorScreen.showSessionExpired(context),
+          onPressed: () => ErrorScreen.show(context, const SessionError(state: .expired, sourceError: 'test')),
           child: const Text('Session Expired Screen'),
+        ),
+        const ThemeSectionSubHeader(title: 'Invariant Error Screen'),
+        TextButton(
+          onPressed: () => Navigator.pushNamed(
+            context,
+            WalletRoutes.invariantErrorRoute,
+            arguments: const InvariantErrorScreenArgument(
+              code: 'panicked at wallet_core/src/lib.rs: invariant violated (design preview)',
+            ).toJson(),
+          ),
+          child: const Text('Invariant Error Screen'),
         ),
       ],
     );
@@ -371,93 +435,117 @@ class OtherStylesTab extends StatelessWidget {
     );
   }
 
-  Widget _buildCardSection(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const ThemeSectionHeader(title: 'Cards'),
-        const SizedBox(height: 16),
-        const ThemeSectionSubHeader(title: 'CardStatusInfoLabel - WalletCardItem'),
-        ...CardStatus.values.map((status) {
-          final statusMetadata = CardStatusMetadataMapper.map(
-            context,
-            _kSampleCard.copyWith(status: status),
-            CardStatusRenderType.walletCardItem,
+  List<Widget> _buildCardSection(BuildContext context) {
+    final cardStatusList = [
+      CardStatusValidSoon(validFrom: clock.now().add(const Duration(days: 3))),
+      CardStatusValid(validUntil: clock.now().add(const Duration(days: 30))),
+      CardStatusExpiresSoon(validUntil: clock.now().add(const Duration(days: 5))),
+      CardStatusExpired(validUntil: clock.now().subtract(const Duration(days: 1))),
+      const CardStatusRevoked(),
+      const CardStatusCorrupted(),
+      const CardStatusUndetermined(),
+    ];
+
+    return [
+      const ThemeSectionHeader(title: 'Cards'),
+      const SizedBox(height: 16),
+      ..._buildCardStatusLabels(context, cardStatusList),
+      ..._buildCardStatusTexts(context, cardStatusList),
+      ..._buildCardDisplayWidgets(context),
+    ];
+  }
+
+  List<Widget> _buildCardStatusLabels(BuildContext context, List<CardStatus> cardStatusList) {
+    return [
+      const ThemeSectionSubHeader(title: 'CardStatusInfoLabel - WalletCardItem'),
+      ...cardStatusList.map((status) {
+        final statusMetadata = CardStatusMetadataMapper.map(
+          context,
+          _kSampleCard.copyWith(status: status),
+          CardStatusRenderType.walletCardItem,
+        );
+        if (statusMetadata != null) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: CardStatusInfoLabel(statusMetadata),
           );
-          if (statusMetadata != null) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: CardStatusInfoLabel(statusMetadata),
-            );
-          } else {
-            return const SizedBox.shrink();
-          }
-        }),
+        } else {
+          return const SizedBox.shrink();
+        }
+      }),
+      const SizedBox(height: 16),
+    ];
+  }
 
-        const SizedBox(height: 16),
-        const ThemeSectionSubHeader(title: 'CardStatusInfoText - CardDataScreen'),
-        ...CardStatus.values.map((status) {
-          final statusMetadata = CardStatusMetadataMapper.map(
-            context,
-            _kSampleCard.copyWith(status: status),
-            CardStatusRenderType.cardDataScreen,
+  List<Widget> _buildCardStatusTexts(BuildContext context, List<CardStatus> cardStatusList) {
+    return [
+      const ThemeSectionSubHeader(title: 'CardStatusInfoText - CardDataScreen'),
+      ...cardStatusList.map((status) {
+        final statusMetadata = CardStatusMetadataMapper.map(
+          context,
+          _kSampleCard.copyWith(status: status),
+          CardStatusRenderType.cardDataScreen,
+        );
+        if (statusMetadata != null) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: CardStatusInfoText(statusMetadata),
           );
-          if (statusMetadata != null) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: CardStatusInfoText(statusMetadata),
-            );
-          } else {
-            return const SizedBox.shrink();
-          }
-        }),
-
-        const SizedBox(height: 16),
-        const ThemeSectionSubHeader(title: 'CardStatusInfoText - CardDetailScreen'),
-        ...CardStatus.values.map((status) {
-          final statusMetadata = CardStatusMetadataMapper.map(
-            context,
-            _kSampleCard.copyWith(status: status),
-            CardStatusRenderType.cardDetailScreen,
+        } else {
+          return const SizedBox.shrink();
+        }
+      }),
+      const SizedBox(height: 16),
+      const ThemeSectionSubHeader(title: 'CardStatusInfoText - CardDetailScreen'),
+      ...cardStatusList.map((status) {
+        final statusMetadata = CardStatusMetadataMapper.map(
+          context,
+          _kSampleCard.copyWith(status: status),
+          CardStatusRenderType.cardDetailScreen,
+        );
+        if (statusMetadata != null) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: CardStatusInfoText(statusMetadata),
           );
-          if (statusMetadata != null) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: CardStatusInfoText(statusMetadata),
-            );
-          } else {
-            return const SizedBox.shrink();
-          }
-        }),
+        } else {
+          return const SizedBox.shrink();
+        }
+      }),
+      const SizedBox(height: 16),
+    ];
+  }
 
-        const SizedBox(height: 16),
-        const ThemeSectionSubHeader(title: 'WalletCardItem'),
-        const WalletCardItem(
-          title: 'Card Title',
-          background: DecoratedBox(decoration: BoxDecoration(color: Colors.orangeAccent)),
-          subtitle: 'Card subtitle1',
-          logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
+  List<Widget> _buildCardDisplayWidgets(BuildContext context) {
+    return [
+      const ThemeSectionSubHeader(title: 'WalletCardItem'),
+      const WalletCardItem(
+        title: 'Card Title',
+        background: DecoratedBox(decoration: BoxDecoration(color: Colors.orangeAccent)),
+        subtitle: 'Card subtitle1',
+        logo: CardLogo(logo: AppAssetImage(WalletAssets.logo_card_rijksoverheid)),
+      ),
+      const SizedBox(height: 16),
+      const ThemeSectionSubHeader(title: 'StackedWalletCards'),
+      StackedWalletCards(
+        cards: [
+          _kAltSampleCard,
+          _kSampleCard,
+        ],
+      ),
+      const SizedBox(height: 16),
+      const ThemeSectionSubHeader(title: 'SharedAttributesCard'),
+      SharedAttributesCard(
+        card: _kSampleCard.copyWith(
+          status: CardStatusExpired(
+            validUntil: clock.now().subtract(const Duration(days: 5)),
+          ),
         ),
-
-        const SizedBox(height: 16),
-        const ThemeSectionSubHeader(title: 'StackedWalletCards'),
-        StackedWalletCards(
-          cards: [
-            _kAltSampleCard,
-            _kSampleCard,
-          ],
-        ),
-
-        const SizedBox(height: 16),
-        const ThemeSectionSubHeader(title: 'SharedAttributesCard'),
-        SharedAttributesCard(
-          card: _kSampleCard.copyWith(status: CardStatus.expired),
-          attributes: [_kSampleCard.attributes.first],
-          onPressed: () {},
-          onChangeCardPressed: () {},
-        ),
-      ],
-    );
+        attributes: [_kSampleCard.attributes.first],
+        onPressed: () {},
+        onChangeCardPressed: () {},
+      ),
+    ];
   }
 
   Widget _buildHistorySection(BuildContext context) {
@@ -467,170 +555,177 @@ class OtherStylesTab extends StatelessWidget {
         const ThemeSectionHeader(title: 'History'),
         const SizedBox(height: 12),
         const ThemeSectionSubHeader(title: 'WalletEventRow'),
-        WalletEventRow(
-          event: WalletEvent.disclosure(
-            dateTime: clock.now(),
-            relyingParty: _kSampleOrganization,
-            status: EventStatus.success,
-            policy: const Policy(
-              storageDuration: Duration(days: 90),
-              dataPurpose: _kMockPurpose,
-              dataIsShared: false,
-              deletionCanBeRequested: true,
-              privacyPolicyUrl: _kMockUrl,
-            ),
-            purpose: _kMockPurpose.untranslated,
-            cards: [
-              WalletCard(
-                attestationId: 'id',
-                attestationType: 'attestationType',
-                issuer: _kSampleOrganization,
-                status: _kSampleCardStatus,
-                validFrom: _kSampleCardValidFrom,
-                validUntil: _kSampleCardValidUntil,
-                metadata: _kSampleCardMetaData,
-                attributes: const [],
-              ),
-            ],
-            type: DisclosureType.regular,
-          ),
-          onPressed: () {},
-        ),
+        _buildWalletEventRow(),
         const ThemeSectionSubHeader(title: 'WalletEventStatusHeader'),
-        WalletEventStatusHeader(
-          event: WalletEvent.disclosure(
-            dateTime: clock.now(),
-            relyingParty: _kSampleOrganization,
-            status: EventStatus.cancelled,
-            policy: const Policy(
-              storageDuration: Duration(days: 90),
-              dataPurpose: _kMockPurpose,
-              dataIsShared: false,
-              deletionCanBeRequested: true,
-              privacyPolicyUrl: _kMockUrl,
-            ),
-            purpose: _kMockPurpose.untranslated,
-            cards: [
-              WalletCard(
-                attestationId: 'id',
-                attestationType: 'attestationType',
-                issuer: _kSampleOrganization,
-                status: _kSampleCardStatus,
-                validFrom: _kSampleCardValidFrom,
-                validUntil: _kSampleCardValidUntil,
-                metadata: _kSampleCardMetaData,
-                attributes: const [],
-              ),
-            ],
-            type: DisclosureType.regular,
-          ),
-        ),
+        _buildWalletEventStatusHeader(),
         const ThemeSectionSubHeader(title: 'HistorySectionHeader'),
         HistorySectionHeader(dateTime: clock.now()),
       ],
     );
   }
 
+  Widget _buildWalletEventRow() {
+    return WalletEventRow(
+      event: WalletEvent.disclosure(
+        dateTime: clock.now(),
+        relyingParty: _kSampleOrganization,
+        status: EventStatus.success,
+        purpose: _kMockPurpose.untranslated,
+        cards: [
+          WalletCard(
+            attestationId: 'id',
+            attestationType: 'attestationType',
+            format: AttestationFormat.sdJwt,
+            issuer: _kSampleOrganization,
+            status: _kSampleCardStatus,
+            metadata: _kSampleCardMetaData,
+            attributes: const [],
+          ),
+        ],
+        type: DisclosureType.regular,
+      ),
+      onPressed: () {},
+    );
+  }
+
+  Widget _buildWalletEventStatusHeader() {
+    return WalletEventStatusHeader(
+      event: WalletEvent.disclosure(
+        dateTime: clock.now(),
+        relyingParty: _kSampleOrganization,
+        status: EventStatus.cancelled,
+        purpose: _kMockPurpose.untranslated,
+        cards: [
+          WalletCard(
+            attestationId: 'id',
+            attestationType: 'attestationType',
+            format: AttestationFormat.sdJwt,
+            issuer: _kSampleOrganization,
+            status: _kSampleCardStatus,
+            metadata: _kSampleCardMetaData,
+            attributes: const [],
+          ),
+        ],
+        type: DisclosureType.regular,
+      ),
+    );
+  }
+
   Widget _buildPolicySection(BuildContext context) {
-    return Column(
+    return const Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const ThemeSectionHeader(title: 'Policy'),
-        const SizedBox(height: 12),
-        const ThemeSectionSubHeader(title: 'PolicyRow'),
-        const PolicyRow(icon: Icons.alarm, title: 'This is a Policy Row'),
-        const ThemeSectionSubHeader(title: 'PolicySection'),
-        PolicySection(
-          relyingParty: _kSampleOrganization,
-          policy: const Policy(
-            storageDuration: Duration(days: 90),
-            dataPurpose: _kMockPurpose,
-            dataIsShared: false,
-            deletionCanBeRequested: true,
-            privacyPolicyUrl: _kMockUrl,
-          ),
-        ),
+        ThemeSectionHeader(title: 'Policy'),
+        SizedBox(height: 12),
+        ThemeSectionSubHeader(title: 'PolicyRow'),
+        PolicyRow(icon: Icons.alarm, title: 'This is a Policy Row'),
       ],
     );
   }
 
-  Widget _buildMiscellaneousSection(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const ThemeSectionHeader(title: 'Miscellaneous'),
-        const SizedBox(height: 12),
-        const ThemeSectionSubHeader(title: 'StepperIndicator'),
-        const StepperIndicator(padding: EdgeInsets.zero),
-        const ThemeSectionSubHeader(title: 'AnimatedVisibilityBackButton'),
-        const AnimatedVisibilityBackButton(visible: true),
-        const ThemeSectionSubHeader(title: 'CenteredLoadingIndicator'),
-        const CenteredLoadingIndicator(),
-        const ThemeSectionSubHeader(title: 'LoadingIndicator'),
-        const LoadingIndicator(),
-        const ThemeSectionSubHeader(title: 'PinHeader'),
-        const PinHeader(title: 'Title', description: 'Description', hasError: false),
-        const ThemeSectionSubHeader(title: 'SelectCardRow'),
-        SelectCardRow(
-          onPressed: () {},
-          card: WalletCard(
-            attestationId: 'row_id',
-            attestationType: 'attestationType',
-            issuer: _kSampleOrganization,
-            status: _kSampleCardStatus,
-            validFrom: _kSampleCardValidFrom,
-            validUntil: _kSampleCardValidUntil,
-            metadata: _kSampleCardMetaData,
-            attributes: const [],
-          ),
+  List<Widget> _buildMiscellaneousSection(BuildContext context) {
+    return [
+      const ThemeSectionHeader(title: 'Miscellaneous'),
+      const SizedBox(height: 12),
+      ..._buildIndicatorWidgets(context),
+      ..._buildPinWidgets(context),
+      ..._buildBrandingWidgets(context),
+      ..._buildListAndRowWidgets(context),
+      ..._buildStatusAndBannerWidgets(context),
+    ];
+  }
+
+  List<Widget> _buildIndicatorWidgets(BuildContext context) {
+    return [
+      const ThemeSectionSubHeader(title: 'StepperIndicator'),
+      const StepperIndicator(padding: EdgeInsets.zero),
+      const ThemeSectionSubHeader(title: 'AnimatedVisibilityBackButton'),
+      const AnimatedVisibilityBackButton(visible: true),
+      const ThemeSectionSubHeader(title: 'CenteredLoadingIndicator'),
+      const CenteredLoadingIndicator(),
+      const ThemeSectionSubHeader(title: 'LoadingIndicator'),
+      const LoadingIndicator(),
+    ];
+  }
+
+  List<Widget> _buildPinWidgets(BuildContext context) {
+    return [
+      const ThemeSectionSubHeader(title: 'PinHeader'),
+      const PinHeader(title: 'Title', description: 'Description', hasError: false),
+      const ThemeSectionSubHeader(title: 'PinField'),
+      const PinFieldDemo(),
+    ];
+  }
+
+  List<Widget> _buildBrandingWidgets(BuildContext context) {
+    return [
+      const ThemeSectionSubHeader(title: 'WalletLogo'),
+      const WalletLogo(size: 64),
+      const ThemeSectionSubHeader(title: 'VersionText'),
+      const AppVersionText(),
+    ];
+  }
+
+  List<Widget> _buildListAndRowWidgets(BuildContext context) {
+    return [
+      const ThemeSectionSubHeader(title: 'SelectCardRow'),
+      SelectCardRow(
+        onPressed: () {},
+        card: WalletCard(
+          attestationId: 'row_id',
+          attestationType: 'attestationType',
+          format: AttestationFormat.sdJwt,
+          issuer: _kSampleOrganization,
+          status: _kSampleCardStatus,
+          metadata: _kSampleCardMetaData,
+          attributes: const [],
         ),
-        const ThemeSectionSubHeader(title: 'StatusIcon'),
-        const StatusIcon(icon: Icons.ac_unit),
-        const ThemeSectionSubHeader(title: 'VersionText'),
-        const AppVersionText(),
-        const ThemeSectionSubHeader(title: 'WalletLogo'),
-        const WalletLogo(size: 64),
-        const ThemeSectionSubHeader(title: 'IconRow'),
-        const IconRow(
-          icon: Icon(Icons.ac_unit),
-          text: Text('IconRow'),
+      ),
+      const ThemeSectionSubHeader(title: 'MenuItem'),
+      const MenuItem(
+        leftIcon: Icon(Icons.ac_unit),
+        label: Text('Title'),
+        subtitle: Text('Subtitle'),
+      ),
+      const ThemeSectionSubHeader(title: 'IconRow'),
+      const IconRow(
+        icon: Icon(Icons.ac_unit),
+        text: Text('IconRow'),
+      ),
+      const ThemeSectionSubHeader(title: 'BulletList'),
+      BulletList(
+        items: const ['Item 1', 'Item 2', 'Item 3'],
+        icon: Icon(
+          Icons.check,
+          color: context.colorScheme.primary,
+          size: 18,
         ),
-        const ThemeSectionSubHeader(title: 'MenuItem'),
-        const MenuItem(
-          leftIcon: Icon(Icons.ac_unit),
-          label: Text('Title'),
-          subtitle: Text('Subtitle'),
-        ),
-        const ThemeSectionSubHeader(title: 'PinField'),
-        const PinFieldDemo(),
-        const ThemeSectionSubHeader(title: 'BulletList'),
-        BulletList(
-          items: const ['Item 1', 'Item 2', 'Item 3'],
-          icon: Icon(
-            Icons.check,
-            color: context.colorScheme.primary,
-            size: 18,
-          ),
-          rowPadding: const EdgeInsets.symmetric(vertical: 4),
-        ),
-        const ThemeSectionSubHeader(title: 'NumberedList'),
-        const NumberedList(
-          items: ['Item', 'Item', 'Item'],
-        ),
-        const ThemeSectionSubHeader(title: 'ActivitySummary'),
-        ActivitySummary(
-          events: [
-            _kSampleIssuanceEvent,
-            _kSampleIssuanceEvent,
-            _kSampleInteractionAttribute,
-            _kSampleInteractionAttribute,
-            _kSampleInteractionAttribute,
-          ],
-        ),
-        const ThemeSectionSubHeader(title: 'TourBanner'),
-        const TourBanner(),
-      ],
-    );
+        rowPadding: const EdgeInsets.symmetric(vertical: 4),
+      ),
+      const ThemeSectionSubHeader(title: 'NumberedList'),
+      const NumberedList(
+        items: ['Item', 'Item', 'Item'],
+      ),
+    ];
+  }
+
+  List<Widget> _buildStatusAndBannerWidgets(BuildContext context) {
+    return [
+      const ThemeSectionSubHeader(title: 'ActivitySummary'),
+      ActivitySummary(
+        events: [
+          _kSampleIssuanceEvent,
+          _kSampleIssuanceEvent,
+          _kSampleInteractionAttribute,
+          _kSampleInteractionAttribute,
+          _kSampleInteractionAttribute,
+        ],
+      ),
+      const ThemeSectionSubHeader(title: 'TourBanner'),
+      const TourBanner(),
+      const ThemeSectionSubHeader(title: 'RevocationCodeText'),
+      const RevocationCodeText(revocationCode: 'AB12CD34EF56GH78IJ'),
+    ];
   }
 
   void _showWalletAppBarPage(BuildContext context) {
@@ -643,7 +738,6 @@ class OtherStylesTab extends StatelessWidget {
               title: Text('WalletAppBar'),
               progress: FlowProgress(currentStep: 2, totalSteps: 8),
               leading: BackIconButton(),
-              actions: [HelpIconButton()],
             ),
             body: ListView.builder(
               itemBuilder: (context, index) {
@@ -684,7 +778,6 @@ class OtherStylesTab extends StatelessWidget {
               ),
               progress: FlowProgress(currentStep: 2, totalSteps: 8),
               leading: BackIconButton(),
-              actions: [HelpIconButton()],
             ),
             body: ListView.builder(
               itemBuilder: (context, index) {

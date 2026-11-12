@@ -2,6 +2,7 @@ import 'package:mockito/mockito.dart';
 import 'package:test/test.dart';
 import 'package:wallet/src/domain/model/disclosure/disclosure_session_type.dart';
 import 'package:wallet/src/domain/model/disclosure/disclosure_type.dart';
+import 'package:wallet/src/domain/model/disclosure/start_disclosure_request.dart';
 import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/domain/usecase/disclosure/impl/start_disclosure_usecase_impl.dart';
 import 'package:wallet/src/domain/usecase/disclosure/start_disclosure_usecase.dart';
@@ -19,14 +20,16 @@ void main() {
     usecase = StartDisclosureUseCaseImpl(repository);
   });
 
+  tearDown(() {
+    clearInteractions(repository);
+  });
+
   test('Verify ReadyToDisclose is returned when all is good', () async {
     final readyToDiscloseResult = StartDisclosureReadyToDisclose(
       relyingParty: WalletMockData.organization,
-      originUrl: 'http://origin.org',
       requestPurpose: 'requestPurpose'.untranslated,
       sessionType: DisclosureSessionType.crossDevice,
       type: DisclosureType.login,
-      policy: WalletMockData.policy,
       sharedDataWithOrganizationBefore: false,
       cardRequests: [],
     );
@@ -34,7 +37,7 @@ void main() {
       (_) async => readyToDiscloseResult,
     );
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isFalse);
     expect(result.value, readyToDiscloseResult);
   });
@@ -42,17 +45,14 @@ void main() {
   test('Verify MissingAttributes is returned when attributes are missing', () async {
     final missingAttributesResult = StartDisclosureMissingAttributes(
       relyingParty: WalletMockData.organization,
-      originUrl: 'http://origin.org',
-      requestPurpose: 'requestPurpose'.untranslated,
       sessionType: DisclosureSessionType.crossDevice,
-      sharedDataWithOrganizationBefore: false,
       missingAttributes: [],
     );
     when(repository.startDisclosure(any, isQrCode: anyNamed('isQrCode'))).thenAnswer(
       (_) async => missingAttributesResult,
     );
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isFalse);
     expect(result.value, missingAttributesResult);
   });
@@ -64,7 +64,7 @@ void main() {
         repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
       ).thenAnswer((_) async => throw const CoreDisclosureSourceMismatchError('', isCrossDevice: true));
 
-      final result = await usecase.invoke('disclosureUri', isQrCode: true);
+      final result = await usecase.invoke(const StartDisclosureRequest.qrScan('disclosureUri'));
       expect(result.hasError, isTrue);
       expect(result.error, isA<ExternalScannerError>());
     },
@@ -77,7 +77,7 @@ void main() {
         repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
       ).thenAnswer((_) async => throw const CoreDisclosureSourceMismatchError('', isCrossDevice: false));
 
-      final result = await usecase.invoke('disclosureUri');
+      final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
       expect(result.hasError, isTrue);
       expect(result.error, isA<GenericError>());
     },
@@ -88,7 +88,7 @@ void main() {
       repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
     ).thenAnswer((_) async => throw const CoreExpiredSessionError('expired', canRetry: true));
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isTrue);
     expect(
       result.error,
@@ -103,7 +103,7 @@ void main() {
       repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
     ).thenAnswer((_) async => throw const CoreExpiredSessionError('expired', canRetry: false));
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isTrue);
     expect(
       result.error,
@@ -118,7 +118,7 @@ void main() {
       repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
     ).thenAnswer((_) async => throw const CoreCancelledSessionError('cancelled'));
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isTrue);
     expect(result.error, isA<SessionError>().having((error) => error.state, 'state', SessionState.cancelled));
   });
@@ -128,7 +128,7 @@ void main() {
       repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
     ).thenAnswer((_) async => throw const CoreNetworkError('server'));
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isTrue);
     expect(result.error, isA<NetworkError>());
   });
@@ -138,7 +138,7 @@ void main() {
       repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')),
     ).thenAnswer((_) async => throw const CoreGenericError('generic', data: {'return_url': 'https://example.org'}));
 
-    final result = await usecase.invoke('disclosureUri');
+    final result = await usecase.invoke(const StartDisclosureRequest.deeplink('disclosureUri'));
     expect(result.hasError, isTrue);
     expect(
       result.error,
@@ -148,5 +148,25 @@ void main() {
         'https://example.org',
       ),
     );
+  });
+
+  test('Verify startCloseProximityDisclosure is called when request is CloseProximity', () async {
+    final readyToDiscloseResult = StartDisclosureReadyToDisclose(
+      relyingParty: WalletMockData.organization,
+      requestPurpose: 'requestPurpose'.untranslated,
+      sessionType: DisclosureSessionType.sameDevice,
+      type: DisclosureType.login,
+      sharedDataWithOrganizationBefore: false,
+      cardRequests: [],
+    );
+    when(repository.continueCloseProximityDisclosure()).thenAnswer(
+      (_) async => readyToDiscloseResult,
+    );
+
+    final result = await usecase.invoke(const StartDisclosureRequest.closeProximity());
+    expect(result.hasError, isFalse);
+    expect(result.value, readyToDiscloseResult);
+    verify(repository.continueCloseProximityDisclosure()).called(1);
+    verifyNever(repository.startDisclosure(any, isQrCode: anyNamed('isQrCode')));
   });
 }

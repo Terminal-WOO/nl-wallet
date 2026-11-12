@@ -25,11 +25,11 @@ serialize = []
 # Implement Default on AppIdentifier by reading Xcode environment variables.
 xcode_env = []
 # Include the MockAttestationCa type and mock constructors for for the main crate types for use in testing.
-mock = ["dep:rand", "derive_more/debug", "rcgen/ring", "serialize"]
+mock = ["dep:rand", "passkey-crypto/rust-crypto", "rcgen/ring", "serialize"]
 # Include constants for the self-signed mock Apple CA (see the assets dir).
 mock_ca_root = []
 # Include support for the self-signed mock Apple CA on the MockAttestationCa type.
-mock_ca = ["mock_ca_root", "rcgen?/ring", "rcgen?/x509-parser"]
+mock_ca = ["mock", "mock_ca_root", "rcgen/x509-parser"]
 
 [dependencies]
 chrono = { workspace = true, features = ["now"] }
@@ -38,9 +38,10 @@ const-decoder.workspace = true
 coset.workspace = true
 derive_more = { workspace = true, features = ["as_ref", "display", "from", "deref"] }
 nutype.workspace = true
-p256 = { workspace = true, features = ["std", "ecdsa", "pkcs8"] }
+p256 = { workspace = true, features = ["pem"] }
+passkey-crypto = { workspace = true, optional = true }
 passkey-types.workspace = true
-rasn = { workspace = true, features = ["std"] }
+rasn.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_with.workspace = true
 sha2.workspace = true
@@ -53,6 +54,6 @@ rand = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 
 [dev-dependencies]
-assert_matches.workspace = true
+passkey-crypto = { workspace = true, features = ["rust-crypto"] }
 rand_core.workspace = true
 rstest.workspace = true

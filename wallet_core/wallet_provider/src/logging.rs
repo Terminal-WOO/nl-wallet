@@ -10,7 +10,7 @@ use std::os::fd::RawFd;
 use std::thread;
 
 use log::Level;
-use regex::Regex;
+use regex::regex;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LogError {
@@ -21,15 +21,22 @@ pub enum LogError {
     Pipe(#[source] rustix::io::Errno),
 }
 
-struct LevelPattern(Regex);
+trait Logger {
+    fn log(level: Level, message: &str);
+}
 
-impl LevelPattern {
-    fn new() -> Self {
-        Self(Regex::new(r"[^|]+\|[^|]+\| ([TDIWE]):").unwrap())
+struct DefaultLogger;
+
+impl Logger for DefaultLogger {
+    fn log(level: Level, message: &str) {
+        log::log!(level, "{message}");
     }
+}
 
-    fn parse_level_from_line(&self, line: &str) -> Option<Level> {
-        self.0.captures(line).map(|captures| match &captures[1] {
+fn parse_level_from_line(line: &str) -> Option<Level> {
+    regex!(r"[^|]+\|[^|]+\| ([TDIWE]):")
+        .captures(line)
+        .map(|captures| match &captures[1] {
             "T" => Level::Trace,
             "D" => Level::Debug,
             "I" => Level::Info,
@@ -37,25 +44,23 @@ impl LevelPattern {
             "E" => Level::Error,
             _ => panic!("Regex capture captures too much"),
         })
-    }
 }
 
-fn redirect_output_to_log(fd: RawFd) -> Result<thread::JoinHandle<()>, LogError> {
+fn redirect_output_to_log<L: Logger>(fd: RawFd) -> Result<thread::JoinHandle<()>, LogError> {
     let (read_fd, write_fd) = rustix::pipe::pipe().map_err(LogError::Pipe)?;
     let join_handle = thread::spawn(move || {
         let reader = File::from(read_fd);
         let reader = BufReader::new(reader);
 
-        let level_pattern = LevelPattern::new();
         let mut log_level = Level::Info;
 
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    if let Some(new_level) = level_pattern.parse_level_from_line(&line) {
+                    if let Some(new_level) = parse_level_from_line(&line) {
                         log_level = new_level;
                     }
-                    log::log!(log_level, "{line}");
+                    L::log(log_level, &line);
                 }
                 Err(e) => {
                     log::error!("Could not read line from file descriptor {fd}: {e}");
@@ -96,12 +101,12 @@ impl LogRedirect {
 /// Using RawFd instead of OwnedFd to prevent closing stdout or stderr on an
 /// error or on a drop of LogRedirect. When calling `LogRedirect::stop_and_wait`
 /// the file descriptors will be closed.
-fn redirect_stdout_stderr_to_log_with_fd(stdout: RawFd, stderr: RawFd) -> Result<LogRedirect, LogError> {
+fn redirect_stdout_stderr_to_log_with_fd<L: Logger>(stdout: RawFd, stderr: RawFd) -> Result<LogRedirect, LogError> {
     Ok(LogRedirect {
         stdout_fd: stdout,
         stderr_fd: stderr,
-        stdout_handle: redirect_output_to_log(stdout)?,
-        stderr_handle: redirect_output_to_log(stderr)?,
+        stdout_handle: redirect_output_to_log::<L>(stdout)?,
+        stderr_handle: redirect_output_to_log::<L>(stderr)?,
     })
 }
 
@@ -113,41 +118,46 @@ fn redirect_stdout_stderr_to_log_with_fd(stdout: RawFd, stderr: RawFd) -> Result
 ///
 /// The LogRedirect can be used to stop and wait the processing threads.
 pub fn redirect_stdout_stderr_to_log() -> Result<LogRedirect, LogError> {
-    redirect_stdout_stderr_to_log_with_fd(rustix::stdio::raw_stdout(), rustix::stdio::raw_stderr())
+    redirect_stdout_stderr_to_log_with_fd::<DefaultLogger>(rustix::stdio::raw_stdout(), rustix::stdio::raw_stderr())
 }
 
 #[cfg(test)]
 mod test {
     use std::io::Write;
-    use std::mem::ManuallyDrop;
     use std::os::fd::AsRawFd;
+    use std::sync::Mutex;
 
-    use log::Level;
     use tempfile::tempfile;
-    use tracing_test::traced_test;
 
-    use super::LevelPattern;
-    use super::redirect_stdout_stderr_to_log_with_fd;
+    use super::*;
 
     #[test]
     fn test_parse_log_level() {
-        let level_pattern = LevelPattern::new();
         assert_eq!(
-            level_pattern
-                .parse_level_from_line("18.07.2025 18:07:20.250 | [00000001:00000001] C_Test | I: Info information"),
+            parse_level_from_line("18.07.2025 18:07:20.250 | [00000001:00000001] C_Test | I: Info information"),
             Some(Level::Info)
         );
-        assert_eq!(level_pattern.parse_level_from_line("Something else"), None);
+        assert_eq!(parse_level_from_line("Something else"), None);
     }
 
-    #[traced_test]
+    static LOGS: Mutex<Vec<(Level, String)>> = Mutex::new(Vec::new());
+
+    struct TestLogger;
+
+    impl Logger for TestLogger {
+        fn log(level: Level, message: &str) {
+            LOGS.lock().unwrap().push((level, message.to_owned()));
+        }
+    }
+
     #[test]
     fn test_redirect_stdout_stderr_to_log_with_fd() {
         // ManuallyDrop because we close the files ourselves via LogRedirect
         let mut stdout = ManuallyDrop::new(tempfile().unwrap());
         let mut stderr = ManuallyDrop::new(tempfile().unwrap());
 
-        let log_redirect = redirect_stdout_stderr_to_log_with_fd(stdout.as_raw_fd(), stderr.as_raw_fd()).unwrap();
+        let log_redirect =
+            redirect_stdout_stderr_to_log_with_fd::<TestLogger>(stdout.as_raw_fd(), stderr.as_raw_fd()).unwrap();
 
         writeln!(
             *stdout,
@@ -162,11 +172,14 @@ mod test {
 
         log_redirect.stop_and_wait().unwrap();
 
-        assert!(!logs_contain(
-            "18.07.2025 18:07:20.251 | [00000001:00000001] C_Test | W: Warning information"
-        ));
-        assert!(!logs_contain(
-            "18.07.2025 18:07:20.252 | [00000001:00000001] C_Test | E: Error information"
-        ));
+        let logs = LOGS.lock().unwrap();
+        assert!(logs.contains(&(
+            Level::Warn,
+            "18.07.2025 18:07:20.251 | [00000001:00000001] C_Test | W: Warning information".into()
+        )));
+        assert!(logs.contains(&(
+            Level::Error,
+            "18.07.2025 18:07:20.252 | [00000001:00000001] C_Test | E: Error information".into()
+        ),));
     }
 }

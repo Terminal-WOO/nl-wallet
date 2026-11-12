@@ -1,10 +1,10 @@
 {
   "vct": "https://simple.example.com/credential/pid/1.0",
   "name": "NL Wallet Simple Embedded",
-  "description": "Example with simple rendering and embedded logo",
+  "description": "Example with simple rendering and embedded logo and background",
   "display": [
     {
-      "lang": "en-US",
+      "locale": "en-US",
       "name": "NL Wallet Simple Embedded",
       "description": "Example with simple rendering and embedded logo",
       "summary": "{{ birth_date }}",
@@ -13,6 +13,9 @@
           "logo": {
             "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC",
             "alt_text": "An example PNG logo"
+          },
+          "background_image": {
+            "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC"
           },
           "background_color": "#FF8000",
           "text_color": "#0080FF"
@@ -25,52 +28,12 @@
       "path": ["birth_date"],
       "display": [
         {
-          "lang": "en-US",
+          "locale": "en-US",
           "label": "Birth date",
           "description": "Birth date of the person"
         }
       ],
       "svg_id": "birth_date"
     }
-  ],
-  "schema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "NL Wallet Simple VCT Schema",
-    "description": "The JSON schema that defines the NL Wallet Simple VCT",
-    "type": "object",
-    "properties": {
-      "vct": {
-        "type": "string"
-      },
-      "vct#integrity": {
-        "type": "string"
-      },
-      "iss": {
-        "type": "string"
-      },
-      "iat": {
-        "type": "number"
-      },
-      "nbf": {
-        "type": "number"
-      },
-      "exp": {
-        "type": "number"
-      },
-      "cnf": {
-        "type": "object"
-      },
-      "status": {
-        "type": "object"
-      },
-      "attestation_qualification": {
-        "type": "string"
-      },
-      "birth_date": {
-        "type": "string",
-        "format": "date"
-      }
-    },
-    "required": ["vct", "iss", "iat", "cnf", "status", "attestation_qualification"]
-  }
+  ]
 }

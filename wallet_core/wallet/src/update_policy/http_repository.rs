@@ -3,12 +3,11 @@ use std::sync::LazyLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use http_utils::client::TlsPinningConfig;
+use http_utils::client::TlsPinningConfigHash;
 use parking_lot::RwLock;
 use serde::de::DeserializeOwned;
 use tracing::info;
-
-use http_utils::tls::pinning::TlsPinningConfig;
-use http_utils::tls::pinning::TlsPinningConfigHash;
 use update_policy_model::update_policy::UpdatePolicyResponse;
 use update_policy_model::update_policy::VersionState;
 use utils::built_info::version;
@@ -30,14 +29,19 @@ pub struct HttpUpdatePolicyRepository {
 static CACHE_DURATION: LazyLock<Duration> = LazyLock::new(|| Duration::from_secs(1 * 60 * 60)); // 1 hour
 
 impl HttpUpdatePolicyRepository {
-    #[expect(clippy::new_without_default)] // this will receive some parameters in the future
     pub fn new() -> Self {
         version(); // force a failure as early as possible
 
         Self {
-            client: ReqwestHttpClient::new("update-policy".parse().expect("should be a valid filename")),
+            client: ReqwestHttpClient::new("update-policy"),
             state: RwLock::new((VersionState::Ok, None)),
         }
+    }
+}
+
+impl Default for HttpUpdatePolicyRepository {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -72,6 +76,7 @@ impl UpdateableRepository<VersionState, TlsPinningConfig> for HttpUpdatePolicyRe
             if last_fetched.is_some_and(|(last_fetch, fetched_for)| {
                 now.checked_duration_since(last_fetch)
                     .is_some_and(|diff| diff < *CACHE_DURATION)
+                    // This does not work for hash collisions, but the probability is acceptably low
                     && fetched_for == config_hash
             }) {
                 info!("Using cached version state for version {}", version());

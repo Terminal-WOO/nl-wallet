@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 
 use askama::Template;
 use askama_web::WebTemplate;
+use attestation_data::attributes::Attribute;
 use axum::Json;
 use axum::Router;
 use axum::extract::Path;
@@ -16,35 +18,34 @@ use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::get;
 use axum::routing::post;
-use base64::prelude::*;
-use indexmap::IndexMap;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
+use demo_utils::WALLET_WEB_CSS_SHA256;
+use demo_utils::WALLET_WEB_JS_SHA256;
+use demo_utils::disclosure::DemoDisclosedAttestation;
+use http_utils::health::create_health_router;
+use http_utils::urls::BaseUrl;
+use http_utils::urls::ConnectSource;
+use http_utils::urls::SourceExpression;
 use itertools::Itertools;
+use openid4vc::server_state::SessionToken;
 use serde::Deserialize;
 use serde::Serialize;
+use server_utils::log_requests::log_request_response;
 use strum::IntoEnumIterator;
 use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::warn;
 use url::Url;
-
-use attestation_data::attributes::AttributeValue;
-use demo_utils::LANGUAGE_JS_SHA256;
-use demo_utils::WALLET_WEB_CSS_SHA256;
-use demo_utils::WALLET_WEB_JS_SHA256;
-use demo_utils::disclosure::DemoDisclosedAttestation;
-use demo_utils::error::Result;
-use demo_utils::headers::cors_layer;
-use demo_utils::headers::set_content_security_policy;
-use demo_utils::headers::set_static_cache_control;
-use demo_utils::language::Language;
-use demo_utils::language::LanguageParam;
-use http_utils::urls::BaseUrl;
-use http_utils::urls::ConnectSource;
-use http_utils::urls::SourceExpression;
-use openid4vc::server_state::SessionToken;
-use server_utils::log_requests::log_request_response;
 use utils::path::prefix_local_path;
+use web_utils::error::Result;
+use web_utils::headers::cors_layer;
+use web_utils::headers::set_content_security_policy;
+use web_utils::headers::set_static_cache_control;
+use web_utils::language::LANGUAGE_JS_SHA256;
+use web_utils::language::Language;
+use web_utils::language::LanguageParam;
 
 use crate::client::WalletServerClient;
 use crate::settings::ReturnUrlMode;
@@ -61,8 +62,24 @@ struct ApplicationState {
     public_url: BaseUrl,
     help_base_url: BaseUrl,
     demo_index_url: BaseUrl,
-    usecases: IndexMap<String, Usecase>,
+    usecases: HashMap<String, Usecase>,
 }
+
+// Bundled CSS constants - placeholders in dev mode, full bundles in release mode.
+// In dev mode, CSS is served from the filesystem via ServeDir.
+pub const AMSTERDAM_INDEX_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/mijn_amsterdam-index.css"));
+pub const AMSTERDAM_RETURN_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/mijn_amsterdam-return.css"));
+pub const MONKEY_BIKE_INDEX_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/monkey_bike-index.css"));
+pub const MONKEY_BIKE_RETURN_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/monkey_bike-return.css"));
+pub const ONLINE_MARKETPLACE_INDEX_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/online_marketplace-index.css"));
+pub const ONLINE_MARKETPLACE_RETURN_CSS: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/online_marketplace-return.css"));
+pub const XYZ_BANK_INDEX_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/xyz_bank-index.css"));
+pub const XYZ_BANK_RETURN_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/xyz_bank-return.css"));
+pub const JOB_FINDER_INDEX_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/job_finder-index.css"));
+pub const JOB_FINDER_RETURN_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/job_finder-return.css"));
+pub const CAR_INSURANCE_INDEX_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/car_insurance-index.css"));
+pub const CAR_INSURANCE_RETURN_CSS: &str = include_str!(concat!(env!("OUT_DIR"), "/car_insurance-return.css"));
 
 static CSP_HEADER: OnceLock<String> = OnceLock::new();
 
@@ -80,19 +97,77 @@ pub fn create_router(settings: Settings) -> Router {
         .connect_src
         .unwrap_or(ConnectSource::List(vec![SourceExpression::SelfSource]))
         .to_string();
-    let mut app = Router::new()
+    let app = Router::new()
         .route("/sessions", post(create_session))
         .route("/{usecase}/", get(usecase))
-        .route(&format!("/{{usecase}}/{RETURN_URL_SEGMENT}"), get(disclosed_attributes))
+        .route(&format!("/{{usecase}}/{RETURN_URL_SEGMENT}"), get(disclosed_attributes));
+
+    // In release mode, serve bundled CSS from route handlers.
+    // In debug mode, CSS is served from the filesystem via the ServeDir fallback.
+    #[cfg(not(debug_assertions))]
+    let app = app
+        .route(
+            "/static/css/mijn_amsterdam-index.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, AMSTERDAM_INDEX_CSS) }),
+        )
+        .route(
+            "/static/css/mijn_amsterdam-return.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, AMSTERDAM_RETURN_CSS) }),
+        )
+        .route(
+            "/static/css/monkey_bike-index.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, MONKEY_BIKE_INDEX_CSS) }),
+        )
+        .route(
+            "/static/css/monkey_bike-return.css",
+            get(
+                |h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, MONKEY_BIKE_RETURN_CSS) },
+            ),
+        )
+        .route(
+            "/static/css/online_marketplace-index.css",
+            get(|h: axum::http::HeaderMap| async move {
+                web_utils::css::serve_bundled_css(&h, ONLINE_MARKETPLACE_INDEX_CSS)
+            }),
+        )
+        .route(
+            "/static/css/online_marketplace-return.css",
+            get(|h: axum::http::HeaderMap| async move {
+                web_utils::css::serve_bundled_css(&h, ONLINE_MARKETPLACE_RETURN_CSS)
+            }),
+        )
+        .route(
+            "/static/css/xyz_bank-index.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, XYZ_BANK_INDEX_CSS) }),
+        )
+        .route(
+            "/static/css/xyz_bank-return.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, XYZ_BANK_RETURN_CSS) }),
+        )
+        .route(
+            "/static/css/job_finder-index.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, JOB_FINDER_INDEX_CSS) }),
+        )
+        .route(
+            "/static/css/job_finder-return.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, JOB_FINDER_RETURN_CSS) }),
+        )
+        .route(
+            "/static/css/car_insurance-index.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, CAR_INSURANCE_INDEX_CSS) }),
+        )
+        .route(
+            "/static/css/car_insurance-return.css",
+            get(|h: axum::http::HeaderMap| async move { web_utils::css::serve_bundled_css(&h, CAR_INSURANCE_RETURN_CSS) }),
+        );
+
+    let mut app = app
         .fallback_service(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(set_static_cache_control))
                 .service(
-                    ServeDir::new(prefix_local_path("assets".as_ref())).fallback(
-                        ServiceBuilder::new()
-                            .service(ServeDir::new(prefix_local_path("../demo_utils/assets".as_ref())))
-                            .not_found_service({ StatusCode::NOT_FOUND }.into_service()),
-                    ),
+                    ServeDir::new(prefix_local_path(std::path::Path::new("assets")))
+                        .not_found_service({ StatusCode::NOT_FOUND }.into_service()),
                 ),
         )
         .with_state(application_state)
@@ -123,7 +198,7 @@ pub fn create_router(settings: Settings) -> Router {
         app = app.layer(axum::middleware::from_fn(log_request_response));
     }
 
-    app
+    app.merge(create_health_router([]))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -205,13 +280,11 @@ struct UsecaseTemplate<'a> {
 }
 
 static USECASE_JS_SHA256: LazyLock<String> =
-    LazyLock::new(|| BASE64_STANDARD.encode(crypto::utils::sha256(include_bytes!("../assets/usecase.js"))));
+    LazyLock::new(|| BASE64_STANDARD.encode(crypto::utils::sha256(include_bytes!("../static/usecase.js"))));
 
 fn format_start_url(public_url: &BaseUrl, lang: Language) -> Url {
     let mut start_url = public_url.join("/sessions");
-    start_url.set_query(Some(
-        serde_urlencoded::to_string(LanguageParam { lang }).unwrap().as_str(),
-    ));
+    start_url.set_query(Some(serde_qs::to_string(&LanguageParam { lang }).unwrap().as_str()));
     start_url
 }
 
@@ -221,20 +294,21 @@ async fn usecase(
     language: Language,
 ) -> Response {
     let start_url = format_start_url(&state.public_url, language);
+    let base = BaseTemplate {
+        session_token: None,
+        nonce: None,
+        selected_lang: language,
+        trans: &TRANSLATIONS[language],
+        available_languages: &Language::iter().collect_vec(),
+        language_js_sha256: &LANGUAGE_JS_SHA256,
+    };
     UsecaseTemplate {
         usecase: &usecase,
         start_url,
         help_base_url: state.help_base_url.clone().into_inner(),
         usecase_js_sha256: &USECASE_JS_SHA256,
         wallet_web_sha256: &WALLET_WEB_JS_SHA256,
-        base: BaseTemplate {
-            session_token: None,
-            nonce: None,
-            selected_lang: language,
-            trans: &TRANSLATIONS[language],
-            available_languages: &Language::iter().collect_vec(),
-            language_js_sha256: &LANGUAGE_JS_SHA256,
-        },
+        base,
     }
     .into_response()
 }
@@ -322,6 +396,6 @@ mod filters {
             }
         }
 
-        Err(askama::Error::custom("attribute '{name}' cannot be found"))
+        Err(askama::Error::custom(format!("attribute '{name}' cannot be found")))
     }
 }

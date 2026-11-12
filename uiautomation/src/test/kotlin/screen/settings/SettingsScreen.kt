@@ -8,6 +8,10 @@ class SettingsScreen : MobileActions() {
     private val changePinButton = l10n.getString("settingsScreenChangePinCta")
     private val changeLanguageButton = l10n.getString("settingsScreenChangeLanguageCta")
     private val clearDataButton = l10n.getString("settingsScreenClearDataCta")
+    private val backButton = l10n.getString("generalBottomBackCta")
+    private val notificationsButton = l10n.getString("settingsScreenManageNotificationsCta")
+    private val revocationCodeButton = l10n.getString("settingsScreenShowRevocationCodeCta")
+    private val setupBiometricsCta = l10n.getString("settingsScreenSetupBiometricsCta")
 
     fun visible() = elementWithTextVisible(screenTitle)
 
@@ -17,4 +21,17 @@ class SettingsScreen : MobileActions() {
     fun clickChangeLanguageButton() = clickElementWithText(changeLanguageButton)
 
     fun clickClearDataButton() = clickElementWithText(clearDataButton)
+
+    fun clickChangePinButton() = clickElementWithText(changePinButton)
+
+    fun clickBackButton() {
+        visible()
+        clickElementWithText(backButton)
+    }
+
+    fun clickNotificationsButton() = clickElementWithText(notificationsButton)
+
+    fun clickRevocationCodeButton() = clickElementWithText(revocationCodeButton)
+
+    fun clickSetupBiometricsButton() = clickElementContainingText(setupBiometricsCta.replace("{supportedBiometrics}", ""))
 }

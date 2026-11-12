@@ -1,19 +1,66 @@
-import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wallet/src/navigation/secured_page_route.dart';
+import 'package:wallet/src/navigation/sentry_navigation_observer.dart';
 import 'package:wallet/src/navigation/wallet_routes.dart';
+import 'package:wallet/src/util/sentry/sentry_breadcrumbs.dart';
 
 void main() {
-  test('.dashboardRoute should be a `SecuredPageRoute`', () {
-    const routeSettings = RouteSettings(name: WalletRoutes.dashboardRoute);
-    final Route homeRoute = WalletRoutes.routeFactory(routeSettings);
-    expect(homeRoute, isA<SecuredPageRoute>());
-  });
+  group('WalletRoutes', () {
+    test('.initialRoutes should return a list containing the splash route', () {
+      final routes = WalletRoutes.initialRoutes('/');
+      expect(routes, hasLength(1));
+      expect(routes.first, isA<MaterialPageRoute>());
+      expect(routes.first, isNot(isA<SecuredPageRoute>()));
+      expect(routes.first.settings.name, WalletRoutes.splashRoute);
+    });
 
-  test('.publicRoutes should not be a `SecuredPageRoute`', () {
-    for (final routeName in WalletRoutes.publicRoutes) {
-      final Route route = WalletRoutes.routeFactory(RouteSettings(name: routeName));
-      expect(route, isNot(isA<SecuredPageRoute>()));
-    }
+    test('.isKnownRoute should only accept route names from the central route table', () {
+      for (final routeName in WalletRoutes.allRoutes) {
+        expect(WalletRoutes.isKnownRoute(routeName), isTrue);
+      }
+
+      expect(WalletRoutes.isKnownRoute('/unknown'), isFalse);
+      expect(WalletRoutes.isKnownRoute(null), isFalse);
+    });
+
+    test('.allRoutes should produce allowed route breadcrumb messages', () {
+      for (final routeName in WalletRoutes.allRoutes) {
+        final routeCode = SentryNavigationObserver.routeToBreadcrumbCode(routeName);
+        final message = 'route.push.$routeCode';
+
+        expect(
+          SentryBreadcrumbs.isAllowedMessageCode(message),
+          isTrue,
+          reason: '$routeName produced invalid breadcrumb message $message',
+        );
+      }
+    });
+
+    test('.routeFactory should throw UnsupportedError for unknown route', () {
+      expect(
+        () => WalletRoutes.routeFactory(const RouteSettings(name: '/unknown')),
+        throwsA(isA<UnsupportedError>()),
+      );
+    });
+
+    group('.routeFactory', () {
+      final allRoutes = WalletRoutes.allRoutes;
+
+      for (final routeName in allRoutes) {
+        testWidgets('should return a valid route for $routeName', (tester) async {
+          final settings = RouteSettings(name: routeName);
+          final route = WalletRoutes.routeFactory(settings);
+          expect(route.settings.name, routeName);
+
+          if (WalletRoutes.publicRoutes.contains(routeName)) {
+            expect(route, isNot(isA<SecuredPageRoute>()), reason: '$routeName should be a public route');
+            expect(route, isA<MaterialPageRoute>());
+          } else {
+            expect(route, isA<SecuredPageRoute>(), reason: '$routeName should be a secured route');
+          }
+        });
+      }
+    });
   });
 }

@@ -1,18 +1,17 @@
+use std::borrow::Cow;
+
+use crypto::keys::EcdsaKeySend;
+use crypto::server_keys::KeyPairError;
+use hsm::keys::HsmEcdsaKey;
+use hsm::keys::HsmHmacKey;
+use hsm::service::HsmError;
+use hsm::service::Pkcs11Hsm;
 use p256::ecdsa;
 use p256::ecdsa::Signature;
 use p256::ecdsa::SigningKey;
 use p256::ecdsa::VerifyingKey;
 use ring::hmac;
 use ring::hmac::HMAC_SHA256;
-
-use crypto::keys::EcdsaKey;
-use crypto::keys::EcdsaKeySend;
-use crypto::x509::CertificateError;
-use hsm::keys::HsmEcdsaKey;
-use hsm::keys::HsmHmacKey;
-use hsm::service::HsmError;
-use hsm::service::Pkcs11Hsm;
-use sd_jwt_vc_metadata::TypeMetadataChainError;
 
 use crate::settings::PrivateKey;
 use crate::settings::SecretKey;
@@ -37,14 +36,14 @@ impl EcdsaKeySend for PrivateKeyVariant {
     async fn verifying_key(&self) -> Result<VerifyingKey, Self::Error> {
         let verifying_key = match self {
             PrivateKeyVariant::Software(signing_key) => EcdsaKeySend::verifying_key(signing_key).await?,
-            PrivateKeyVariant::Hsm(hsm_key) => hsm_key.verifying_key().await?,
+            PrivateKeyVariant::Hsm(hsm_key) => EcdsaKeySend::verifying_key(hsm_key).await?,
         };
         Ok(verifying_key)
     }
     async fn try_sign(&self, msg: &[u8]) -> Result<Signature, Self::Error> {
         let signature = match self {
             PrivateKeyVariant::Software(signing_key) => EcdsaKeySend::try_sign(signing_key, msg).await?,
-            PrivateKeyVariant::Hsm(hsm_key) => hsm_key.try_sign(msg).await?,
+            PrivateKeyVariant::Hsm(hsm_key) => EcdsaKeySend::try_sign(hsm_key, msg).await?,
         };
         Ok(signature)
     }
@@ -54,12 +53,9 @@ impl EcdsaKeySend for PrivateKeyVariant {
 pub enum PrivateKeySettingsError {
     #[error("missing `hsm` settings for hardware key with identifier: {0}")]
     MissingHsmSettings(String),
-    #[error("invalid certificate settings: {0}")]
-    InvalidCertificate(#[from] CertificateError),
-    #[error("missing metadata for attestation type {0}")]
-    MissingMetadata(String),
-    #[error("type metadata is not valid: {0}")]
-    TypeMetadata(#[from] TypeMetadataChainError),
+
+    #[error("invalid key pair settings: {0}")]
+    InvalidKeyPair(#[from] KeyPairError),
 }
 
 impl PrivateKeyVariant {
@@ -75,17 +71,36 @@ impl PrivateKeyVariant {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SecretKeyVariantError {
+    #[error("HMAC verification failed")]
+    SoftwareVerification,
+    #[error("HSM error: {0}")]
+    Hsm(#[from] HsmError),
+}
+
 pub enum SecretKeyVariant {
     Software(hmac::Key),
     Hsm(HsmHmacKey),
 }
 
 impl SecretKeyVariant {
-    pub async fn sign_hmac(&self, msg: &[u8]) -> Result<Vec<u8>, HsmError> {
+    pub async fn sign_hmac(&self, data: &[u8]) -> Result<Vec<u8>, HsmError> {
         match self {
-            SecretKeyVariant::Software(key) => Ok(hmac::sign(key, msg).as_ref().to_vec()),
-            SecretKeyVariant::Hsm(key) => Ok(key.sign_hmac(msg.to_vec()).await?),
+            SecretKeyVariant::Software(key) => Ok(hmac::sign(key, data).as_ref().to_vec()),
+            SecretKeyVariant::Hsm(key) => Ok(key.sign_hmac(data).await?),
         }
+    }
+
+    pub async fn verify_hmac(&self, data: &[u8], tag: Cow<'_, [u8]>) -> Result<(), SecretKeyVariantError> {
+        match self {
+            SecretKeyVariant::Software(key) => {
+                hmac::verify(key, data, &tag).map_err(|_| SecretKeyVariantError::SoftwareVerification)?
+            }
+            SecretKeyVariant::Hsm(key) => key.verify_hmac(data, tag.into_owned()).await?,
+        };
+
+        Ok(())
     }
 }
 
@@ -107,21 +122,5 @@ impl SecretKeyVariant {
             }
         };
         Ok(key)
-    }
-}
-
-#[cfg(feature = "test")]
-pub mod test {
-    use crypto::server_keys::KeyPair;
-
-    use super::*;
-
-    pub async fn private_key_variant(pair: KeyPair<SigningKey>) -> KeyPair<PrivateKeyVariant> {
-        KeyPair::new(
-            PrivateKeyVariant::Software(pair.private_key().clone()),
-            pair.certificate().clone(),
-        )
-        .await
-        .unwrap()
     }
 }

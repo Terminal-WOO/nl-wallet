@@ -13,6 +13,24 @@ class Environment {
   /// Set using: `flutter build --dart-define=MOCK_REPOSITORIES=true`
   static bool get mockRepositories => const bool.fromEnvironment('MOCK_REPOSITORIES', defaultValue: false);
 
+  /// Indicates whether debug options are enabled, e.g. to display the notifications debug screen.
+  ///
+  /// Set using: `flutter build --dart-define=SHOW_DEBUG_OPTIONS=true`
+  static bool get showDebugOptions => const bool.fromEnvironment('SHOW_DEBUG_OPTIONS', defaultValue: false);
+
+  /// Indicates whether technical error details (error type, description and data) are shown in the error details
+  /// sheet. Defaults to false, in which case only the error type is shown.
+  ///
+  /// Set using: `flutter build --dart-define=SHOW_ERROR_DETAILS=true`
+  static bool get showErrorDetails => const bool.fromEnvironment('SHOW_ERROR_DETAILS', defaultValue: false);
+
+  /// Includes the temporary Close Proximity WRPRC strict mode switch. Defaults to false.
+  ///
+  /// Without this flag, Close Proximity always requires a WRPRC, including when a previous build saved otherwise.
+  /// Set using: `flutter build --dart-define=ENABLE_WRPRC_STRICT_MODE_TOGGLE=true`
+  static bool get enableWrprcStrictModeToggle =>
+      const bool.fromEnvironment('ENABLE_WRPRC_STRICT_MODE_TOGGLE', defaultValue: false);
+
   /// Indicates whether the application is currently running in a test environment.
   static bool get isTest => Platform.environment.containsKey('FLUTTER_TEST');
 
@@ -29,7 +47,13 @@ class Environment {
   /// The URL for the demo relying party.
   ///
   /// Set using: `flutter build --dart-define=DEMO_INDEX_URL=https://example.org/demo`
-  static String get demoRelyingPartyUrl => const String.fromEnvironment('DEMO_INDEX_URL');
+  static String get demoIndexUrl => const String.fromEnvironment('DEMO_INDEX_URL');
+
+  /// The numeric App Store id of the app, used to link to its App Store page (iOS only).
+  ///
+  /// Set using: `flutter build --dart-define=APP_STORE_ID=1234567890`
+  /// The Fastlane build lanes fail when this is not provided.
+  static String get appStoreId => const String.fromEnvironment('APP_STORE_ID');
 
   /// The DSN for Sentry error reporting.
   ///
@@ -38,6 +62,15 @@ class Environment {
 
   /// Indicates whether a Sentry DSN has been provided.
   static bool get hasSentryDsn => sentryDsn.isNotEmpty;
+
+  /// Indicates whether release/profile builds may emit device logs and Sentry Logs.
+  ///
+  /// Defaults to false; release/profile builds must opt in explicitly.
+  /// Set using: `flutter build --dart-define=ALLOW_RELEASE_LOGS=true`
+  static bool get allowReleaseLogs => const bool.fromEnvironment('ALLOW_RELEASE_LOGS', defaultValue: false);
+
+  /// Indicates whether device logs and Sentry Logs are enabled for this build.
+  static bool get allowLogs => kDebugMode || allowReleaseLogs;
 
   /// The environment name for Sentry (e.g., "development", "production").
   ///

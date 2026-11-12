@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:fimber/fimber.dart';
@@ -8,7 +9,6 @@ import 'package:url_launcher/url_launcher_string.dart';
 
 import '../../../../environment.dart';
 import '../../../data/service/navigation_service.dart';
-import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/flow_progress.dart';
 import '../../../domain/model/navigation/navigation_request.dart';
 import '../../../domain/model/result/application_error.dart';
@@ -19,13 +19,14 @@ import '../../../util/launch_util.dart';
 import '../../../wallet_assets.dart';
 import '../../../wallet_constants.dart';
 import '../../common/dialog/stop_digid_login_dialog.dart';
+import '../../common/mixin/lock_state_mixin.dart';
 import '../../common/page/generic_loading_page.dart';
 import '../../common/page/terminal_page.dart';
 import '../../common/sheet/confirm_action_sheet.dart';
 import '../../common/widget/button/icon/back_icon_button.dart';
-import '../../common/widget/button/icon/help_icon_button.dart';
+import '../../common/widget/button/primary_button.dart';
+import '../../common/widget/button/tertiary_button.dart';
 import '../../common/widget/fake_paging_animated_switcher.dart';
-import '../../common/widget/loading_indicator.dart';
 import '../../common/widget/page_illustration.dart';
 import '../../common/widget/svg_or_image.dart';
 import '../../common/widget/text/title_text.dart';
@@ -40,9 +41,14 @@ import 'page/wallet_personalize_confirm_pin_page.dart';
 import 'page/wallet_personalize_intro_page.dart';
 import 'page/wallet_personalize_success_page.dart';
 
-class WalletPersonalizeScreen extends StatelessWidget {
+class WalletPersonalizeScreen extends StatefulWidget {
   const WalletPersonalizeScreen({super.key});
 
+  @override
+  State<WalletPersonalizeScreen> createState() => _WalletPersonalizeScreenState();
+}
+
+class _WalletPersonalizeScreenState extends State<WalletPersonalizeScreen> with LockStateMixin {
   @override
   Widget build(BuildContext context) {
     return ScrollOffsetProvider(
@@ -116,14 +122,10 @@ class WalletPersonalizeScreen extends StatelessWidget {
       WalletPersonalizeCheckData() => _buildCheckDataOfferingPage(context, state),
       WalletPersonalizeConfirmPin() => _buildConfirmPinPage(context, state),
       WalletPersonalizeSuccess() => _buildSuccessPage(context, state),
-      WalletPersonalizeFailure() => _buildErrorPage(context),
       WalletPersonalizeDigidCancelled() => _buildDigidCancelledPage(context),
-      WalletPersonalizeDigidFailure() => _buildDigidErrorPage(context),
-      WalletPersonalizeNetworkError() => _buildNetworkError(context, state),
-      WalletPersonalizeGenericError() => _buildGenericError(context, state),
-      WalletPersonalizeSessionExpired() => _buildSessionExpired(context),
+      WalletPersonalizeError() => _buildGenericError(context, state),
       WalletPersonalizeAddingCards() => _buildAddingCards(context, progress: state.stepperProgress),
-      WalletPersonalizeRelyingPartyError() => _buildRelyingPartyError(context, state),
+      WalletPersonalizeDigidFailure() => _buildDigidErrorPage(context),
     };
 
     return FakePagingAnimatedSwitcher(
@@ -169,7 +171,7 @@ class WalletPersonalizeScreen extends StatelessWidget {
     };
     final description = switch (stage) {
       DigiDAuthStage.fetchingAuthUrl => context.l10n.walletPersonalizeScreenLoadingDigiDUrlDescription,
-      DigiDAuthStage.awaitingUserAction => context.l10n.walletPersonalizeScreenAwaitingUserAuthDescription,
+      DigiDAuthStage.awaitingUserAction => null,
       DigiDAuthStage.processingResult => context.l10n.walletPersonalizeScreenProcessingDigiDResultDescription,
     };
     return GenericLoadingPage(
@@ -190,7 +192,6 @@ class WalletPersonalizeScreen extends StatelessWidget {
           );
         }
       },
-      loadingIndicator: stage == DigiDAuthStage.awaitingUserAction ? const SizedBox.shrink() : const LoadingIndicator(),
     );
   }
 
@@ -234,7 +235,7 @@ class WalletPersonalizeScreen extends StatelessWidget {
 
     final success = await MockDigidScreen.mockLogin(context);
     if (success && context.mounted) {
-      await context.read<NavigationService>().handleNavigationRequest(PidIssuanceNavigationRequest('issue_pid'));
+      await context.read<NavigationService>().handleNavigationRequest(NavigationRequest.pidIssuance('mock'));
     } else if (context.mounted) {
       final error = GenericError('Mock login failed', sourceError: Exception('Mock exception'));
       context.bloc.add(WalletPersonalizeLoginWithDigidFailed(error: error));
@@ -251,27 +252,23 @@ class WalletPersonalizeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildErrorPage(BuildContext context) {
-    return TerminalPage(
-      illustration: const PageIllustration(asset: WalletAssets.svg_error_general),
-      title: context.l10n.walletPersonalizeScreenErrorTitle,
-      description: context.l10n.walletPersonalizeScreenErrorDescription,
-      primaryButtonCta: context.l10n.walletPersonalizeScreenErrorRetryCta,
-      onPrimaryPressed: () => context.bloc.add(WalletPersonalizeRetryPressed()),
-    );
-  }
-
   Widget _buildDigidCancelledPage(BuildContext context) {
     return TerminalPage(
       title: context.l10n.walletPersonalizeDigidCancelledPageTitle,
       illustration: const PageIllustration(asset: WalletAssets.svg_stopped),
       description: context.l10n.walletPersonalizeDigidCancelledPageDescription,
-      onPrimaryPressed: () => context.bloc.add(WalletPersonalizeLoginWithDigidClicked()),
-      primaryButtonCta: context.l10n.walletPersonalizeDigidErrorPageLoginWithDigidCta,
-      primaryButtonIcon: const SvgOrImage(asset: WalletAssets.logo_digid),
-      onSecondaryButtonPressed: _launchDigidWebsite,
-      secondaryButtonCta: context.l10n.walletPersonalizeDigidErrorPageDigidWebsiteCta,
-      secondaryButtonIcon: const Icon(Icons.arrow_outward_rounded),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.walletPersonalizeDigidErrorPageLoginWithDigidCta),
+        icon: const SvgOrImage(asset: WalletAssets.logo_digid),
+        onPressed: () => context.bloc.add(WalletPersonalizeLoginWithDigidClicked()),
+        key: const Key('primaryButtonCta'),
+      ),
+      secondaryButton: TertiaryButton(
+        text: Text(context.l10n.walletPersonalizeDigidErrorPageDigidWebsiteCta),
+        icon: const Icon(Icons.arrow_outward_rounded),
+        onPressed: _launchDigidWebsite,
+        key: const Key('secondaryButtonCta'),
+      ),
     );
   }
 
@@ -280,12 +277,18 @@ class WalletPersonalizeScreen extends StatelessWidget {
       title: context.l10n.walletPersonalizeDigidErrorPageTitle,
       illustration: const PageIllustration(asset: WalletAssets.svg_error_general),
       description: context.l10n.walletPersonalizeDigidErrorPageDescription,
-      onPrimaryPressed: () => context.bloc.add(WalletPersonalizeLoginWithDigidClicked()),
-      primaryButtonCta: context.l10n.walletPersonalizeDigidErrorPageLoginWithDigidCta,
-      primaryButtonIcon: const SvgOrImage(asset: WalletAssets.logo_digid),
-      onSecondaryButtonPressed: _launchDigidWebsite,
-      secondaryButtonCta: context.l10n.walletPersonalizeDigidErrorPageDigidWebsiteCta,
-      secondaryButtonIcon: const Icon(Icons.arrow_outward_rounded),
+      primaryButton: PrimaryButton(
+        text: Text(context.l10n.walletPersonalizeDigidErrorPageLoginWithDigidCta),
+        icon: const SvgOrImage(asset: WalletAssets.logo_digid),
+        onPressed: () => context.bloc.add(WalletPersonalizeLoginWithDigidClicked()),
+        key: const Key('primaryButtonCta'),
+      ),
+      secondaryButton: TertiaryButton(
+        text: Text(context.l10n.walletPersonalizeDigidErrorPageDigidWebsiteCta),
+        icon: const Icon(Icons.arrow_outward_rounded),
+        onPressed: _launchDigidWebsite,
+        key: const Key('secondaryButtonCta'),
+      ),
     );
   }
 
@@ -318,43 +321,25 @@ class WalletPersonalizeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildNetworkError(BuildContext context, WalletPersonalizeNetworkError state) {
-    if (state.hasInternet) {
-      return ErrorPage.network(
-        context,
-        style: ErrorCtaStyle.retry,
-        onPrimaryActionPressed: () => context.bloc.add(WalletPersonalizeRetryPressed()),
-      );
-    } else {
-      return ErrorPage.noInternet(
-        context,
-        onPrimaryActionPressed: () => context.bloc.add(WalletPersonalizeRetryPressed()),
-        style: ErrorCtaStyle.retry,
-      );
-    }
-  }
-
-  Widget _buildGenericError(BuildContext context, WalletPersonalizeGenericError state) {
-    return ErrorPage.generic(
+  Widget _buildGenericError(BuildContext context, WalletPersonalizeError state) {
+    // Check for [RelyingPartyError], as the issuance flow uses non-standard copy for this state.
+    if (state.error is RelyingPartyError) return _buildRelyingPartyErrorPage(context, state.error as RelyingPartyError);
+    return ErrorPage.fromError(
       context,
-      style: ErrorCtaStyle.retry,
+      state.error,
       onPrimaryActionPressed: () => context.bloc.add(WalletPersonalizeRetryPressed()),
+      style: ErrorCtaStyle.retry,
     );
   }
 
-  Widget _buildRelyingPartyError(BuildContext context, WalletPersonalizeRelyingPartyError state) {
+  Widget _buildRelyingPartyErrorPage(BuildContext context, RelyingPartyError error) {
     return ErrorPage.relyingParty(
       context,
-      organizationName: state.organizationName?.l10nValue(context),
+      organizationName: error.organizationName,
       onPrimaryActionPressed: () => context.bloc.add(WalletPersonalizeRetryPressed()),
-    );
-  }
-
-  Widget _buildSessionExpired(BuildContext context) {
-    return ErrorPage.sessionExpired(
-      context,
-      style: ErrorCtaStyle.retry,
-      onPrimaryActionPressed: () => context.bloc.add(WalletPersonalizeRetryPressed()),
+      style: .retry,
+      useIssuanceStyle: true,
+      error: error,
     );
   }
 
@@ -362,18 +347,14 @@ class WalletPersonalizeScreen extends StatelessWidget {
 
   PreferredSizeWidget _buildAppBar(BuildContext context) {
     final state = context.watch<WalletPersonalizeBloc>().state;
-    bool showHelpButton = false;
     String title = '';
     switch (state) {
       case WalletPersonalizeInitial():
-        showHelpButton = true;
         title = context.l10n.walletPersonalizeIntroPageTitle;
       case WalletPersonalizeCheckData():
         title = context.l10n.walletPersonalizeCheckDataOfferingPageTitle;
       case WalletPersonalizeSuccess():
         title = context.l10n.walletPersonalizeSuccessPageTitle;
-      case WalletPersonalizeFailure():
-        title = context.l10n.walletPersonalizeScreenErrorTitle;
       case WalletPersonalizeDigidFailure():
         title = context.l10n.walletPersonalizeDigidErrorPageTitle;
       case WalletPersonalizeDigidCancelled():
@@ -382,14 +363,8 @@ class WalletPersonalizeScreen extends StatelessWidget {
         title = context.l10n.walletPersonalizeScreenLoadingTitle;
       case WalletPersonalizeAddingCards():
         title = context.l10n.walletPersonalizeScreenLoadingTitle;
-      case WalletPersonalizeNetworkError():
-        title = state.hasInternet ? context.l10n.errorScreenServerHeadline : context.l10n.errorScreenNoInternetHeadline;
-      case WalletPersonalizeGenericError():
-        title = context.l10n.errorScreenGenericHeadline;
-      case WalletPersonalizeSessionExpired():
-        title = context.l10n.errorScreenSessionExpiredHeadline;
-      case WalletPersonalizeRelyingPartyError():
-        title = context.l10n.genericRelyingPartyErrorTitle;
+      case WalletPersonalizeError(:final error):
+        title = ErrorPage.titleFromError(context, error);
       case WalletPersonalizeConfirmPin():
       case WalletPersonalizeLoadingIssuanceUrl():
       case WalletPersonalizeConnectDigid():
@@ -401,10 +376,18 @@ class WalletPersonalizeScreen extends StatelessWidget {
       progress: state.stepperProgress,
       automaticallyImplyLeading: false,
       leading: _buildBackButton(context),
-      actions: [
-        if (showHelpButton) const HelpIconButton(),
-      ],
     );
+  }
+
+  @override
+  FutureOr<void> onLock() {}
+
+  @override
+  FutureOr<void> onUnlock() {
+    // PVW-5387: If the app was killed while in the background, this makes sure we pick up the DigiD login uri
+    // which might have been queued while the app started in the locked state. (normally those uris are handled
+    // through [NavigationService.onDashboardShown], however in this flow the user does not reach the dashboard).
+    return context.read<NavigationService>().processQueue();
   }
 }
 

@@ -1,6 +1,6 @@
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // coverage:ignore-file
-// ignore_for_file: type=lint
+// ignore_for_file: type=lint, type=warning, deprecated_member_use, deprecated_member_use_from_same_package
 // ignore_for_file: unused_element, deprecated_member_use, deprecated_member_use_from_same_package, use_function_type_syntax_for_parameters, unnecessary_const, avoid_init_to_null, invalid_override_different_default_values_named, prefer_expression_function_bodies, annotate_overrides, invalid_annotation_target, unnecessary_question_mark
 
 part of 'attestation.dart';
@@ -9,6 +9,7 @@ part of 'attestation.dart';
 // FreezedGenerator
 // **************************************************************************
 
+// GENERATED CODE - DO NOT MODIFY BY HAND
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
@@ -20,7 +21,7 @@ mixin _$AttestationIdentity {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttestationIdentity);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttestationIdentity);
 }
 
 
@@ -29,7 +30,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'AttestationIdentity()';
+    return 'AttestationIdentity()';
 }
 
 
@@ -185,7 +186,7 @@ class AttestationIdentity_Ephemeral extends AttestationIdentity {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttestationIdentity_Ephemeral);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttestationIdentity_Ephemeral);
 }
 
 
@@ -194,7 +195,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'AttestationIdentity.ephemeral()';
+    return 'AttestationIdentity.ephemeral()';
 }
 
 
@@ -222,16 +223,18 @@ $AttestationIdentity_FixedCopyWith<AttestationIdentity_Fixed> get copyWith => _$
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttestationIdentity_Fixed&&(identical(other.id, id) || other.id == id));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttestationIdentity_Fixed&&(identical(other.id, id) || other.id == id));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,id);
+int get hashCode {
+    return Object.hash(runtimeType,id);
+}
 
 @override
 String toString() {
-  return 'AttestationIdentity.fixed(id: $id)';
+    return 'AttestationIdentity.fixed(id: $id)';
 }
 
 
@@ -278,7 +281,7 @@ mixin _$AttributeValue {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue);
 }
 
 
@@ -287,7 +290,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'AttributeValue()';
+    return 'AttributeValue()';
 }
 
 
@@ -313,16 +316,19 @@ extension AttributeValuePatterns on AttributeValue {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AttributeValue_String value)?  string,TResult Function( AttributeValue_Boolean value)?  boolean,TResult Function( AttributeValue_Number value)?  number,TResult Function( AttributeValue_Date value)?  date,TResult Function( AttributeValue_Array value)?  array,TResult Function( AttributeValue_Null value)?  null_,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( AttributeValue_String value)?  string,TResult Function( AttributeValue_Boolean value)?  boolean,TResult Function( AttributeValue_Number value)?  number,TResult Function( AttributeValue_Array value)?  array,TResult Function( AttributeValue_Null value)?  null_,TResult Function( AttributeValue_Date value)?  date,TResult Function( AttributeValue_Bytes value)?  bytes,TResult Function( AttributeValue_Image value)?  image,TResult Function( AttributeValue_Map value)?  map,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case AttributeValue_String() when string != null:
 return string(_that);case AttributeValue_Boolean() when boolean != null:
 return boolean(_that);case AttributeValue_Number() when number != null:
-return number(_that);case AttributeValue_Date() when date != null:
-return date(_that);case AttributeValue_Array() when array != null:
+return number(_that);case AttributeValue_Array() when array != null:
 return array(_that);case AttributeValue_Null() when null_ != null:
-return null_(_that);case _:
+return null_(_that);case AttributeValue_Date() when date != null:
+return date(_that);case AttributeValue_Bytes() when bytes != null:
+return bytes(_that);case AttributeValue_Image() when image != null:
+return image(_that);case AttributeValue_Map() when map != null:
+return map(_that);case _:
   return orElse();
 
 }
@@ -340,16 +346,19 @@ return null_(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AttributeValue_String value)  string,required TResult Function( AttributeValue_Boolean value)  boolean,required TResult Function( AttributeValue_Number value)  number,required TResult Function( AttributeValue_Date value)  date,required TResult Function( AttributeValue_Array value)  array,required TResult Function( AttributeValue_Null value)  null_,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( AttributeValue_String value)  string,required TResult Function( AttributeValue_Boolean value)  boolean,required TResult Function( AttributeValue_Number value)  number,required TResult Function( AttributeValue_Array value)  array,required TResult Function( AttributeValue_Null value)  null_,required TResult Function( AttributeValue_Date value)  date,required TResult Function( AttributeValue_Bytes value)  bytes,required TResult Function( AttributeValue_Image value)  image,required TResult Function( AttributeValue_Map value)  map,}){
 final _that = this;
 switch (_that) {
 case AttributeValue_String():
 return string(_that);case AttributeValue_Boolean():
 return boolean(_that);case AttributeValue_Number():
-return number(_that);case AttributeValue_Date():
-return date(_that);case AttributeValue_Array():
+return number(_that);case AttributeValue_Array():
 return array(_that);case AttributeValue_Null():
-return null_(_that);}
+return null_(_that);case AttributeValue_Date():
+return date(_that);case AttributeValue_Bytes():
+return bytes(_that);case AttributeValue_Image():
+return image(_that);case AttributeValue_Map():
+return map(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -363,16 +372,19 @@ return null_(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AttributeValue_String value)?  string,TResult? Function( AttributeValue_Boolean value)?  boolean,TResult? Function( AttributeValue_Number value)?  number,TResult? Function( AttributeValue_Date value)?  date,TResult? Function( AttributeValue_Array value)?  array,TResult? Function( AttributeValue_Null value)?  null_,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( AttributeValue_String value)?  string,TResult? Function( AttributeValue_Boolean value)?  boolean,TResult? Function( AttributeValue_Number value)?  number,TResult? Function( AttributeValue_Array value)?  array,TResult? Function( AttributeValue_Null value)?  null_,TResult? Function( AttributeValue_Date value)?  date,TResult? Function( AttributeValue_Bytes value)?  bytes,TResult? Function( AttributeValue_Image value)?  image,TResult? Function( AttributeValue_Map value)?  map,}){
 final _that = this;
 switch (_that) {
 case AttributeValue_String() when string != null:
 return string(_that);case AttributeValue_Boolean() when boolean != null:
 return boolean(_that);case AttributeValue_Number() when number != null:
-return number(_that);case AttributeValue_Date() when date != null:
-return date(_that);case AttributeValue_Array() when array != null:
+return number(_that);case AttributeValue_Array() when array != null:
 return array(_that);case AttributeValue_Null() when null_ != null:
-return null_(_that);case _:
+return null_(_that);case AttributeValue_Date() when date != null:
+return date(_that);case AttributeValue_Bytes() when bytes != null:
+return bytes(_that);case AttributeValue_Image() when image != null:
+return image(_that);case AttributeValue_Map() when map != null:
+return map(_that);case _:
   return null;
 
 }
@@ -389,15 +401,18 @@ return null_(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  string,TResult Function( bool value)?  boolean,TResult Function( PlatformInt64 value)?  number,TResult Function( String value)?  date,TResult Function( List<AttributeValue> value)?  array,TResult Function()?  null_,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String value)?  string,TResult Function( bool value)?  boolean,TResult Function( PlatformInt64 value)?  number,TResult Function( List<AttributeValue> value)?  array,TResult Function()?  null_,TResult Function( String value)?  date,TResult Function( Uint8List value)?  bytes,TResult Function( Image value)?  image,TResult Function( List<(String, AttributeValue,)> value)?  map,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AttributeValue_String() when string != null:
 return string(_that.value);case AttributeValue_Boolean() when boolean != null:
 return boolean(_that.value);case AttributeValue_Number() when number != null:
-return number(_that.value);case AttributeValue_Date() when date != null:
-return date(_that.value);case AttributeValue_Array() when array != null:
+return number(_that.value);case AttributeValue_Array() when array != null:
 return array(_that.value);case AttributeValue_Null() when null_ != null:
-return null_();case _:
+return null_();case AttributeValue_Date() when date != null:
+return date(_that.value);case AttributeValue_Bytes() when bytes != null:
+return bytes(_that.value);case AttributeValue_Image() when image != null:
+return image(_that.value);case AttributeValue_Map() when map != null:
+return map(_that.value);case _:
   return orElse();
 
 }
@@ -415,15 +430,18 @@ return null_();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  string,required TResult Function( bool value)  boolean,required TResult Function( PlatformInt64 value)  number,required TResult Function( String value)  date,required TResult Function( List<AttributeValue> value)  array,required TResult Function()  null_,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String value)  string,required TResult Function( bool value)  boolean,required TResult Function( PlatformInt64 value)  number,required TResult Function( List<AttributeValue> value)  array,required TResult Function()  null_,required TResult Function( String value)  date,required TResult Function( Uint8List value)  bytes,required TResult Function( Image value)  image,required TResult Function( List<(String, AttributeValue,)> value)  map,}) {final _that = this;
 switch (_that) {
 case AttributeValue_String():
 return string(_that.value);case AttributeValue_Boolean():
 return boolean(_that.value);case AttributeValue_Number():
-return number(_that.value);case AttributeValue_Date():
-return date(_that.value);case AttributeValue_Array():
+return number(_that.value);case AttributeValue_Array():
 return array(_that.value);case AttributeValue_Null():
-return null_();}
+return null_();case AttributeValue_Date():
+return date(_that.value);case AttributeValue_Bytes():
+return bytes(_that.value);case AttributeValue_Image():
+return image(_that.value);case AttributeValue_Map():
+return map(_that.value);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -437,15 +455,18 @@ return null_();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  string,TResult? Function( bool value)?  boolean,TResult? Function( PlatformInt64 value)?  number,TResult? Function( String value)?  date,TResult? Function( List<AttributeValue> value)?  array,TResult? Function()?  null_,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String value)?  string,TResult? Function( bool value)?  boolean,TResult? Function( PlatformInt64 value)?  number,TResult? Function( List<AttributeValue> value)?  array,TResult? Function()?  null_,TResult? Function( String value)?  date,TResult? Function( Uint8List value)?  bytes,TResult? Function( Image value)?  image,TResult? Function( List<(String, AttributeValue,)> value)?  map,}) {final _that = this;
 switch (_that) {
 case AttributeValue_String() when string != null:
 return string(_that.value);case AttributeValue_Boolean() when boolean != null:
 return boolean(_that.value);case AttributeValue_Number() when number != null:
-return number(_that.value);case AttributeValue_Date() when date != null:
-return date(_that.value);case AttributeValue_Array() when array != null:
+return number(_that.value);case AttributeValue_Array() when array != null:
 return array(_that.value);case AttributeValue_Null() when null_ != null:
-return null_();case _:
+return null_();case AttributeValue_Date() when date != null:
+return date(_that.value);case AttributeValue_Bytes() when bytes != null:
+return bytes(_that.value);case AttributeValue_Image() when image != null:
+return image(_that.value);case AttributeValue_Map() when map != null:
+return map(_that.value);case _:
   return null;
 
 }
@@ -472,16 +493,18 @@ $AttributeValue_StringCopyWith<AttributeValue_String> get copyWith => _$Attribut
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_String&&(identical(other.value, value) || other.value == value));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_String&&(identical(other.value, value) || other.value == value));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,value);
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
 
 @override
 String toString() {
-  return 'AttributeValue.string(value: $value)';
+    return 'AttributeValue.string(value: $value)';
 }
 
 
@@ -538,16 +561,18 @@ $AttributeValue_BooleanCopyWith<AttributeValue_Boolean> get copyWith => _$Attrib
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Boolean&&(identical(other.value, value) || other.value == value));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Boolean&&(identical(other.value, value) || other.value == value));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,value);
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
 
 @override
 String toString() {
-  return 'AttributeValue.boolean(value: $value)';
+    return 'AttributeValue.boolean(value: $value)';
 }
 
 
@@ -604,16 +629,18 @@ $AttributeValue_NumberCopyWith<AttributeValue_Number> get copyWith => _$Attribut
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Number&&(identical(other.value, value) || other.value == value));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Number&&(identical(other.value, value) || other.value == value));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,value);
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
 
 @override
 String toString() {
-  return 'AttributeValue.number(value: $value)';
+    return 'AttributeValue.number(value: $value)';
 }
 
 
@@ -654,74 +681,8 @@ as PlatformInt64,
 /// @nodoc
 
 
-class AttributeValue_Date extends AttributeValue {
-  const AttributeValue_Date({required this.value}): super._();
-  
-
- final  String value;
-
-/// Create a copy of AttributeValue
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$AttributeValue_DateCopyWith<AttributeValue_Date> get copyWith => _$AttributeValue_DateCopyWithImpl<AttributeValue_Date>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Date&&(identical(other.value, value) || other.value == value));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,value);
-
-@override
-String toString() {
-  return 'AttributeValue.date(value: $value)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $AttributeValue_DateCopyWith<$Res> implements $AttributeValueCopyWith<$Res> {
-  factory $AttributeValue_DateCopyWith(AttributeValue_Date value, $Res Function(AttributeValue_Date) _then) = _$AttributeValue_DateCopyWithImpl;
-@useResult
-$Res call({
- String value
-});
-
-
-
-
-}
-/// @nodoc
-class _$AttributeValue_DateCopyWithImpl<$Res>
-    implements $AttributeValue_DateCopyWith<$Res> {
-  _$AttributeValue_DateCopyWithImpl(this._self, this._then);
-
-  final AttributeValue_Date _self;
-  final $Res Function(AttributeValue_Date) _then;
-
-/// Create a copy of AttributeValue
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
-  return _then(AttributeValue_Date(
-value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
 class AttributeValue_Array extends AttributeValue {
-  const AttributeValue_Array({required final  List<AttributeValue> value}): _value = value,super._();
+  const AttributeValue_Array({required  List<AttributeValue> value}): _value = value,super._();
   
 
  final  List<AttributeValue> _value;
@@ -742,16 +703,18 @@ $AttributeValue_ArrayCopyWith<AttributeValue_Array> get copyWith => _$AttributeV
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Array&&const DeepCollectionEquality().equals(other._value, _value));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Array&&const DeepCollectionEquality().equals(other.value, _value));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,const DeepCollectionEquality().hash(_value));
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_value));
+}
 
 @override
 String toString() {
-  return 'AttributeValue.array(value: $value)';
+    return 'AttributeValue.array(value: $value)';
 }
 
 
@@ -803,7 +766,7 @@ class AttributeValue_Null extends AttributeValue {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Null);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Null);
 }
 
 
@@ -812,7 +775,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'AttributeValue.null_()';
+    return 'AttributeValue.null_()';
 }
 
 
@@ -820,6 +783,293 @@ String toString() {
 
 
 
+
+/// @nodoc
+
+
+class AttributeValue_Date extends AttributeValue {
+  const AttributeValue_Date({required this.value}): super._();
+  
+
+ final  String value;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AttributeValue_DateCopyWith<AttributeValue_Date> get copyWith => _$AttributeValue_DateCopyWithImpl<AttributeValue_Date>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Date&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'AttributeValue.date(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AttributeValue_DateCopyWith<$Res> implements $AttributeValueCopyWith<$Res> {
+  factory $AttributeValue_DateCopyWith(AttributeValue_Date value, $Res Function(AttributeValue_Date) _then) = _$AttributeValue_DateCopyWithImpl;
+@useResult
+$Res call({
+ String value
+});
+
+
+
+
+}
+/// @nodoc
+class _$AttributeValue_DateCopyWithImpl<$Res>
+    implements $AttributeValue_DateCopyWith<$Res> {
+  _$AttributeValue_DateCopyWithImpl(this._self, this._then);
+
+  final AttributeValue_Date _self;
+  final $Res Function(AttributeValue_Date) _then;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(AttributeValue_Date(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class AttributeValue_Bytes extends AttributeValue {
+  const AttributeValue_Bytes({required this.value}): super._();
+  
+
+ final  Uint8List value;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AttributeValue_BytesCopyWith<AttributeValue_Bytes> get copyWith => _$AttributeValue_BytesCopyWithImpl<AttributeValue_Bytes>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Bytes&&const DeepCollectionEquality().equals(other.value, value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(value));
+}
+
+@override
+String toString() {
+    return 'AttributeValue.bytes(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AttributeValue_BytesCopyWith<$Res> implements $AttributeValueCopyWith<$Res> {
+  factory $AttributeValue_BytesCopyWith(AttributeValue_Bytes value, $Res Function(AttributeValue_Bytes) _then) = _$AttributeValue_BytesCopyWithImpl;
+@useResult
+$Res call({
+ Uint8List value
+});
+
+
+
+
+}
+/// @nodoc
+class _$AttributeValue_BytesCopyWithImpl<$Res>
+    implements $AttributeValue_BytesCopyWith<$Res> {
+  _$AttributeValue_BytesCopyWithImpl(this._self, this._then);
+
+  final AttributeValue_Bytes _self;
+  final $Res Function(AttributeValue_Bytes) _then;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(AttributeValue_Bytes(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as Uint8List,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class AttributeValue_Image extends AttributeValue {
+  const AttributeValue_Image({required this.value}): super._();
+  
+
+ final  Image value;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AttributeValue_ImageCopyWith<AttributeValue_Image> get copyWith => _$AttributeValue_ImageCopyWithImpl<AttributeValue_Image>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Image&&(identical(other.value, value) || other.value == value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,value);
+}
+
+@override
+String toString() {
+    return 'AttributeValue.image(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AttributeValue_ImageCopyWith<$Res> implements $AttributeValueCopyWith<$Res> {
+  factory $AttributeValue_ImageCopyWith(AttributeValue_Image value, $Res Function(AttributeValue_Image) _then) = _$AttributeValue_ImageCopyWithImpl;
+@useResult
+$Res call({
+ Image value
+});
+
+
+$ImageCopyWith<$Res> get value;
+
+}
+/// @nodoc
+class _$AttributeValue_ImageCopyWithImpl<$Res>
+    implements $AttributeValue_ImageCopyWith<$Res> {
+  _$AttributeValue_ImageCopyWithImpl(this._self, this._then);
+
+  final AttributeValue_Image _self;
+  final $Res Function(AttributeValue_Image) _then;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(AttributeValue_Image(
+value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as Image,
+  ));
+}
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ImageCopyWith<$Res> get value {
+  
+  return $ImageCopyWith<$Res>(_self.value, (value) {
+    return _then(_self.copyWith(value: value));
+  });
+}
+}
+
+/// @nodoc
+
+
+class AttributeValue_Map extends AttributeValue {
+  const AttributeValue_Map({required  List<(String, AttributeValue,)> value}): _value = value,super._();
+  
+
+ final  List<(String, AttributeValue,)> _value;
+ List<(String, AttributeValue,)> get value {
+  if (_value is EqualUnmodifiableListView) return _value;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_value);
+}
+
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AttributeValue_MapCopyWith<AttributeValue_Map> get copyWith => _$AttributeValue_MapCopyWithImpl<AttributeValue_Map>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AttributeValue_Map&&const DeepCollectionEquality().equals(other.value, _value));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_value));
+}
+
+@override
+String toString() {
+    return 'AttributeValue.map(value: $value)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AttributeValue_MapCopyWith<$Res> implements $AttributeValueCopyWith<$Res> {
+  factory $AttributeValue_MapCopyWith(AttributeValue_Map value, $Res Function(AttributeValue_Map) _then) = _$AttributeValue_MapCopyWithImpl;
+@useResult
+$Res call({
+ List<(String, AttributeValue,)> value
+});
+
+
+
+
+}
+/// @nodoc
+class _$AttributeValue_MapCopyWithImpl<$Res>
+    implements $AttributeValue_MapCopyWith<$Res> {
+  _$AttributeValue_MapCopyWithImpl(this._self, this._then);
+
+  final AttributeValue_Map _self;
+  final $Res Function(AttributeValue_Map) _then;
+
+/// Create a copy of AttributeValue
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? value = null,}) {
+  return _then(AttributeValue_Map(
+value: null == value ? _self._value : value // ignore: cast_nullable_to_non_nullable
+as List<(String, AttributeValue,)>,
+  ));
+}
+
+
+}
 
 /// @nodoc
 mixin _$RenderingMetadata {
@@ -830,7 +1080,7 @@ mixin _$RenderingMetadata {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is RenderingMetadata);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is RenderingMetadata);
 }
 
 
@@ -839,7 +1089,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'RenderingMetadata()';
+    return 'RenderingMetadata()';
 }
 
 
@@ -929,10 +1179,10 @@ return svgTemplates(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( ImageWithMetadata? logo,  String? backgroundColor,  String? textColor)?  simple,TResult Function()?  svgTemplates,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( ImageWithMetadata? logo,  Image? backgroundImage,  String? backgroundColor,  String? textColor)?  simple,TResult Function()?  svgTemplates,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case RenderingMetadata_Simple() when simple != null:
-return simple(_that.logo,_that.backgroundColor,_that.textColor);case RenderingMetadata_SvgTemplates() when svgTemplates != null:
+return simple(_that.logo,_that.backgroundImage,_that.backgroundColor,_that.textColor);case RenderingMetadata_SvgTemplates() when svgTemplates != null:
 return svgTemplates();case _:
   return orElse();
 
@@ -951,10 +1201,10 @@ return svgTemplates();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( ImageWithMetadata? logo,  String? backgroundColor,  String? textColor)  simple,required TResult Function()  svgTemplates,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( ImageWithMetadata? logo,  Image? backgroundImage,  String? backgroundColor,  String? textColor)  simple,required TResult Function()  svgTemplates,}) {final _that = this;
 switch (_that) {
 case RenderingMetadata_Simple():
-return simple(_that.logo,_that.backgroundColor,_that.textColor);case RenderingMetadata_SvgTemplates():
+return simple(_that.logo,_that.backgroundImage,_that.backgroundColor,_that.textColor);case RenderingMetadata_SvgTemplates():
 return svgTemplates();}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -969,10 +1219,10 @@ return svgTemplates();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( ImageWithMetadata? logo,  String? backgroundColor,  String? textColor)?  simple,TResult? Function()?  svgTemplates,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( ImageWithMetadata? logo,  Image? backgroundImage,  String? backgroundColor,  String? textColor)?  simple,TResult? Function()?  svgTemplates,}) {final _that = this;
 switch (_that) {
 case RenderingMetadata_Simple() when simple != null:
-return simple(_that.logo,_that.backgroundColor,_that.textColor);case RenderingMetadata_SvgTemplates() when svgTemplates != null:
+return simple(_that.logo,_that.backgroundImage,_that.backgroundColor,_that.textColor);case RenderingMetadata_SvgTemplates() when svgTemplates != null:
 return svgTemplates();case _:
   return null;
 
@@ -985,10 +1235,11 @@ return svgTemplates();case _:
 
 
 class RenderingMetadata_Simple extends RenderingMetadata {
-  const RenderingMetadata_Simple({this.logo, this.backgroundColor, this.textColor}): super._();
+  const RenderingMetadata_Simple({this.logo, this.backgroundImage, this.backgroundColor, this.textColor}): super._();
   
 
  final  ImageWithMetadata? logo;
+ final  Image? backgroundImage;
  final  String? backgroundColor;
  final  String? textColor;
 
@@ -1002,16 +1253,18 @@ $RenderingMetadata_SimpleCopyWith<RenderingMetadata_Simple> get copyWith => _$Re
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is RenderingMetadata_Simple&&(identical(other.logo, logo) || other.logo == logo)&&(identical(other.backgroundColor, backgroundColor) || other.backgroundColor == backgroundColor)&&(identical(other.textColor, textColor) || other.textColor == textColor));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is RenderingMetadata_Simple&&(identical(other.logo, logo) || other.logo == logo)&&(identical(other.backgroundImage, backgroundImage) || other.backgroundImage == backgroundImage)&&(identical(other.backgroundColor, backgroundColor) || other.backgroundColor == backgroundColor)&&(identical(other.textColor, textColor) || other.textColor == textColor));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,logo,backgroundColor,textColor);
+int get hashCode {
+    return Object.hash(runtimeType,logo,backgroundImage,backgroundColor,textColor);
+}
 
 @override
 String toString() {
-  return 'RenderingMetadata.simple(logo: $logo, backgroundColor: $backgroundColor, textColor: $textColor)';
+    return 'RenderingMetadata.simple(logo: $logo, backgroundImage: $backgroundImage, backgroundColor: $backgroundColor, textColor: $textColor)';
 }
 
 
@@ -1022,11 +1275,11 @@ abstract mixin class $RenderingMetadata_SimpleCopyWith<$Res> implements $Renderi
   factory $RenderingMetadata_SimpleCopyWith(RenderingMetadata_Simple value, $Res Function(RenderingMetadata_Simple) _then) = _$RenderingMetadata_SimpleCopyWithImpl;
 @useResult
 $Res call({
- ImageWithMetadata? logo, String? backgroundColor, String? textColor
+ ImageWithMetadata? logo, Image? backgroundImage, String? backgroundColor, String? textColor
 });
 
 
-
+$ImageCopyWith<$Res>? get backgroundImage;
 
 }
 /// @nodoc
@@ -1039,16 +1292,29 @@ class _$RenderingMetadata_SimpleCopyWithImpl<$Res>
 
 /// Create a copy of RenderingMetadata
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? logo = freezed,Object? backgroundColor = freezed,Object? textColor = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? logo = freezed,Object? backgroundImage = freezed,Object? backgroundColor = freezed,Object? textColor = freezed,}) {
   return _then(RenderingMetadata_Simple(
 logo: freezed == logo ? _self.logo : logo // ignore: cast_nullable_to_non_nullable
-as ImageWithMetadata?,backgroundColor: freezed == backgroundColor ? _self.backgroundColor : backgroundColor // ignore: cast_nullable_to_non_nullable
+as ImageWithMetadata?,backgroundImage: freezed == backgroundImage ? _self.backgroundImage : backgroundImage // ignore: cast_nullable_to_non_nullable
+as Image?,backgroundColor: freezed == backgroundColor ? _self.backgroundColor : backgroundColor // ignore: cast_nullable_to_non_nullable
 as String?,textColor: freezed == textColor ? _self.textColor : textColor // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
 }
 
+/// Create a copy of RenderingMetadata
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$ImageCopyWith<$Res>? get backgroundImage {
+    if (_self.backgroundImage == null) {
+    return null;
+  }
 
+  return $ImageCopyWith<$Res>(_self.backgroundImage!, (value) {
+    return _then(_self.copyWith(backgroundImage: value));
+  });
+}
 }
 
 /// @nodoc
@@ -1065,7 +1331,7 @@ class RenderingMetadata_SvgTemplates extends RenderingMetadata {
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is RenderingMetadata_SvgTemplates);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is RenderingMetadata_SvgTemplates);
 }
 
 
@@ -1074,7 +1340,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-  return 'RenderingMetadata.svgTemplates()';
+    return 'RenderingMetadata.svgTemplates()';
 }
 
 
@@ -1082,5 +1348,449 @@ String toString() {
 
 
 
+
+/// @nodoc
+mixin _$ValidityStatus {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ValidityStatus);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ValidityStatus()';
+}
+
+
+}
+
+/// @nodoc
+class $ValidityStatusCopyWith<$Res>  {
+$ValidityStatusCopyWith(ValidityStatus _, $Res Function(ValidityStatus) __);
+}
+
+
+/// Adds pattern-matching-related methods to [ValidityStatus].
+extension ValidityStatusPatterns on ValidityStatus {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ValidityStatus_NotYetValid value)?  notYetValid,TResult Function( ValidityStatus_Valid value)?  valid,TResult Function( ValidityStatus_ExpiresSoon value)?  expiresSoon,TResult Function( ValidityStatus_Expired value)?  expired,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case ValidityStatus_NotYetValid() when notYetValid != null:
+return notYetValid(_that);case ValidityStatus_Valid() when valid != null:
+return valid(_that);case ValidityStatus_ExpiresSoon() when expiresSoon != null:
+return expiresSoon(_that);case ValidityStatus_Expired() when expired != null:
+return expired(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ValidityStatus_NotYetValid value)  notYetValid,required TResult Function( ValidityStatus_Valid value)  valid,required TResult Function( ValidityStatus_ExpiresSoon value)  expiresSoon,required TResult Function( ValidityStatus_Expired value)  expired,}){
+final _that = this;
+switch (_that) {
+case ValidityStatus_NotYetValid():
+return notYetValid(_that);case ValidityStatus_Valid():
+return valid(_that);case ValidityStatus_ExpiresSoon():
+return expiresSoon(_that);case ValidityStatus_Expired():
+return expired(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ValidityStatus_NotYetValid value)?  notYetValid,TResult? Function( ValidityStatus_Valid value)?  valid,TResult? Function( ValidityStatus_ExpiresSoon value)?  expiresSoon,TResult? Function( ValidityStatus_Expired value)?  expired,}){
+final _that = this;
+switch (_that) {
+case ValidityStatus_NotYetValid() when notYetValid != null:
+return notYetValid(_that);case ValidityStatus_Valid() when valid != null:
+return valid(_that);case ValidityStatus_ExpiresSoon() when expiresSoon != null:
+return expiresSoon(_that);case ValidityStatus_Expired() when expired != null:
+return expired(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String validFrom)?  notYetValid,TResult Function( String? validUntil)?  valid,TResult Function( String validUntil)?  expiresSoon,TResult Function( String validUntil)?  expired,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case ValidityStatus_NotYetValid() when notYetValid != null:
+return notYetValid(_that.validFrom);case ValidityStatus_Valid() when valid != null:
+return valid(_that.validUntil);case ValidityStatus_ExpiresSoon() when expiresSoon != null:
+return expiresSoon(_that.validUntil);case ValidityStatus_Expired() when expired != null:
+return expired(_that.validUntil);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String validFrom)  notYetValid,required TResult Function( String? validUntil)  valid,required TResult Function( String validUntil)  expiresSoon,required TResult Function( String validUntil)  expired,}) {final _that = this;
+switch (_that) {
+case ValidityStatus_NotYetValid():
+return notYetValid(_that.validFrom);case ValidityStatus_Valid():
+return valid(_that.validUntil);case ValidityStatus_ExpiresSoon():
+return expiresSoon(_that.validUntil);case ValidityStatus_Expired():
+return expired(_that.validUntil);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String validFrom)?  notYetValid,TResult? Function( String? validUntil)?  valid,TResult? Function( String validUntil)?  expiresSoon,TResult? Function( String validUntil)?  expired,}) {final _that = this;
+switch (_that) {
+case ValidityStatus_NotYetValid() when notYetValid != null:
+return notYetValid(_that.validFrom);case ValidityStatus_Valid() when valid != null:
+return valid(_that.validUntil);case ValidityStatus_ExpiresSoon() when expiresSoon != null:
+return expiresSoon(_that.validUntil);case ValidityStatus_Expired() when expired != null:
+return expired(_that.validUntil);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class ValidityStatus_NotYetValid extends ValidityStatus {
+  const ValidityStatus_NotYetValid({required this.validFrom}): super._();
+  
+
+ final  String validFrom;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ValidityStatus_NotYetValidCopyWith<ValidityStatus_NotYetValid> get copyWith => _$ValidityStatus_NotYetValidCopyWithImpl<ValidityStatus_NotYetValid>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ValidityStatus_NotYetValid&&(identical(other.validFrom, validFrom) || other.validFrom == validFrom));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,validFrom);
+}
+
+@override
+String toString() {
+    return 'ValidityStatus.notYetValid(validFrom: $validFrom)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ValidityStatus_NotYetValidCopyWith<$Res> implements $ValidityStatusCopyWith<$Res> {
+  factory $ValidityStatus_NotYetValidCopyWith(ValidityStatus_NotYetValid value, $Res Function(ValidityStatus_NotYetValid) _then) = _$ValidityStatus_NotYetValidCopyWithImpl;
+@useResult
+$Res call({
+ String validFrom
+});
+
+
+
+
+}
+/// @nodoc
+class _$ValidityStatus_NotYetValidCopyWithImpl<$Res>
+    implements $ValidityStatus_NotYetValidCopyWith<$Res> {
+  _$ValidityStatus_NotYetValidCopyWithImpl(this._self, this._then);
+
+  final ValidityStatus_NotYetValid _self;
+  final $Res Function(ValidityStatus_NotYetValid) _then;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? validFrom = null,}) {
+  return _then(ValidityStatus_NotYetValid(
+validFrom: null == validFrom ? _self.validFrom : validFrom // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ValidityStatus_Valid extends ValidityStatus {
+  const ValidityStatus_Valid({this.validUntil}): super._();
+  
+
+ final  String? validUntil;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ValidityStatus_ValidCopyWith<ValidityStatus_Valid> get copyWith => _$ValidityStatus_ValidCopyWithImpl<ValidityStatus_Valid>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ValidityStatus_Valid&&(identical(other.validUntil, validUntil) || other.validUntil == validUntil));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,validUntil);
+}
+
+@override
+String toString() {
+    return 'ValidityStatus.valid(validUntil: $validUntil)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ValidityStatus_ValidCopyWith<$Res> implements $ValidityStatusCopyWith<$Res> {
+  factory $ValidityStatus_ValidCopyWith(ValidityStatus_Valid value, $Res Function(ValidityStatus_Valid) _then) = _$ValidityStatus_ValidCopyWithImpl;
+@useResult
+$Res call({
+ String? validUntil
+});
+
+
+
+
+}
+/// @nodoc
+class _$ValidityStatus_ValidCopyWithImpl<$Res>
+    implements $ValidityStatus_ValidCopyWith<$Res> {
+  _$ValidityStatus_ValidCopyWithImpl(this._self, this._then);
+
+  final ValidityStatus_Valid _self;
+  final $Res Function(ValidityStatus_Valid) _then;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? validUntil = freezed,}) {
+  return _then(ValidityStatus_Valid(
+validUntil: freezed == validUntil ? _self.validUntil : validUntil // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ValidityStatus_ExpiresSoon extends ValidityStatus {
+  const ValidityStatus_ExpiresSoon({required this.validUntil}): super._();
+  
+
+ final  String validUntil;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ValidityStatus_ExpiresSoonCopyWith<ValidityStatus_ExpiresSoon> get copyWith => _$ValidityStatus_ExpiresSoonCopyWithImpl<ValidityStatus_ExpiresSoon>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ValidityStatus_ExpiresSoon&&(identical(other.validUntil, validUntil) || other.validUntil == validUntil));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,validUntil);
+}
+
+@override
+String toString() {
+    return 'ValidityStatus.expiresSoon(validUntil: $validUntil)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ValidityStatus_ExpiresSoonCopyWith<$Res> implements $ValidityStatusCopyWith<$Res> {
+  factory $ValidityStatus_ExpiresSoonCopyWith(ValidityStatus_ExpiresSoon value, $Res Function(ValidityStatus_ExpiresSoon) _then) = _$ValidityStatus_ExpiresSoonCopyWithImpl;
+@useResult
+$Res call({
+ String validUntil
+});
+
+
+
+
+}
+/// @nodoc
+class _$ValidityStatus_ExpiresSoonCopyWithImpl<$Res>
+    implements $ValidityStatus_ExpiresSoonCopyWith<$Res> {
+  _$ValidityStatus_ExpiresSoonCopyWithImpl(this._self, this._then);
+
+  final ValidityStatus_ExpiresSoon _self;
+  final $Res Function(ValidityStatus_ExpiresSoon) _then;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? validUntil = null,}) {
+  return _then(ValidityStatus_ExpiresSoon(
+validUntil: null == validUntil ? _self.validUntil : validUntil // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ValidityStatus_Expired extends ValidityStatus {
+  const ValidityStatus_Expired({required this.validUntil}): super._();
+  
+
+ final  String validUntil;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ValidityStatus_ExpiredCopyWith<ValidityStatus_Expired> get copyWith => _$ValidityStatus_ExpiredCopyWithImpl<ValidityStatus_Expired>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ValidityStatus_Expired&&(identical(other.validUntil, validUntil) || other.validUntil == validUntil));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,validUntil);
+}
+
+@override
+String toString() {
+    return 'ValidityStatus.expired(validUntil: $validUntil)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ValidityStatus_ExpiredCopyWith<$Res> implements $ValidityStatusCopyWith<$Res> {
+  factory $ValidityStatus_ExpiredCopyWith(ValidityStatus_Expired value, $Res Function(ValidityStatus_Expired) _then) = _$ValidityStatus_ExpiredCopyWithImpl;
+@useResult
+$Res call({
+ String validUntil
+});
+
+
+
+
+}
+/// @nodoc
+class _$ValidityStatus_ExpiredCopyWithImpl<$Res>
+    implements $ValidityStatus_ExpiredCopyWith<$Res> {
+  _$ValidityStatus_ExpiredCopyWithImpl(this._self, this._then);
+
+  final ValidityStatus_Expired _self;
+  final $Res Function(ValidityStatus_Expired) _then;
+
+/// Create a copy of ValidityStatus
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? validUntil = null,}) {
+  return _then(ValidityStatus_Expired(
+validUntil: null == validUntil ? _self.validUntil : validUntil // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
 
 // dart format on

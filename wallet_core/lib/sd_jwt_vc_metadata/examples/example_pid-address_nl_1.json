@@ -1,0 +1,96 @@
+{
+  "vct": "urn:example:pid-address:nl:1",
+  "name": "NL address credential",
+  "description": "Working version of the Dutch address credential",
+  "extends": "urn:example:pid-address:1",
+  "extends#integrity": "sha256-SUu1DTEaJLDyYpFOE40FQtYgvPGWYsWm5L0a8Ub6iCU=",
+  "display": [
+    {
+      "locale": "en-US",
+      "name": "Address",
+      "description": "The Dutch address credential",
+      "summary": "{{resident_city}}",
+      "rendering": {
+        "simple": {
+          "background_color": "#445581",
+          "text_color": "#FFFFFF"
+        }
+      }
+    },
+    {
+      "locale": "nl-NL",
+      "name": "Woonadres",
+      "description": "De Nederlandse adresattestatie",
+      "summary": "{{resident_city}}",
+      "rendering": {
+        "simple": {
+          "background_color": "#445581",
+          "text_color": "#FFFFFF"
+        }
+      }
+    }
+  ],
+  "claims": [
+    {
+      "path": ["address", "street_address"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Straatnaam",
+          "description": "Straatnaam van het adres"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["address", "house_number"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Huisnummer",
+          "description": "Huisnummer van het adres"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["address", "postal_code"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Postcode",
+          "description": "Postcode van het adres"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["address", "locality"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Stad",
+          "description": "Stad van het adres"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true,
+      "svg_id": "resident_city"
+    },
+    {
+      "path": ["address", "country"],
+      "display": [
+        {
+          "locale": "nl-NL",
+          "label": "Land",
+          "description": "Land van het adres"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    }
+  ]
+}

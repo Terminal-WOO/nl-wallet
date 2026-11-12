@@ -4,16 +4,16 @@ import 'package:intl/intl.dart';
 import '../../../../domain/model/event/wallet_event.dart';
 import '../../../../util/extension/build_context_extension.dart';
 import '../../../../util/extension/string_extension.dart';
-import '../../../../util/extension/wallet_event_extension.dart';
 import '../../../../util/formatter/wallet_event_title_formatter.dart';
 import '../../../../util/mapper/event/wallet_event_status_color_mapper.dart';
 import '../../../../util/mapper/event/wallet_event_status_icon_mapper.dart';
 import '../../../../util/mapper/event/wallet_event_status_text_mapper.dart';
+import '../../../../wallet_assets.dart';
 import '../card/wallet_card_item.dart';
 import '../menu_item.dart';
-import '../organization/organization_logo.dart';
 
 const _kThumbnailSize = 40.0;
+const _kInteractionIconSize = 21.0;
 
 class WalletEventRow extends StatelessWidget {
   final WalletEvent event;
@@ -34,6 +34,7 @@ class WalletEventRow extends StatelessWidget {
     final String typeText = WalletEventStatusTextMapper().map(context, event);
     final Color? typeTextColor = WalletEventStatusColorMapper().useErrorColor(event) ? context.colorScheme.error : null;
 
+    final thumbnail = _buildThumbnail(context, event);
     return MenuItem(
       label: Text.rich(titleText.toTextSpan(context)),
       subtitle: Builder(
@@ -47,30 +48,56 @@ class WalletEventRow extends StatelessWidget {
       ),
       underline: Text.rich(formattedTime.toTextSpan(context)),
       largeIcon: true,
-      leftIcon: ExcludeSemantics(child: _buildThumbnail(context, event)),
+      leftIcon: ExcludeSemantics(child: thumbnail),
       errorIcon: errorStatusIcon == null ? null : Icon(errorStatusIcon),
       onPressed: onPressed,
     );
   }
 
-  /// For card related operations (issued/renewed/expired) show the card as a thumbnail,
-  /// otherwise show the organization logo as the thumbnail.
+  /// For card related operations (issued/renewed/expired/deleted) show the card as a thumbnail,
+  /// otherwise show the interaction type, as the registration certificate provides no organization logo.
   Widget _buildThumbnail(BuildContext context, WalletEvent event) {
-    if (event is IssuanceEvent) {
-      return SizedBox(
+    return switch (event) {
+      DeletionEvent(:final card) || IssuanceEvent(:final card) => SizedBox(
         width: _kThumbnailSize,
         child: WalletCardItem.fromWalletCard(
           context,
-          event.card,
+          card,
           scaleText: false,
           showText: false,
         ),
-      );
-    }
+      ),
+      DisclosureEvent(type: DisclosureType.login) => _buildInteractionTypeIcon(
+        context,
+        const Icon(Icons.key_outlined),
+      ),
+      DisclosureEvent(type: DisclosureType.regular) => _buildInteractionTypeIcon(
+        context,
+        const ImageIcon(AssetImage(WalletAssets.icon_disclose)),
+      ),
+      SignEvent() => _buildInteractionTypeIcon(
+        context,
+        const Icon(Icons.handshake_outlined),
+      ),
+    };
+  }
 
-    return OrganizationLogo(
-      image: event.relyingPartyOrIssuer.logo,
-      size: _kThumbnailSize,
+  Widget _buildInteractionTypeIcon(BuildContext context, Widget icon) {
+    return Container(
+      width: _kThumbnailSize,
+      height: _kThumbnailSize,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: context.colorScheme.tertiaryContainer,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: IconTheme(
+        data: IconThemeData(
+          size: _kInteractionIconSize,
+          color: context.colorScheme.primary,
+        ),
+        child: icon,
+      ),
     );
   }
 }

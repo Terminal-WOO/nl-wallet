@@ -16,10 +16,15 @@ import 'src/di/wallet_dependency_provider.dart';
 import 'src/domain/usecase/biometrics/impl/get_available_biometrics_usecase_impl.dart';
 import 'src/feature/common/widget/flutter_app_configuration_provider.dart';
 import 'src/feature/common/widget/privacy_cover.dart';
+import 'src/feature/configuration/config_expiry_checker.dart';
 import 'src/feature/lock/auto_lock_observer.dart';
+import 'src/feature/maintenance/maintenance_checker.dart';
 import 'src/feature/root/root_checker.dart';
 import 'src/feature/update/update_checker.dart';
 import 'src/util/helper/onboarding_helper.dart';
+import 'src/util/sentry/sentry_before_send.dart';
+import 'src/util/sentry/sentry_breadcrumbs.dart';
+import 'src/util/sentry/sentry_log_tree.dart';
 import 'src/wallet_app.dart';
 import 'src/wallet_app_bloc_observer.dart';
 import 'src/wallet_error_handler.dart';
@@ -31,9 +36,17 @@ void main() async {
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
   // Propagate uncaught errors
-  final errorHandler = WalletErrorHandler();
+  final errorHandler = WalletErrorHandler(_navigatorKey);
   PlatformDispatcher.instance.onError = errorHandler.handleError;
 
+  if (Environment.hasSentryDsn) {
+    await SentryFlutter.init(configureSentry, appRunner: initializeAndRun);
+  } else {
+    await initializeAndRun();
+  }
+}
+
+FutureOr<void> initializeAndRun() async {
   if (Environment.mockRepositories) {
     core.WalletCore.initMock(api: mock.api);
   } else {
@@ -44,34 +57,48 @@ void main() async {
   await core.postInit();
 
   if (Environment.hasSentryDsn) {
-    await SentryFlutter.init(
-      (options) => options
-        ..dsn = Environment.sentryDsn
-        ..environment = Environment.sentryEnvironment
-        ..release =
-            Environment.sentryRelease() // default applies when SENTRY_RELEASE not set
-        ..debug = kDebugMode
-        ..beforeSend = beforeSend,
-      appRunner: mainImpl,
-    );
-  } else {
-    mainImpl();
+    await SentryBreadcrumbs.installRustForwarding();
   }
+
+  await mainImpl();
 }
 
-FutureOr<SentryEvent?> beforeSend(SentryEvent event, Hint hint) async {
-  // Strip all breadcrumbs and exception values from the event
-  event.breadcrumbs = null;
-  event.exceptions?.forEach((ex) {
-    ex.value = null;
-  });
-  return event;
+void configureSentry(SentryFlutterOptions options) {
+  // WalletErrorHandler reports PlatformDispatcher errors, so skip Sentry's duplicate handled event.
+  options.integrations.whereType<OnErrorIntegration>().toList().forEach(options.removeIntegration);
+
+  options
+    ..dsn = Environment.sentryDsn
+    ..environment = Environment.sentryEnvironment
+    ..release =
+        Environment.sentryRelease() // default applies when SENTRY_RELEASE not set
+    ..debug = kDebugMode
+    ..sendDefaultPii = false
+    ..enableLogs = Environment.allowLogs
+    ..autoInitializeNativeSdk = false
+    ..enableNativeCrashHandling = false
+    ..maxBreadcrumbs = SentryBreadcrumbs.maxBreadcrumbs
+    ..beforeBreadcrumb = SentryBreadcrumbs.beforeBreadcrumb
+    ..beforeSend = beforeSend
+    ..beforeSendLog = beforeSendLog;
+}
+
+FutureOr<SentryLog?> beforeSendLog(SentryLog log) async {
+  if (Environment.allowLogs) return log;
+  return null;
 }
 
 FutureOr<void> mainImpl() async {
+  if (Environment.allowLogs && Sentry.isEnabled) {
+    Fimber.plantTree(SentryLogTree());
+  }
+
+  if (Environment.allowLogs) {
+    Fimber.plantTree(DebugTree());
+  }
+
   // Debug specific setup
   if (kDebugMode) {
-    Fimber.plantTree(DebugTree());
     Bloc.observer = WalletAppBlocObserver();
   }
 
@@ -91,10 +118,12 @@ FutureOr<void> mainImpl() async {
           builder: (config) => AutoLockObserver(
             configuration: config,
             autoLockService: context.read(),
-            child: UpdateChecker(
-              child: PrivacyCover(
-                child: WalletApp(
-                  navigatorKey: _navigatorKey,
+            child: ConfigExpiryChecker(
+              child: MaintenanceChecker(
+                child: UpdateChecker(
+                  child: PrivacyCover(
+                    child: WalletApp(navigatorKey: _navigatorKey),
+                  ),
                 ),
               ),
             ),

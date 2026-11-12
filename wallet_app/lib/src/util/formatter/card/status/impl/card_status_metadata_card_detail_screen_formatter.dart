@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../../../domain/model/attribute/attribute.dart';
 import '../../../../../domain/model/card/status/card_status.dart';
 import '../../../../../domain/model/card/wallet_card.dart';
 import '../../../../../domain/model/organization.dart';
@@ -14,71 +13,117 @@ class CardStatusMetadataCardDetailScreenFormatter implements CardStatusMetadataF
   bool show(CardStatus status) => true;
 
   @override
-  String text(BuildContext context, WalletCard card) {
+  String text(BuildContext context, WalletCard card, {bool isPidCard = false}) {
+    final status = card.status;
     final organisation = _formatIssuer(context, card.issuer);
-    return switch (card.status) {
-      CardStatus.validSoon => context.l10n.cardStatusMetadataCardDetailScreenValidSoon(
-        DateFormatter.formatDate(context, card.validFrom),
+    return switch (status) {
+      CardStatusValidSoon() => context.l10n.cardStatusMetadataCardDetailScreenValidSoon(
+        DateFormatter.formatDate(context, status.validFrom),
       ),
-      CardStatus.valid => context.l10n.cardStatusMetadataCardDetailScreenValid(
-        DateFormatter.formatDate(context, card.validUntil),
-      ),
-      CardStatus.expiresSoon => context.l10n.cardStatusMetadataCardDetailScreenExpiresSoon(
-        DateFormatter.formatDateTime(context, card.validUntil),
-        organisation,
-        DurationFormatter.prettyPrintTimeDifference(context.l10n, card.validUntil),
-      ),
-      CardStatus.expired => context.l10n.cardStatusMetadataCardDetailScreenExpired(
-        DateFormatter.formatDateTime(context, card.validUntil),
-        organisation,
-      ),
-      CardStatus.revoked => context.l10n.cardStatusMetadataCardDetailScreenRevoked(organisation),
-      CardStatus.corrupted => context.l10n.cardStatusMetadataCardDetailScreenCorrupted(organisation),
-      CardStatus.unknown => context.l10n.cardStatusMetadataCardDetailScreenUnknown,
+      CardStatusValid() => _formatCardStatusValidText(context, status),
+      CardStatusExpiresSoon() => _formatCardStatusExpiresSoonText(context, status.validUntil, organisation, isPidCard),
+      CardStatusExpired() => _formatCardStatusExpiredText(context, status.validUntil, organisation, isPidCard),
+      CardStatusRevoked() => _formatCardStatusRevokedText(context, organisation, isPidCard),
+      CardStatusCorrupted() => _formatCardStatusCorruptedText(context, organisation, isPidCard),
+      CardStatusUndetermined() => _formatCardStatusUndeterminedText(context, isPidCard),
     };
+  }
+
+  String _formatCardStatusValidText(BuildContext context, CardStatusValid status) {
+    final validUntil = status.validUntil;
+    if (validUntil == null) return context.l10n.cardStatusMetadataCardDetailScreenValid;
+
+    return context.l10n.cardStatusMetadataCardDetailScreenValidUntil(
+      DateFormatter.formatDate(context, validUntil),
+    );
+  }
+
+  String _formatCardStatusExpiresSoonText(
+    BuildContext context,
+    DateTime validUntil,
+    String organisation,
+    bool isPidCard,
+  ) {
+    final validUntilText = DateFormatter.formatDateTime(context, validUntil);
+    final timeUntilText = DurationFormatter.prettyPrintTimeDifference(context.l10n, validUntil);
+    return isPidCard
+        ? context.l10n.cardStatusMetadataCardDetailScreenExpiresSoonPid(validUntilText, timeUntilText)
+        : context.l10n.cardStatusMetadataCardDetailScreenExpiresSoon(validUntilText, organisation, timeUntilText);
+  }
+
+  String _formatCardStatusExpiredText(BuildContext context, DateTime validUntil, String organisation, bool isPidCard) {
+    final validUntilText = DateFormatter.formatDateTime(context, validUntil);
+    return isPidCard
+        ? context.l10n.cardStatusMetadataCardDetailScreenExpiredPid(validUntilText)
+        : context.l10n.cardStatusMetadataCardDetailScreenExpired(validUntilText, organisation);
+  }
+
+  String _formatCardStatusRevokedText(BuildContext context, String organisation, bool isPidCard) {
+    return isPidCard
+        ? context.l10n.cardStatusMetadataCardDetailScreenRevokedPid(organisation)
+        : context.l10n.cardStatusMetadataCardDetailScreenRevoked(organisation);
+  }
+
+  String _formatCardStatusCorruptedText(BuildContext context, String organisation, bool isPidCard) {
+    return isPidCard
+        ? context.l10n.cardStatusMetadataCardDetailScreenCorruptedPid
+        : context.l10n.cardStatusMetadataCardDetailScreenCorrupted(organisation);
+  }
+
+  String _formatCardStatusUndeterminedText(BuildContext context, bool isPidCard) {
+    return isPidCard
+        ? context.l10n.cardStatusMetadataCardDetailScreenUndeterminedPid
+        : context.l10n.cardStatusMetadataCardDetailScreenUndetermined;
   }
 
   @override
   Color textColor(BuildContext context, CardStatus status) {
     return switch (status) {
-      CardStatus.validSoon => context.colorScheme.onSurface,
-      CardStatus.valid => context.colorScheme.onSurface,
-      CardStatus.expiresSoon => kStatusWarningColor,
-      CardStatus.expired => context.colorScheme.error,
-      CardStatus.revoked => context.colorScheme.error,
-      CardStatus.corrupted => context.colorScheme.error,
-      CardStatus.unknown => kStatusWarningColor,
+      CardStatusValidSoon() => context.colorScheme.onSurface,
+      CardStatusValid() => context.colorScheme.onSurface,
+      CardStatusExpiresSoon() => _getStatusWarningColor(context),
+      CardStatusExpired() => context.colorScheme.error,
+      CardStatusRevoked() => context.colorScheme.error,
+      CardStatusCorrupted() => context.colorScheme.error,
+      CardStatusUndetermined() => _getStatusWarningColor(context),
     };
   }
 
   @override
   IconData? icon(CardStatus status) {
     return switch (status) {
-      CardStatus.validSoon => Icons.block_flipped,
-      CardStatus.valid => null,
-      CardStatus.expiresSoon => Icons.schedule,
-      CardStatus.expired => Icons.event_busy,
-      CardStatus.revoked => Icons.close,
-      CardStatus.corrupted => Icons.block_flipped,
-      CardStatus.unknown => Icons.warning_amber,
+      CardStatusValidSoon() => Icons.block_flipped,
+      CardStatusValid() => null,
+      CardStatusExpiresSoon() => Icons.schedule,
+      CardStatusExpired() => Icons.event_busy,
+      CardStatusRevoked() => Icons.close,
+      CardStatusCorrupted() => Icons.block_flipped,
+      CardStatusUndetermined() => Icons.warning_amber,
     };
   }
+
+  /// The detail texts already describe the status themselves (e.g. "Withdrawn by …"), so a label would only repeat it.
+  @override
+  String? iconSemanticsLabel(BuildContext context, WalletCard card) => null;
 
   @override
   Color? iconColor(BuildContext context, CardStatus status) {
     return switch (status) {
-      CardStatus.validSoon => context.colorScheme.onSurfaceVariant,
-      CardStatus.valid => null,
-      CardStatus.expiresSoon => kStatusWarningColor,
-      CardStatus.expired => context.colorScheme.error,
-      CardStatus.revoked => context.colorScheme.error,
-      CardStatus.corrupted => context.colorScheme.error,
-      CardStatus.unknown => kStatusWarningColor,
+      CardStatusValidSoon() => context.colorScheme.onSurfaceVariant,
+      CardStatusValid() => null,
+      CardStatusExpiresSoon() => _getStatusWarningColor(context),
+      CardStatusExpired() => context.colorScheme.error,
+      CardStatusRevoked() => context.colorScheme.error,
+      CardStatusCorrupted() => context.colorScheme.error,
+      CardStatusUndetermined() => _getStatusWarningColor(context),
     };
   }
 
   @override
   Color? backgroundColor(BuildContext context, CardStatus status) => null;
 
-  String _formatIssuer(BuildContext context, Organization issuer) => issuer.displayName.l10nValue(context);
+  String _formatIssuer(BuildContext context, Organization issuer) => issuer.displayName;
+
+  Color _getStatusWarningColor(BuildContext context) =>
+      context.brightness == Brightness.light ? kStatusWarningColorLight : kStatusWarningColorDark;
 }

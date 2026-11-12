@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../domain/usecase/app/check_is_app_initialized_usecase.dart';
 import '../domain/usecase/app/impl/check_is_app_initialized_usecase_impl.dart';
@@ -28,35 +29,59 @@ import '../domain/usecase/card/impl/observe_wallet_cards_usecase_impl.dart';
 import '../domain/usecase/card/observe_wallet_card_detail_usecase.dart';
 import '../domain/usecase/card/observe_wallet_card_usecase.dart';
 import '../domain/usecase/card/observe_wallet_cards_usecase.dart';
-import '../domain/usecase/disclosure/cancel_disclosure_usecase.dart';
-import '../domain/usecase/disclosure/impl/cancel_disclosure_usecase_impl.dart';
+import '../domain/usecase/close_proximity/impl/observe_close_proximity_usecase_impl.dart';
+import '../domain/usecase/close_proximity/impl/start_close_proximity_disclosure_usecase_impl.dart';
+import '../domain/usecase/close_proximity/observe_close_proximity_connection_usecase.dart';
+import '../domain/usecase/close_proximity/start_close_proximity_disclosure_usecase.dart';
+import '../domain/usecase/configuration/impl/observe_configuration_expired_usecase_impl.dart';
+import '../domain/usecase/configuration/observe_configuration_expired_usecase.dart';
 import '../domain/usecase/disclosure/impl/start_disclosure_usecase_impl.dart';
 import '../domain/usecase/disclosure/start_disclosure_usecase.dart';
 import '../domain/usecase/event/get_most_recent_wallet_event_usecase.dart';
 import '../domain/usecase/event/get_wallet_events_for_card_usecase.dart';
-import '../domain/usecase/event/get_wallet_events_usecase.dart';
+import '../domain/usecase/event/get_wallet_events_page_usecase.dart';
+import '../domain/usecase/event/get_wallet_events_pid_usecase.dart';
 import '../domain/usecase/event/impl/get_most_recent_wallet_event_usecase_impl.dart';
 import '../domain/usecase/event/impl/get_wallet_events_for_card_usecase_impl.dart';
-import '../domain/usecase/event/impl/get_wallet_events_usecase_impl.dart';
+import '../domain/usecase/event/impl/get_wallet_events_for_pid_usecase_impl.dart';
+import '../domain/usecase/event/impl/get_wallet_events_page_usecase_impl.dart';
 import '../domain/usecase/event/impl/observe_recent_wallet_events_usecase_impl.dart';
 import '../domain/usecase/event/observe_recent_wallet_events_usecase.dart';
-import '../domain/usecase/issuance/cancel_issuance_usecase.dart';
-import '../domain/usecase/issuance/impl/cancel_issuance_usecase_impl.dart';
+import '../domain/usecase/help/get_help_categories_usecase.dart';
+import '../domain/usecase/help/get_help_topic_blocks_usecase.dart';
+import '../domain/usecase/help/impl/get_help_categories_usecase_impl.dart';
+import '../domain/usecase/help/impl/get_help_topic_blocks_usecase_impl.dart';
+import '../domain/usecase/issuance/continue_issuance_usecase.dart';
+import '../domain/usecase/issuance/impl/continue_issuance_usecase_impl.dart';
 import '../domain/usecase/issuance/impl/start_issuance_usecase_impl.dart';
 import '../domain/usecase/issuance/start_issuance_usecase.dart';
+import '../domain/usecase/maintenance/impl/observe_maintenance_state_usecase_impl.dart';
+import '../domain/usecase/maintenance/observe_maintenance_state_usecase.dart';
 import '../domain/usecase/navigation/check_navigation_prerequisites_usecase.dart';
 import '../domain/usecase/navigation/impl/check_navigation_prerequisites_usecase_impl.dart';
 import '../domain/usecase/navigation/impl/perform_pre_navigation_actions_usecase_impl.dart';
 import '../domain/usecase/navigation/perform_pre_navigation_actions_usecase.dart';
-import '../domain/usecase/permission/check_has_permission_usecase.dart';
-import '../domain/usecase/permission/impl/check_has_permission_usecase_impl.dart';
+import '../domain/usecase/notification/impl/observe_dashboard_notifications_usecase_impl.dart';
+import '../domain/usecase/notification/impl/observe_os_notifications_usecase_impl.dart';
+import '../domain/usecase/notification/impl/observe_push_notifications_setting_usecase_impl.dart';
+import '../domain/usecase/notification/impl/set_direct_os_notification_callback_usecase_impl.dart';
+import '../domain/usecase/notification/impl/set_push_notifications_setting_usecase_impl.dart';
+import '../domain/usecase/notification/observe_dashboard_notifications_usecase.dart';
+import '../domain/usecase/notification/observe_os_notifications_usecase.dart';
+import '../domain/usecase/notification/observe_push_notifications_setting_usecase.dart';
+import '../domain/usecase/notification/set_direct_os_notification_callback_usecase.dart';
+import '../domain/usecase/notification/set_push_notifications_setting_usecase.dart';
+import '../domain/usecase/permission/check_permission_usecase.dart';
+import '../domain/usecase/permission/impl/check_permission_usecase_impl.dart';
+import '../domain/usecase/permission/impl/request_permission_usecase_impl.dart';
+import '../domain/usecase/permission/request_permission_usecase.dart';
 import '../domain/usecase/pid/accept_offered_pid_usecase.dart';
-import '../domain/usecase/pid/cancel_pid_issuance_usecase.dart';
+import '../domain/usecase/pid/check_is_pid.dart';
 import '../domain/usecase/pid/continue_pid_issuance_usecase.dart';
 import '../domain/usecase/pid/get_pid_issuance_url_usecase.dart';
 import '../domain/usecase/pid/get_pid_renewal_url_usecase.dart';
 import '../domain/usecase/pid/impl/accept_offered_pid_usecase_impl.dart';
-import '../domain/usecase/pid/impl/cancel_pid_issuance_usecase_impl.dart';
+import '../domain/usecase/pid/impl/check_is_pid_impl.dart';
 import '../domain/usecase/pid/impl/continue_pid_issuance_usecase_impl.dart';
 import '../domain/usecase/pid/impl/get_pid_issuance_url_usecase_impl.dart';
 import '../domain/usecase/pid/impl/get_pid_renewal_url_usecase_impl.dart';
@@ -77,6 +102,16 @@ import '../domain/usecase/pin/impl/unlock_wallet_with_pin_usecase_impl.dart';
 import '../domain/usecase/pin/unlock_wallet_with_pin_usecase.dart';
 import '../domain/usecase/qr/decode_qr_usecase.dart';
 import '../domain/usecase/qr/impl/decode_qr_usecase_impl.dart';
+import '../domain/usecase/revocation/get_registration_revocation_code_usecase.dart';
+import '../domain/usecase/revocation/get_revocation_code_saved_usecase.dart';
+import '../domain/usecase/revocation/get_revocation_code_usecase.dart';
+import '../domain/usecase/revocation/impl/get_registration_revocation_code_usecase_impl.dart';
+import '../domain/usecase/revocation/impl/get_revocation_code_saved_usecase_impl.dart';
+import '../domain/usecase/revocation/impl/get_revocation_code_usecase_impl.dart';
+import '../domain/usecase/revocation/impl/set_revocation_code_saved_usecase_impl.dart';
+import '../domain/usecase/revocation/set_revocation_code_saved_usecase.dart';
+import '../domain/usecase/session/cancel_session_usecase.dart';
+import '../domain/usecase/session/impl/cancel_session_usecase_impl.dart';
 import '../domain/usecase/sign/accept_sign_agreement_usecase.dart';
 import '../domain/usecase/sign/impl/accept_sign_agreement_usecase_impl.dart';
 import '../domain/usecase/sign/impl/reject_sign_agreement_usecase_impl.dart';
@@ -118,12 +153,14 @@ import '../domain/usecase/wallet/impl/get_wallet_state_usecase_impl.dart';
 import '../domain/usecase/wallet/impl/is_wallet_initialized_with_pid_impl.dart';
 import '../domain/usecase/wallet/impl/is_wallet_registered_and_unlocked_usecase_impl.dart';
 import '../domain/usecase/wallet/impl/lock_wallet_usecase_impl.dart';
+import '../domain/usecase/wallet/impl/move_to_ready_state_usecase_impl.dart';
 import '../domain/usecase/wallet/impl/observe_wallet_locked_usecase_impl.dart';
 import '../domain/usecase/wallet/impl/reset_wallet_usecase_impl.dart';
 import '../domain/usecase/wallet/impl/setup_mocked_wallet_usecase_impl.dart';
 import '../domain/usecase/wallet/is_wallet_initialized_with_pid_usecase.dart';
 import '../domain/usecase/wallet/is_wallet_registered_and_unlocked_usecase.dart';
 import '../domain/usecase/wallet/lock_wallet_usecase.dart';
+import '../domain/usecase/wallet/move_to_ready_state_usecase.dart';
 import '../domain/usecase/wallet/observe_wallet_locked_usecase.dart';
 import '../domain/usecase/wallet/reset_wallet_usecase.dart';
 import '../domain/usecase/wallet/setup_mocked_wallet_usecase.dart';
@@ -142,226 +179,330 @@ class WalletUseCaseProvider extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiRepositoryProvider(
       providers: [
-        RepositoryProvider<IsWalletInitializedUseCase>(
-          create: (context) => IsWalletInitializedUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<UnlockWalletWithPinUseCase>(
-          create: (context) => UnlockWalletWithPinUseCaseImpl(context.read(), context.read()),
-        ),
-        RepositoryProvider<IsWalletRegisteredAndUnlockedUseCase>(
-          create: (context) => IsWalletRegisteredAndUnlockedUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CreateWalletUseCase>(
-          create: (context) => CreateWalletUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CheckIsValidPinUseCase>(
-          create: (context) => CheckIsValidPinUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<LockWalletUseCase>(
-          create: (context) => LockWalletUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetWalletCardsUseCase>(
-          create: (context) => GetWalletCardsUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetPidCardsUseCase>(
-          create: (context) => GetPidCardsUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetWalletCardUseCase>(
-          create: (context) => GetWalletCardUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveWalletCardsUseCase>(
-          create: (context) => ObserveWalletCardsUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveWalletCardUseCase>(
-          create: (context) => ObserveWalletCardUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveWalletCardDetailUseCase>(
-          create: (context) => ObserveWalletCardDetailUseCaseImpl(
-            context.read(),
-            context.read(),
-          ),
-        ),
-        RepositoryProvider<DecodeQrUseCase>(
-          create: (context) => DecodeQrUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CancelPidIssuanceUseCase>(
-          create: (context) => CancelPidIssuanceUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<SetupMockedWalletUseCase>(
-          create: (context) => SetupMockedWalletUseCaseImpl(
-            context.read(),
-            context.read(),
-          ),
-        ),
-        RepositoryProvider<StartSignUseCase>(
-          create: (context) => StartSignUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<DecodeUriUseCase>(
-          create: (context) => DecodeUriUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<IsWalletInitializedWithPidUseCase>(
-          create: (context) => IsWalletInitializedWithPidUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetPidIssuanceUrlUseCase>(
-          create: (context) => GetPidIssuanceUrlUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetPidRenewalUrlUseCase>(
-          create: (context) => GetPidRenewalUrlUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ContinuePidIssuanceUseCase>(
-          create: (context) => ContinuePidIssuanceUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveWalletLockedUseCase>(
-          create: (context) => ObserveWalletLockedUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<AcceptOfferedPidUseCase>(
-          create: (context) => AcceptOfferedPidUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ResetWalletUseCase>(
-          create: (context) => ResetWalletUseCaseImpl(context.read(), context.read()),
-        ),
-        RepositoryProvider<CheckNavigationPrerequisitesUseCase>(
-          create: (context) => CheckNavigationPrerequisitesUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<PerformPreNavigationActionsUseCase>(
-          create: (context) => PerformPreNavigationActionsUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<StartDisclosureUseCase>(
-          create: (context) => StartDisclosureUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CancelDisclosureUseCase>(
-          create: (context) => CancelDisclosureUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<StartIssuanceUseCase>(
-          create: (context) => StartIssuanceUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CancelIssuanceUseCase>(
-          create: (context) => CancelIssuanceUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<AcceptSignAgreementUseCase>(
-          create: (context) => AcceptSignAgreementUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<RejectSignAgreementUseCase>(
-          create: (context) => RejectSignAgreementUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetMostRecentWalletEventUseCase>(
-          create: (context) => GetMostRecentWalletEventUsecaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveRecentWalletEventsUseCase>(
-          create: (context) => ObserveRecentWalletEventsUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetWalletEventsUseCase>(
-          create: (context) => GetWalletEventsUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetWalletEventsForCardUseCase>(
-          create: (context) => GetWalletEventsForCardUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CheckHasPermissionUseCase>(
-          create: (context) => CheckHasPermissionUseCaseImpl(),
-        ),
-        RepositoryProvider<GetAvailableBiometricsUseCase>(
-          create: (context) => GetAvailableBiometricsUseCaseImpl(
-            LocalAuthentication(),
-            context.theme.platform,
-          ),
-        ),
-        RepositoryProvider<SetBiometricsUseCase>(
-          create: (context) => SetBiometricsUseCaseImpl(
-            LocalAuthentication(),
-            context.theme.platform,
-            context.read(),
-            context.read(),
-          ),
-        ),
-        RepositoryProvider<GetSupportedBiometricsUseCase>(
-          create: (context) => GetSupportedBiometricsUseCaseImpl(LocalAuthentication()),
-        ),
-        RepositoryProvider<CheckPinUseCase>(
-          create: (context) => CheckPinUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ChangePinUseCase>(
-          create: (context) => ChangePinUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<IsBiometricLoginEnabledUseCase>(
-          create: (context) => IsBiometricLoginEnabledUseCaseImpl(
-            context.read(),
-            context.read(),
-          ),
-        ),
-        RepositoryProvider<RequestBiometricsUseCase>(
-          create: (context) => RequestBiometricsUsecaseImpl(
-            LocalAuthentication(),
-            context.read(),
-            context.theme.platform,
-          ),
-        ),
-        RepositoryProvider<UnlockWalletWithBiometricsUseCase>(
-          create: (context) => UnlockWalletWithBiometricsUseCaseImpl(
-            context.read(),
-            context.read(),
-            LocalAuthentication(),
-            context.theme.platform,
-            context.read(),
-          ),
-        ),
-        RepositoryProvider<ObserveVersionStateUsecase>(
-          create: (context) => ObserveVersionStateUsecaseImpl(
-            context.read(),
-          ),
-        ),
-        RepositoryProvider<GetVersionStringUseCase>(
-          create: (context) => GetVersionStringUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveShowTourBannerUseCase>(
-          create: (context) => ObserveShowTourBannerUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<TourOverviewViewedUseCase>(
-          create: (context) => TourOverviewViewedUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<FetchTourVideosUseCase>(
-          create: (context) => FetchTourVideosUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CancelWalletTransferUseCase>(
-          create: (context) => CancelWalletTransferUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<SkipWalletTransferUseCase>(
-          create: (context) => SkipWalletTransferUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ObserveTransferSessionStateUseCase>(
-          create: (context) => ObserveTransferSessionStateUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<InitWalletTransferUseCase>(
-          create: (context) => InitWalletTransferUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<PairWalletTransferUseCase>(
-          create: (context) => PairWalletTransferUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<StartWalletTransferUseCase>(
-          create: (context) => StartWalletTransferUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ConfirmWalletTransferUseCase>(
-          create: (context) => ConfirmWalletTransferUseCaseImpl(context.read(), context.read()),
-        ),
-        RepositoryProvider<CreatePinRecoveryRedirectUriUseCase>(
-          create: (context) => CreatePinRecoveryRedirectUriUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ContinuePinRecoveryUseCase>(
-          create: (context) => ContinuePinRecoveryUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CompletePinRecoveryUseCase>(
-          create: (context) => CompletePinRecoveryUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<CancelPinRecoveryUseCase>(
-          create: (context) => CancelPinRecoveryUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<GetWalletStateUseCase>(
-          create: (context) => GetWalletStateUseCaseImpl(context.read()),
-        ),
-        RepositoryProvider<ReceiveWalletTransferUseCase>(
-          create: (context) => ReceiveWalletTransferUseCaseImpl(context.read()),
-        ),
+        ..._buildWalletUseCases(context),
+        ..._buildPinUseCases(context),
+        ..._buildCardUseCases(context),
+        ..._buildPidUseCases(context),
+        ..._buildInteractionUseCases(context),
+        ..._buildEventUseCases(context),
+        ..._buildBiometricUseCases(context),
+        ..._buildNotificationUseCases(context),
+        ..._buildHelpAndTourUseCases(context),
+        ..._buildWalletTransferUseCases(context),
+        ..._buildRevocationUseCases(context),
+        ..._buildSystemUseCases(context),
       ],
       child: child,
     );
   }
+
+  List<RepositoryProvider> _buildWalletUseCases(BuildContext context) => [
+    RepositoryProvider<IsWalletInitializedUseCase>(
+      create: (context) => IsWalletInitializedUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CreateWalletUseCase>(
+      create: (context) => CreateWalletUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<LockWalletUseCase>(
+      create: (context) => LockWalletUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveWalletLockedUseCase>(
+      create: (context) => ObserveWalletLockedUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ResetWalletUseCase>(
+      create: (context) => ResetWalletUseCaseImpl(context.read(), SharedPreferences.getInstance),
+    ),
+    RepositoryProvider<GetWalletStateUseCase>(
+      create: (context) => GetWalletStateUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<IsWalletRegisteredAndUnlockedUseCase>(
+      create: (context) => IsWalletRegisteredAndUnlockedUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<IsWalletInitializedWithPidUseCase>(
+      create: (context) => IsWalletInitializedWithPidUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<MoveToReadyStateUseCase>(
+      create: (context) => MoveToReadyStateUseCaseImpl(
+        context.read(),
+        context.read(),
+        context.read(),
+      ),
+    ),
+    RepositoryProvider<SetupMockedWalletUseCase>(
+      create: (context) => SetupMockedWalletUseCaseImpl(
+        context.read(),
+        context.read(),
+      ),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildPinUseCases(BuildContext context) => [
+    RepositoryProvider<UnlockWalletWithPinUseCase>(
+      create: (context) => UnlockWalletWithPinUseCaseImpl(context.read(), context.read()),
+    ),
+    RepositoryProvider<CheckIsValidPinUseCase>(
+      create: (context) => CheckIsValidPinUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CheckPinUseCase>(
+      create: (context) => CheckPinUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ChangePinUseCase>(
+      create: (context) => ChangePinUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CreatePinRecoveryRedirectUriUseCase>(
+      create: (context) => CreatePinRecoveryRedirectUriUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ContinuePinRecoveryUseCase>(
+      create: (context) => ContinuePinRecoveryUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CompletePinRecoveryUseCase>(
+      create: (context) => CompletePinRecoveryUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CancelPinRecoveryUseCase>(
+      create: (context) => CancelPinRecoveryUseCaseImpl(context.read(), context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildCardUseCases(BuildContext context) => [
+    RepositoryProvider<GetWalletCardsUseCase>(
+      create: (context) => GetWalletCardsUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetPidCardsUseCase>(
+      create: (context) => GetPidCardsUseCaseImpl(context.read(), context.read()),
+    ),
+    RepositoryProvider<GetWalletCardUseCase>(
+      create: (context) => GetWalletCardUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveWalletCardsUseCase>(
+      create: (context) => ObserveWalletCardsUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveWalletCardUseCase>(
+      create: (context) => ObserveWalletCardUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveWalletCardDetailUseCase>(
+      create: (context) => ObserveWalletCardDetailUseCaseImpl(
+        context.read(),
+        context.read(),
+      ),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildPidUseCases(BuildContext context) => [
+    RepositoryProvider<GetPidIssuanceUrlUseCase>(
+      create: (context) => GetPidIssuanceUrlUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetPidRenewalUrlUseCase>(
+      create: (context) => GetPidRenewalUrlUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ContinuePidIssuanceUseCase>(
+      create: (context) => ContinuePidIssuanceUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ContinueIssuanceUseCase>(
+      create: (context) => ContinueIssuanceUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<AcceptOfferedPidUseCase>(
+      create: (context) => AcceptOfferedPidUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CheckIsPidUseCase>(
+      create: (context) => CheckIsPidUseCaseImpl(context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildInteractionUseCases(BuildContext context) => [
+    RepositoryProvider<DecodeQrUseCase>(
+      create: (context) => DecodeQrUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<StartSignUseCase>(
+      create: (context) => StartSignUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<DecodeUriUseCase>(
+      create: (context) => DecodeUriUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<StartDisclosureUseCase>(
+      create: (context) => StartDisclosureUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<StartIssuanceUseCase>(
+      create: (context) => StartIssuanceUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CancelSessionUseCase>(
+      create: (context) => CancelSessionUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<AcceptSignAgreementUseCase>(
+      create: (context) => AcceptSignAgreementUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<RejectSignAgreementUseCase>(
+      create: (context) => RejectSignAgreementUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<StartCloseProximityDisclosureUseCase>(
+      create: (context) => StartCloseProximityDisclosureUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveCloseProximityConnectionUseCase>(
+      create: (context) => ObserveCloseProximityConnectionUseCaseImpl(context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildEventUseCases(BuildContext context) => [
+    RepositoryProvider<GetMostRecentWalletEventUseCase>(
+      create: (context) => GetMostRecentWalletEventUsecaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveRecentWalletEventsUseCase>(
+      create: (context) => ObserveRecentWalletEventsUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetWalletEventsPageUseCase>(
+      create: (context) => GetWalletEventsPageUseCaseImpl(context.read(), context.read()),
+    ),
+    RepositoryProvider<GetWalletEventsForCardUseCase>(
+      create: (context) => GetWalletEventsForCardUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetWalletEventsForPidUseCase>(
+      create: (context) => GetWalletEventsForPidUseCaseImpl(context.read(), context.read(), context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildBiometricUseCases(BuildContext context) => [
+    RepositoryProvider<GetAvailableBiometricsUseCase>(
+      create: (context) => GetAvailableBiometricsUseCaseImpl(
+        LocalAuthentication(),
+        context.theme.platform,
+      ),
+    ),
+    RepositoryProvider<SetBiometricsUseCase>(
+      create: (context) => SetBiometricsUseCaseImpl(
+        LocalAuthentication(),
+        context.theme.platform,
+        context.read(),
+        context.read(),
+      ),
+    ),
+    RepositoryProvider<GetSupportedBiometricsUseCase>(
+      create: (context) => GetSupportedBiometricsUseCaseImpl(LocalAuthentication()),
+    ),
+    RepositoryProvider<IsBiometricLoginEnabledUseCase>(
+      create: (context) => IsBiometricLoginEnabledUseCaseImpl(
+        context.read(),
+        context.read(),
+      ),
+    ),
+    RepositoryProvider<RequestBiometricsUseCase>(
+      create: (context) => RequestBiometricsUsecaseImpl(
+        LocalAuthentication(),
+        context.read(),
+        context.theme.platform,
+      ),
+    ),
+    RepositoryProvider<UnlockWalletWithBiometricsUseCase>(
+      create: (context) => UnlockWalletWithBiometricsUseCaseImpl(
+        context.read(),
+        context.read(),
+        LocalAuthentication(),
+        context.theme.platform,
+        context.read(),
+      ),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildNotificationUseCases(BuildContext context) => [
+    RepositoryProvider<ObserveDashboardNotificationsUseCase>(
+      create: (context) => ObserveDashboardNotificationsUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveOsNotificationsUseCase>(
+      create: (context) => ObserveOsNotificationsUseCaseImpl(context.read(), context.read()),
+    ),
+    RepositoryProvider<ObservePushNotificationsSettingUseCase>(
+      create: (context) => ObservePushNotificationsSettingUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<SetPushNotificationsSettingUseCase>(
+      create: (context) => SetPushNotificationsSettingUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<SetDirectOsNotificationCallbackUsecase>(
+      create: (context) => SetDirectOsNotificationCallbackUsecaseImpl(context.read(), context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildHelpAndTourUseCases(BuildContext context) => [
+    RepositoryProvider<ObserveShowTourBannerUseCase>(
+      create: (context) => ObserveShowTourBannerUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<TourOverviewViewedUseCase>(
+      create: (context) => TourOverviewViewedUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<FetchTourVideosUseCase>(
+      create: (context) => FetchTourVideosUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetHelpCategoriesUseCase>(
+      create: (context) => GetHelpCategoriesUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetHelpTopicBlocksUseCase>(
+      create: (context) => GetHelpTopicBlocksUseCaseImpl(context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildWalletTransferUseCases(BuildContext context) => [
+    RepositoryProvider<CancelWalletTransferUseCase>(
+      create: (context) => CancelWalletTransferUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<SkipWalletTransferUseCase>(
+      create: (context) => SkipWalletTransferUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveTransferSessionStateUseCase>(
+      create: (context) => ObserveTransferSessionStateUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<InitWalletTransferUseCase>(
+      create: (context) => InitWalletTransferUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<PairWalletTransferUseCase>(
+      create: (context) => PairWalletTransferUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<StartWalletTransferUseCase>(
+      create: (context) => StartWalletTransferUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ConfirmWalletTransferUseCase>(
+      create: (context) => ConfirmWalletTransferUseCaseImpl(context.read(), context.read()),
+    ),
+    RepositoryProvider<ReceiveWalletTransferUseCase>(
+      create: (context) => ReceiveWalletTransferUseCaseImpl(context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildRevocationUseCases(BuildContext context) => [
+    RepositoryProvider<GetRegistrationRevocationCodeUseCase>(
+      create: (context) => GetRegistrationRevocationCodeUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetRevocationCodeSavedUseCase>(
+      create: (context) => GetRevocationCodeSavedUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<SetRevocationCodeSavedUseCase>(
+      create: (context) => SetRevocationCodeSavedUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetRevocationCodeUseCase>(
+      create: (context) => GetRevocationCodeUseCaseImpl(context.read()),
+    ),
+  ];
+
+  List<RepositoryProvider> _buildSystemUseCases(BuildContext context) => [
+    RepositoryProvider<ObserveMaintenanceStateUseCase>(
+      create: (context) => ObserveMaintenanceStateUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<ObserveConfigurationExpiredUseCase>(
+      create: (context) => ObserveConfigurationExpiredUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CheckNavigationPrerequisitesUseCase>(
+      create: (context) => CheckNavigationPrerequisitesUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<PerformPreNavigationActionsUseCase>(
+      create: (context) => PerformPreNavigationActionsUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<RequestPermissionUseCase>(
+      create: (context) => RequestPermissionUseCaseImpl(),
+    ),
+    RepositoryProvider<ObserveVersionStateUsecase>(
+      create: (context) => ObserveVersionStateUsecaseImpl(context.read()),
+    ),
+    RepositoryProvider<GetVersionStringUseCase>(
+      create: (context) => GetVersionStringUseCaseImpl(context.read()),
+    ),
+    RepositoryProvider<CheckPermissionUseCase>(
+      create: (context) => CheckPermissionUseCaseImpl(),
+    ),
+  ];
 }

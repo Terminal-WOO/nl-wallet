@@ -6,7 +6,6 @@ import 'package:fimber/fimber.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../domain/model/bloc/error_state.dart';
-import '../../../domain/model/bloc/network_error_state.dart';
 import '../../../domain/model/flow_progress.dart';
 import '../../../domain/model/pin/pin_validation_error.dart';
 import '../../../domain/model/result/application_error.dart';
@@ -15,6 +14,7 @@ import '../../../domain/usecase/pin/check_is_valid_pin_usecase.dart';
 import '../../../domain/usecase/pin/complete_pin_recovery_usecase.dart';
 import '../../../domain/usecase/pin/continue_pin_recovery_usecase.dart';
 import '../../../domain/usecase/pin/create_pin_recovery_url_usecase.dart';
+import '../../../domain/usecase/wallet/move_to_ready_state_usecase.dart';
 import '../../../util/cast_util.dart';
 import '../../../wallet_constants.dart';
 import '../../../wallet_core/error/core_error.dart';
@@ -27,6 +27,7 @@ class RecoverPinBloc extends Bloc<RecoverPinEvent, RecoverPinState> {
   final CheckIsValidPinUseCase _checkIsValidPinUseCase;
   final ContinuePinRecoveryUseCase _continuePinRecoveryUsecase;
   final CancelPinRecoveryUseCase _cancelPinRecoveryUsecase;
+  final MoveToReadyStateUseCase _moveToReadyStateUsecase;
   final CompletePinRecoveryUseCase _completePinRecoveryUsecase;
 
   RecoverPinBloc(
@@ -34,9 +35,10 @@ class RecoverPinBloc extends Bloc<RecoverPinEvent, RecoverPinState> {
     this._checkIsValidPinUseCase,
     this._continuePinRecoveryUsecase,
     this._cancelPinRecoveryUsecase,
+    this._moveToReadyStateUsecase,
     this._completePinRecoveryUsecase, {
     required bool continueFromDigiD,
-  }) : super(continueFromDigiD ? const RecoverPinVerifyingDigidAuthentication() : const RecoverPinInitial()) {
+  }) : super(continueFromDigiD ? const RecoverPinAwaitingDigidAuthentication(null) : const RecoverPinInitial()) {
     on<RecoverPinLoginWithDigidClicked>(_onDigidLoginClicked);
     on<RecoverPinLoginWithDigidFailed>(_onDigidLoginFailed);
     on<RecoverPinContinuePinRecovery>(_onContinuePinRecovery);
@@ -53,6 +55,19 @@ class RecoverPinBloc extends Bloc<RecoverPinEvent, RecoverPinState> {
 
   FutureOr<void> _onDigidLoginClicked(RecoverPinLoginWithDigidClicked event, Emitter<RecoverPinState> emit) async {
     emit(const RecoverPinLoadingDigidUrl());
+
+    // Attempt to move to ready state
+    final readyResult = await _moveToReadyStateUsecase.invoke();
+    if (readyResult.value == false || readyResult.hasError) {
+      final fallbackError = GenericError(
+        'Wallet not in ready state',
+        sourceError: Exception('failed to move to ready state'),
+      );
+      await _handleApplicationError(readyResult.error ?? fallbackError, emit);
+      return;
+    }
+
+    // Create and emit digid redirect uri
     final result = await _createPinRecoveryRedirectUriUsecase.invoke();
     await result.process(
       onSuccess: (url) => emit(RecoverPinAwaitingDigidAuthentication(url)),
@@ -82,11 +97,15 @@ class RecoverPinBloc extends Bloc<RecoverPinEvent, RecoverPinState> {
     final state = this.state;
     if (!state.canGoBack) return;
     if (state is RecoverPinConfirmNewPin) emit(RecoverPinChooseNewPin(didGoBack: true, authUrl: state.authUrl));
-    if (state is RecoverPinChooseNewPin) emit(const RecoverPinInitial(didGoBack: true));
+    if (state is RecoverPinChooseNewPin) {
+      unawaited(_cancelPinRecoveryUsecase.invoke()); // Fix: PVW-5344
+      emit(const RecoverPinInitial(didGoBack: true));
+    }
   }
 
   FutureOr<void> _onDigidLoginFailed(RecoverPinLoginWithDigidFailed event, Emitter<RecoverPinState> emit) async {
     if (event.cancelledByUser) {
+      await _cancelPinRecoveryUsecase.invoke(); // Cancel session in case it's ongoing
       emit(const RecoverPinDigidLoginCancelled());
     } else {
       await _handleApplicationError(event.error, emit);
@@ -187,27 +206,15 @@ class RecoverPinBloc extends Bloc<RecoverPinEvent, RecoverPinState> {
         emit(const RecoverPinDigidMismatch());
       case DeniedDigidError():
         emit(const RecoverPinDigidLoginCancelled());
-      case NetworkError():
-        emit(RecoverPinNetworkError(hasInternet: error.hasInternet, error: error));
       case RedirectUriError():
         if ([RedirectError.accessDenied, RedirectError.loginRequired].contains(error.redirectError)) {
           emit(const RecoverPinDigidLoginCancelled());
         } else {
           emit(RecoverPinDigidFailure(error: error));
         }
-      case SessionError():
-        emit(RecoverPinSessionExpired(error: error));
       default:
-        Fimber.w('Handling ${error.runtimeType} as generic error.', ex: error);
-        emit(RecoverPinGenericError(error: error));
+        Fimber.w('Handling ${error.runtimeType} as with default error handling.', ex: error);
+        emit(RecoverPinError(error: error));
     }
-  }
-
-  @override
-  Future<void> close() {
-    // TODO(Rob): this line cancels the PIN recovery flow even when it is succesful.
-    //            PIN recovery should only be cancelled here if it's still ongoing. See PVW-5067.
-    // _cancelPinRecoveryUsecase.invoke();
-    return super.close();
   }
 }

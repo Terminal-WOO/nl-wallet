@@ -1,38 +1,162 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
+use apple_app_attest::AssertionCounter;
 use chrono::DateTime;
 use chrono::Utc;
+use derive_more::AsRef;
 use derive_more::From;
+use hsm::model::encrypted::Encrypted;
+use hsm::model::wrapped_key::WrappedKey;
+use measure::measure;
 use p256::ecdsa::VerifyingKey;
 use semver::Version;
 use uuid;
 use uuid::Uuid;
-
-use apple_app_attest::AssertionCounter;
-use hsm::model::encrypted::Encrypted;
-use hsm::model::wrapped_key::WrappedKey;
+use wallet_account::messages::errors::RevocationReason;
 use wallet_account::messages::transfer::TransferSessionState;
+use wallet_provider_domain::model::admin_portal_session::AdminPortalLoginAttempt;
+use wallet_provider_domain::model::admin_portal_session::AdminPortalUserSession;
+use wallet_provider_domain::model::admin_task::AdminTask;
+use wallet_provider_domain::model::admin_task::CreateAdminTask;
+use wallet_provider_domain::model::admin_task::ExecuteAdminTask;
+use wallet_provider_domain::model::admin_task::ReviewAdminTask;
+use wallet_provider_domain::model::admin_task::TaskListView;
+use wallet_provider_domain::model::admin_task::WithdrawAdminTask;
+use wallet_provider_domain::model::wallet_flag::WalletFlag;
 use wallet_provider_domain::model::wallet_user::InstructionChallenge;
+use wallet_provider_domain::model::wallet_user::RecoveryCode;
+use wallet_provider_domain::model::wallet_user::RevokedWalletUsers;
 use wallet_provider_domain::model::wallet_user::TransferSession;
+use wallet_provider_domain::model::wallet_user::WalletId;
 use wallet_provider_domain::model::wallet_user::WalletUserCreate;
+use wallet_provider_domain::model::wallet_user::WalletUserIsRevoked;
 use wallet_provider_domain::model::wallet_user::WalletUserKeys;
-use wallet_provider_domain::model::wallet_user::WalletUserPinRecoveryKeys;
 use wallet_provider_domain::model::wallet_user::WalletUserQueryResult;
 use wallet_provider_domain::model::wallet_user::WalletUserState;
+use wallet_provider_domain::model::wallet_user::WalletUserStateQueryResult;
+use wallet_provider_domain::model::wallet_user::WithKid;
+use wallet_provider_domain::repository::AdminPortalRepository;
 use wallet_provider_domain::repository::PersistenceError;
 use wallet_provider_domain::repository::TransactionStarter;
+use wallet_provider_domain::repository::WalletFlagRepository;
 use wallet_provider_domain::repository::WalletUserRepository;
 
+use crate::admin_portal_session;
+use crate::admin_task;
 use crate::database::Db;
+use crate::recovery_code;
 use crate::transaction;
 use crate::transaction::Transaction;
+use crate::wallet_flag;
 use crate::wallet_transfer;
 use crate::wallet_user;
 use crate::wallet_user_key;
-use crate::wallet_user_wua;
+use crate::wallet_user_wia;
 
-#[derive(From)]
+#[derive(Clone, From, AsRef)]
 pub struct Repositories(Db);
+
+impl AdminPortalRepository for Repositories {
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn insert_login_attempt(
+        &self,
+        state: String,
+        login_attempt: AdminPortalLoginAttempt,
+    ) -> Result<(), PersistenceError> {
+        admin_portal_session::insert_login_attempt(&self.0, state, login_attempt).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn take_login_attempt(&self, state: &str) -> Result<Option<AdminPortalLoginAttempt>, PersistenceError> {
+        admin_portal_session::take_login_attempt(&self.0, state).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn cleanup_expired_login_attempts(&self, created_before: DateTime<Utc>) -> Result<(), PersistenceError> {
+        admin_portal_session::cleanup_expired_login_attempts(&self.0, created_before).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn insert_user_session(
+        &self,
+        session_id: String,
+        session: AdminPortalUserSession,
+    ) -> Result<(), PersistenceError> {
+        admin_portal_session::insert_user_session(&self.0, session_id, session).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn fetch_user_session(
+        &self,
+        session_id: &str,
+        now: DateTime<Utc>,
+        new_expires_at: Option<DateTime<Utc>>,
+    ) -> Result<Option<AdminPortalUserSession>, PersistenceError> {
+        admin_portal_session::fetch_user_session(&self.0, session_id, now, new_expires_at).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn take_user_session(&self, session_id: &str) -> Result<Option<AdminPortalUserSession>, PersistenceError> {
+        admin_portal_session::take_user_session(&self.0, session_id).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn cleanup_expired_user_sessions(&self, now: DateTime<Utc>) -> Result<(), PersistenceError> {
+        admin_portal_session::cleanup_expired_user_sessions(&self.0, now).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn insert_task(&self, task: CreateAdminTask) -> Result<AdminTask, PersistenceError> {
+        admin_task::insert_task(&self.0, task).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn find_task_by_id(&self, task_id: Uuid) -> Result<Option<AdminTask>, PersistenceError> {
+        admin_task::find_task_by_id(&self.0, task_id).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn find_task_by_id_for_update(
+        &self,
+        transaction: &Self::TransactionType,
+        task_id: Uuid,
+    ) -> Result<Option<AdminTask>, PersistenceError> {
+        admin_task::find_task_by_id_for_update(transaction, task_id).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn withdraw_task(
+        &self,
+        transaction: &Self::TransactionType,
+        withdrawal: WithdrawAdminTask,
+    ) -> Result<Option<AdminTask>, PersistenceError> {
+        admin_task::withdraw_task(transaction, withdrawal).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn review_task(
+        &self,
+        transaction: &Self::TransactionType,
+        review: ReviewAdminTask,
+    ) -> Result<Option<AdminTask>, PersistenceError> {
+        admin_task::review_task(transaction, review).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn store_execution_result(
+        &self,
+        transaction: &Self::TransactionType,
+        execution: ExecuteAdminTask,
+    ) -> Result<Option<AdminTask>, PersistenceError> {
+        admin_task::store_execution_result(transaction, execution).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn list_tasks(&self, view: TaskListView) -> Result<Vec<AdminTask>, PersistenceError> {
+        admin_task::list_tasks(&self.0, view).await
+    }
+}
 
 impl TransactionStarter for Repositories {
     type TransactionType = Transaction;
@@ -42,9 +166,45 @@ impl TransactionStarter for Repositories {
     }
 }
 
+impl WalletFlagRepository for Repositories {
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn fetch_flags(&self) -> Result<Vec<(WalletFlag, bool)>, PersistenceError> {
+        wallet_flag::list_wallet_flags(&self.0).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn get_flag(&self, flag: WalletFlag) -> Result<bool, PersistenceError> {
+        wallet_flag::get_wallet_flag(&self.0, flag).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn set_flag(&self, flag: WalletFlag) -> Result<(), PersistenceError> {
+        wallet_flag::set_wallet_flag(&self.0, flag, true).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn clear_flag(&self, flag: WalletFlag) -> Result<(), PersistenceError> {
+        wallet_flag::set_wallet_flag(&self.0, flag, false).await
+    }
+}
+
 impl WalletUserRepository for Repositories {
     type TransactionType = Transaction;
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn list_wallet_user_ids(&self, transaction: &Self::TransactionType) -> Result<Vec<Uuid>, PersistenceError> {
+        wallet_user::list_wallet_user_ids(transaction).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn list_wallets(
+        &self,
+        transaction: &Self::TransactionType,
+    ) -> Result<Vec<WalletUserIsRevoked>, PersistenceError> {
+        wallet_user::list_wallets(transaction).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn create_wallet_user(
         &self,
         transaction: &Self::TransactionType,
@@ -53,26 +213,64 @@ impl WalletUserRepository for Repositories {
         wallet_user::create_wallet_user(transaction, user).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn find_wallet_user_by_wallet_id(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
     ) -> Result<WalletUserQueryResult, PersistenceError> {
         wallet_user::find_wallet_user_by_wallet_id(transaction, wallet_id).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn find_wallet_user_state_by_wallet_id(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_id: &WalletId,
+    ) -> Result<WalletUserStateQueryResult, PersistenceError> {
+        wallet_user::find_wallet_user_state_by_wallet_id(transaction, wallet_id).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn find_wallet_user_id_by_wallet_ids(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_ids: &HashSet<WalletId>,
+    ) -> Result<HashMap<WalletId, Uuid>, PersistenceError> {
+        wallet_user::find_wallet_user_id_by_wallet_ids(transaction, wallet_ids.iter().map(AsRef::as_ref)).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn find_wallet_user_by_revocation_code(
+        &self,
+        transaction: &Self::TransactionType,
+        revocation_code_hmac: &[u8],
+    ) -> Result<WalletUserQueryResult, PersistenceError> {
+        wallet_user::find_wallet_user_by_revocation_code(transaction, revocation_code_hmac).await
+    }
+
+    async fn find_wallet_user_ids_by_recovery_code(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: &RecoveryCode,
+    ) -> Result<Vec<Uuid>, PersistenceError> {
+        wallet_user::find_wallet_user_ids_by_recovery_code(transaction, recovery_code).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn clear_instruction_challenge(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
     ) -> Result<(), PersistenceError> {
         wallet_user::clear_instruction_challenge(transaction, wallet_id).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn update_instruction_challenge_and_sequence_number(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         challenge: InstructionChallenge,
         instruction_sequence_number: u64,
     ) -> Result<(), PersistenceError> {
@@ -85,131 +283,188 @@ impl WalletUserRepository for Repositories {
         .await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn update_instruction_sequence_number(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         instruction_sequence_number: u64,
     ) -> Result<(), PersistenceError> {
         wallet_user::update_instruction_sequence_number(transaction, wallet_id, instruction_sequence_number).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn register_unsuccessful_pin_entry(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         is_blocked: bool,
         datetime: DateTime<Utc>,
     ) -> Result<(), PersistenceError> {
         wallet_user::register_unsuccessful_pin_entry(transaction, wallet_id, is_blocked, datetime).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn reset_unsuccessful_pin_entries(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
     ) -> Result<(), PersistenceError> {
         wallet_user::reset_unsuccessful_pin_entries(transaction, wallet_id).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn save_keys(
         &self,
         transaction: &Self::TransactionType,
         keys: WalletUserKeys,
     ) -> Result<(), PersistenceError> {
-        wallet_user_key::create_keys(transaction, keys).await
+        wallet_user_key::persist_keys(transaction, keys).await
     }
 
-    async fn save_pin_recovery_keys(
-        &self,
-        transaction: &Self::TransactionType,
-        keys: WalletUserPinRecoveryKeys,
-    ) -> Result<(), PersistenceError> {
-        wallet_user_key::create_pin_recovery_keys(transaction, keys).await
-    }
-
-    async fn is_pin_recovery_key(
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn is_blocked_key(
         &self,
         transaction: &Self::TransactionType,
         wallet_user_id: Uuid,
         key: VerifyingKey,
-    ) -> Result<bool, PersistenceError> {
-        wallet_user_key::is_pin_recovery_key(transaction, wallet_user_id, key).await
+    ) -> Result<Option<bool>, PersistenceError> {
+        wallet_user_key::is_blocked_key(transaction, wallet_user_id, key).await
     }
 
-    async fn find_keys_by_identifiers(
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn delete_blocked_keys_in_batch(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+        key: VerifyingKey,
+    ) -> Result<(), PersistenceError> {
+        wallet_user_key::delete_blocked_keys_in_same_batch(transaction, wallet_user_id, key).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn delete_all_blocked_keys(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+    ) -> Result<(), PersistenceError> {
+        wallet_user_key::delete_all_blocked_keys(transaction, wallet_user_id).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn delete_keys(
         &self,
         transaction: &Self::TransactionType,
         wallet_user_id: Uuid,
         key_identifiers: &[String],
-    ) -> Result<HashMap<String, WrappedKey>, PersistenceError> {
-        wallet_user_key::find_keys_by_identifiers(transaction, wallet_user_id, key_identifiers).await
+    ) -> Result<(), PersistenceError> {
+        wallet_user_key::delete_keys(transaction, wallet_user_id, key_identifiers).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn unblock_blocked_keys_in_batch(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+        key: VerifyingKey,
+    ) -> Result<(), PersistenceError> {
+        wallet_user_key::unblock_blocked_keys_in_same_batch(transaction, wallet_user_id, key).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn find_active_keys_by_identifiers(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+        key_identifiers: &[String],
+    ) -> Result<HashMap<String, WithKid<WrappedKey>>, PersistenceError> {
+        wallet_user_key::find_active_keys_by_identifiers(transaction, wallet_user_id, key_identifiers).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn change_pin(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
-        new_encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+        wallet_id: &WalletId,
+        new_encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
         user_state: WalletUserState,
     ) -> Result<(), PersistenceError> {
         wallet_user::change_pin(transaction, wallet_id, new_encrypted_pin_pubkey, user_state).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn update_encrypted_pin_pubkey(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_id: &WalletId,
+        encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
+    ) -> Result<(), PersistenceError> {
+        wallet_user::update_encrypted_pin_pubkey(transaction, wallet_id, encrypted_pin_pubkey).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn commit_pin_change(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
     ) -> Result<(), PersistenceError> {
         wallet_user::commit_pin_change(transaction, wallet_id).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn rollback_pin_change(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
     ) -> Result<(), PersistenceError> {
         wallet_user::rollback_pin_change(transaction, wallet_id).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn store_recovery_code(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
-        recovery_code: String,
+        wallet_id: &WalletId,
+        recovery_code: RecoveryCode,
     ) -> Result<(), PersistenceError> {
         wallet_user::store_recovery_code(transaction, wallet_id, recovery_code).await
     }
 
-    async fn recover_pin(&self, transaction: &Self::TransactionType, wallet_id: Uuid) -> Result<(), PersistenceError> {
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn recover_pin(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_id: Uuid,
+    ) -> Result<(), PersistenceError> {
         wallet_user::transition_wallet_user_state(
             transaction,
-            wallet_id,
+            wallet_user_id,
             WalletUserState::RecoveringPin,
             WalletUserState::Active,
         )
-        .await?;
-
-        wallet_user_key::delete_pin_recovery_keys(transaction, wallet_id).await
+        .await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn has_multiple_active_accounts_by_recovery_code(
         &self,
         transaction: &Self::TransactionType,
-        recovery_code: &str,
+        recovery_code: &RecoveryCode,
     ) -> Result<bool, PersistenceError> {
         wallet_user::has_multiple_active_accounts_by_recovery_code(transaction, recovery_code).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn update_apple_assertion_counter(
         &self,
         transaction: &Self::TransactionType,
-        wallet_id: &str,
+        wallet_id: &WalletId,
         assertion_counter: AssertionCounter,
     ) -> Result<(), PersistenceError> {
         wallet_user::update_apple_assertion_counter(transaction, wallet_id, assertion_counter).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn create_transfer_session(
         &self,
         transaction: &Self::TransactionType,
@@ -228,6 +483,7 @@ impl WalletUserRepository for Repositories {
         .await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn find_transfer_session_by_transfer_session_id(
         &self,
         transaction: &Self::TransactionType,
@@ -236,6 +492,7 @@ impl WalletUserRepository for Repositories {
         wallet_transfer::find_transfer_session_by_transfer_session_id(transaction, transfer_session_id).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn find_transfer_session_id_by_destination_wallet_user_id(
         &self,
         transaction: &Self::TransactionType,
@@ -245,6 +502,7 @@ impl WalletUserRepository for Repositories {
             .await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn pair_wallet_transfer(
         &self,
         transaction: &Self::TransactionType,
@@ -270,6 +528,7 @@ impl WalletUserRepository for Repositories {
         .await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn cancel_wallet_transfer(
         &self,
         transaction: &Self::TransactionType,
@@ -295,6 +554,7 @@ impl WalletUserRepository for Repositories {
         wallet_transfer::set_wallet_transfer_data(transaction, transfer_session_id, None).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn reset_wallet_transfer(
         &self,
         transaction: &Self::TransactionType,
@@ -310,6 +570,7 @@ impl WalletUserRepository for Repositories {
         wallet_transfer::update_transfer_state(transaction, transfer_session_id, TransferSessionState::Created).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn confirm_wallet_transfer(
         &self,
         transaction: &Self::TransactionType,
@@ -318,6 +579,7 @@ impl WalletUserRepository for Repositories {
         wallet_transfer::update_transfer_state(transaction, transfer_session_id, TransferSessionState::Confirmed).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn store_wallet_transfer_data(
         &self,
         transaction: &Self::TransactionType,
@@ -329,6 +591,7 @@ impl WalletUserRepository for Repositories {
         wallet_transfer::set_wallet_transfer_data(transaction, transfer_session_id, Some(encrypted_wallet_data)).await
     }
 
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
     async fn complete_wallet_transfer(
         &self,
         transaction: &Self::TransactionType,
@@ -357,43 +620,122 @@ impl WalletUserRepository for Repositories {
         Ok(())
     }
 
-    async fn store_wua_id(
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn store_wia_id(
         &self,
         transaction: &Self::TransactionType,
         wallet_user_id: Uuid,
-        wua_id: Uuid,
+        wia_id: Uuid,
     ) -> Result<(), PersistenceError> {
-        wallet_user_wua::create(transaction, wallet_user_id, wua_id).await
+        wallet_user_wia::create(transaction, wallet_user_id, wia_id).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn revoke_wallet_users(
+        &self,
+        transaction: &Self::TransactionType,
+        wallet_user_ids: Vec<Uuid>,
+        revocation_reason: RevocationReason,
+        revocation_date_time: DateTime<Utc>,
+    ) -> Result<RevokedWalletUsers, PersistenceError> {
+        wallet_user_key::delete_all_keys(transaction, wallet_user_ids.clone()).await?;
+        let revoked_count = wallet_user::revoke_wallets(
+            transaction,
+            wallet_user_ids.clone(),
+            revocation_reason,
+            revocation_date_time,
+        )
+        .await?;
+        let wia_ids = wallet_user_wia::find_wia_ids_for_wallet_users(transaction, wallet_user_ids).await?;
+        Ok(RevokedWalletUsers { revoked_count, wia_ids })
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn deny_recovery_code(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: RecoveryCode,
+    ) -> Result<(), PersistenceError> {
+        recovery_code::insert(transaction, recovery_code).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn recovery_code_is_denied(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: RecoveryCode,
+    ) -> Result<bool, PersistenceError> {
+        recovery_code::is_denied(transaction, recovery_code).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn list_denied_recovery_codes(
+        &self,
+        transaction: &Self::TransactionType,
+    ) -> Result<Vec<RecoveryCode>, PersistenceError> {
+        recovery_code::list(transaction).await
+    }
+
+    #[measure(name = "nlwallet_db_operations", "service" => "database")]
+    async fn allow_recovery_code(
+        &self,
+        transaction: &Self::TransactionType,
+        recovery_code: &RecoveryCode,
+    ) -> Result<bool, PersistenceError> {
+        recovery_code::set_allowed(transaction, recovery_code).await
     }
 }
 
 #[cfg(feature = "mock")]
 pub mod mock {
     use std::collections::HashMap;
+    use std::collections::HashSet;
     use std::time::Duration;
 
+    use apple_app_attest::AssertionCounter;
     use chrono::DateTime;
     use chrono::Utc;
+    use crypto::kid::Kid;
+    use dashmap::DashMap;
+    use hsm::model::encrypted::Encrypted;
+    use hsm::model::wrapped_key::WrappedKey;
     use mockall;
     use p256::ecdsa::SigningKey;
     use p256::ecdsa::VerifyingKey;
-    use rand_core::OsRng;
+    use p256::elliptic_curve::Generate;
     use semver::Version;
     use uuid::Uuid;
     use uuid::uuid;
-
-    use apple_app_attest::AssertionCounter;
-    use hsm::model::encrypted::Encrypted;
-    use hsm::model::wrapped_key::WrappedKey;
+    use wallet_account::messages::errors::RevocationReason;
+    use wallet_provider_domain::model::QueryResult;
+    use wallet_provider_domain::model::admin_portal_session::AdminPortalLoginAttempt;
+    use wallet_provider_domain::model::admin_portal_session::AdminPortalUserSession;
+    use wallet_provider_domain::model::admin_task::AdminTask;
+    use wallet_provider_domain::model::admin_task::CreateAdminTask;
+    use wallet_provider_domain::model::admin_task::ExecuteAdminTask;
+    use wallet_provider_domain::model::admin_task::ReviewAdminTask;
+    use wallet_provider_domain::model::admin_task::TaskListView;
+    use wallet_provider_domain::model::admin_task::WithdrawAdminTask;
+    use wallet_provider_domain::model::wallet_flag::WalletFlag;
+    use wallet_provider_domain::model::wallet_user::AndroidHardwareIdentifiers;
     use wallet_provider_domain::model::wallet_user::InstructionChallenge;
+    use wallet_provider_domain::model::wallet_user::RecoveryCode;
+    use wallet_provider_domain::model::wallet_user::RevocationRegistration;
+    use wallet_provider_domain::model::wallet_user::RevokedWalletUsers;
     use wallet_provider_domain::model::wallet_user::TransferSession;
+    use wallet_provider_domain::model::wallet_user::WalletId;
     use wallet_provider_domain::model::wallet_user::WalletUser;
     use wallet_provider_domain::model::wallet_user::WalletUserAttestation;
     use wallet_provider_domain::model::wallet_user::WalletUserCreate;
+    use wallet_provider_domain::model::wallet_user::WalletUserIsRevoked;
     use wallet_provider_domain::model::wallet_user::WalletUserKeys;
-    use wallet_provider_domain::model::wallet_user::WalletUserPinRecoveryKeys;
     use wallet_provider_domain::model::wallet_user::WalletUserQueryResult;
     use wallet_provider_domain::model::wallet_user::WalletUserState;
+    use wallet_provider_domain::model::wallet_user::WalletUserStateQueryResult;
+    use wallet_provider_domain::model::wallet_user::WithKid;
+    use wallet_provider_domain::model::wallet_user::mock::wallet_user_1;
+    use wallet_provider_domain::model::wallet_user::mock::wallet_user_with_id;
+    use wallet_provider_domain::repository::AdminPortalRepository;
     use wallet_provider_domain::repository::MockTransaction;
     use wallet_provider_domain::repository::MockTransactionStarter;
     use wallet_provider_domain::repository::PersistenceError;
@@ -401,10 +743,99 @@ pub mod mock {
     use wallet_provider_domain::repository::WalletUserRepository;
 
     mockall::mock! {
+        pub AdminPortalRepository {}
+
+        impl TransactionStarter for AdminPortalRepository {
+            type TransactionType = MockTransaction;
+
+            async fn begin_transaction(&self) -> Result<MockTransaction, PersistenceError>;
+        }
+
+        impl AdminPortalRepository for AdminPortalRepository {
+            async fn insert_task(&self, task: CreateAdminTask) -> Result<AdminTask, PersistenceError>;
+
+            async fn find_task_by_id(&self, id: Uuid) -> Result<Option<AdminTask>, PersistenceError>;
+
+            async fn find_task_by_id_for_update(
+                &self,
+                transaction: &MockTransaction,
+                id: Uuid,
+            ) -> Result<Option<AdminTask>, PersistenceError>;
+
+            async fn withdraw_task(
+                &self,
+                transaction: &MockTransaction,
+                withdrawal: WithdrawAdminTask,
+            ) -> Result<Option<AdminTask>, PersistenceError>;
+
+            async fn review_task(
+                &self,
+                transaction: &MockTransaction,
+                review: ReviewAdminTask,
+            ) -> Result<Option<AdminTask>, PersistenceError>;
+
+            async fn store_execution_result(
+                &self,
+                transaction: &MockTransaction,
+                execution: ExecuteAdminTask,
+            ) -> Result<Option<AdminTask>, PersistenceError>;
+
+            async fn list_tasks(&self, view: TaskListView) -> Result<Vec<AdminTask>, PersistenceError>;
+
+
+            async fn insert_login_attempt(
+                &self,
+                state: String,
+                login_attempt: AdminPortalLoginAttempt,
+            ) -> Result<(), PersistenceError>;
+
+            async fn take_login_attempt(
+                &self,
+                state: &str,
+            ) -> Result<Option<AdminPortalLoginAttempt>, PersistenceError>;
+
+            async fn cleanup_expired_login_attempts(
+                &self,
+                created_before: DateTime<Utc>,
+            ) -> Result<(), PersistenceError>;
+
+            async fn insert_user_session(
+                &self,
+                session_id: String,
+                session: AdminPortalUserSession,
+            ) -> Result<(), PersistenceError>;
+
+            async fn fetch_user_session(
+                &self,
+                session_id: &str,
+                now: DateTime<Utc>,
+                new_expires_at: Option<DateTime<Utc>>,
+            ) -> Result<Option<AdminPortalUserSession>, PersistenceError>;
+
+            async fn take_user_session(
+                &self,
+                session_id: &str,
+            ) -> Result<Option<AdminPortalUserSession>, PersistenceError>;
+
+            async fn cleanup_expired_user_sessions(&self, now: DateTime<Utc>) -> Result<(), PersistenceError>;
+        }
+    }
+
+    mockall::mock! {
         pub TransactionalWalletUserRepository {}
 
         impl WalletUserRepository for TransactionalWalletUserRepository {
             type TransactionType = MockTransaction;
+
+            async fn list_wallets(
+                &self,
+                transaction: &MockTransaction,
+            ) -> Result<Vec<WalletUserIsRevoked>, PersistenceError>;
+
+            async fn list_wallet_user_ids(
+                &self,
+                transaction: &MockTransaction,
+            ) -> Result<Vec<Uuid>, PersistenceError>;
 
             async fn create_wallet_user(
                 &self,
@@ -414,115 +845,167 @@ pub mod mock {
 
             async fn find_wallet_user_by_wallet_id(
                 &self,
-                _transaction: &MockTransaction,
-                wallet_id: &str,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
             ) -> Result<WalletUserQueryResult, PersistenceError>;
+
+            async fn find_wallet_user_state_by_wallet_id(
+                &self,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
+            ) -> Result<WalletUserStateQueryResult, PersistenceError>;
+
+            async fn find_wallet_user_id_by_wallet_ids(
+                &self,
+                transaction: &MockTransaction,
+                wallet_ids: &HashSet<WalletId> ,
+            ) -> Result<HashMap<WalletId, Uuid>, PersistenceError>;
+
+            async fn find_wallet_user_by_revocation_code(
+                &self,
+                transaction: &MockTransaction,
+                revocation_code_hmac: &[u8],
+            ) -> Result<WalletUserQueryResult, PersistenceError>;
+
+            async fn find_wallet_user_ids_by_recovery_code(
+                &self,
+                transaction: &MockTransaction,
+                recovery_code: &RecoveryCode,
+            ) -> Result<Vec<Uuid>, PersistenceError>;
 
             async fn register_unsuccessful_pin_entry(
                 &self,
-                _transaction: &MockTransaction,
-                _wallet_id: &str,
-                _is_blocked: bool,
-                _datetime: DateTime<Utc>,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
+                is_blocked: bool,
+                datetime: DateTime<Utc>,
             ) -> Result<(), PersistenceError>;
 
             async fn reset_unsuccessful_pin_entries(
                 &self,
-                _transaction: &MockTransaction,
-                _wallet_id: &str,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
             ) -> Result<(), PersistenceError>;
 
             async fn clear_instruction_challenge(
                 &self,
-                _transaction: &MockTransaction,
-                _wallet_id: &str,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
             ) -> Result<(), PersistenceError>;
 
             async fn update_instruction_challenge_and_sequence_number(
                 &self,
-                _transaction: &MockTransaction,
-                _wallet_id: &str,
-                _challenge: InstructionChallenge,
-                _instruction_sequence_number: u64,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
+                challenge: InstructionChallenge,
+                instruction_sequence_number: u64,
             ) -> Result<(), PersistenceError>;
 
             async fn update_instruction_sequence_number(
                 &self,
-                _transaction: &MockTransaction,
-                _wallet_id: &str,
-                _instruction_sequence_number: u64,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
+                instruction_sequence_number: u64,
             ) -> Result<(), PersistenceError>;
 
             async fn save_keys(
                 &self,
-                _transaction: &MockTransaction,
-                _keys: WalletUserKeys,
+                transaction: &MockTransaction,
+                keys: WalletUserKeys,
             ) -> Result<(), PersistenceError>;
 
-            async fn save_pin_recovery_keys(
+            async fn is_blocked_key(
                 &self,
-                _transaction: &MockTransaction,
-                _keys: WalletUserPinRecoveryKeys,
+                transaction: &MockTransaction,
+                wallet_user_id: Uuid,
+                key: VerifyingKey,
+            ) -> Result<Option<bool>, PersistenceError>;
+
+            async fn unblock_blocked_keys_in_batch(
+                &self,
+                transaction: &MockTransaction,
+                wallet_user_id: Uuid,
+                key: VerifyingKey,
             ) -> Result<(), PersistenceError>;
 
-            async fn is_pin_recovery_key(
+            async fn delete_blocked_keys_in_batch(
                 &self,
-                _transaction: &MockTransaction,
-                _wallet_user_id: Uuid,
-                _key: VerifyingKey,
-            ) -> Result<bool, PersistenceError>;
+                transaction: &MockTransaction,
+                wallet_user_id: Uuid,
+                key: VerifyingKey,
+            ) -> Result<(), PersistenceError>;
 
-            async fn find_keys_by_identifiers(
+            async fn delete_all_blocked_keys(
                 &self,
-                _transaction: &MockTransaction,
+                transaction: &MockTransaction,
+                wallet_user_id: Uuid,
+            ) -> Result<(), PersistenceError>;
+
+            async fn delete_keys(
+                &self,
+                transaction: &MockTransaction,
                 wallet_user_id: Uuid,
                 key_identifiers: &[String],
-            ) -> Result<HashMap<String, WrappedKey>, PersistenceError>;
+            ) -> Result<(), PersistenceError>;
+
+            async fn find_active_keys_by_identifiers(
+                &self,
+                transaction: &MockTransaction,
+                wallet_user_id: Uuid,
+                key_identifiers: &[String],
+            ) -> Result<HashMap<String, WithKid<WrappedKey>>, PersistenceError>;
 
             async fn change_pin(
                 &self,
                 transaction: &MockTransaction,
-                wallet_id: &str,
-                encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+                wallet_id: &WalletId,
+                encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
                 user_state: WalletUserState,
+            ) -> Result<(), PersistenceError>;
+
+            async fn update_encrypted_pin_pubkey(
+                &self,
+                transaction: &MockTransaction,
+                wallet_id: &WalletId,
+                encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
             ) -> Result<(), PersistenceError>;
 
             async fn commit_pin_change(
                 &self,
                 transaction: &MockTransaction,
-                wallet_id: &str
+                wallet_id: &WalletId
             ) -> Result<(), PersistenceError>;
 
             async fn rollback_pin_change(
                 &self,
                 transaction: &MockTransaction,
-                wallet_id: &str
+                wallet_id: &WalletId
             ) -> Result<(), PersistenceError>;
 
             async fn update_apple_assertion_counter(
                 &self,
                 transaction: &MockTransaction,
-                wallet_id: &str,
+                wallet_id: &WalletId,
                 assertion_counter: AssertionCounter,
             ) -> Result<(), PersistenceError>;
 
             async fn store_recovery_code(
                 &self,
                 transaction: &MockTransaction,
-                wallet_id: &str,
-                recovery_code: String,
+                wallet_id: &WalletId,
+                recovery_code: RecoveryCode,
             ) -> Result<(), PersistenceError>;
 
             async fn recover_pin(
                 &self,
                 transaction: &MockTransaction,
-                wallet_id: Uuid,
+                wallet_user_id: Uuid,
             ) -> Result<(), PersistenceError>;
 
             async fn has_multiple_active_accounts_by_recovery_code(
                 &self,
                 transaction: &MockTransaction,
-                recovery_code: &str,
+                recovery_code: &RecoveryCode,
             ) -> Result<bool, PersistenceError>;
 
             async fn create_transfer_session(
@@ -591,12 +1074,40 @@ pub mod mock {
                 destination_wallet_user_id: Uuid,
             ) -> Result<(), PersistenceError>;
 
-            async fn store_wua_id(
+            async fn store_wia_id(
                 &self,
                 transaction: &MockTransaction,
                 wallet_user_id: Uuid,
-                wua_id: Uuid,
+                wia_id: Uuid,
             ) -> Result<(), PersistenceError>;
+
+            async fn revoke_wallet_users(
+                &self,
+                transaction: &MockTransaction,
+                wallet_user_id: Vec<Uuid>,
+                revocation_reason: RevocationReason,
+                revocation_date_time: DateTime<Utc>
+            ) -> Result<RevokedWalletUsers, PersistenceError>;
+
+            async fn deny_recovery_code(
+                &self,
+                transaction: &MockTransaction,
+                recovery_code: RecoveryCode,
+            ) -> Result<(), PersistenceError>;
+
+            async fn recovery_code_is_denied(
+                &self,
+                transaction: &MockTransaction,
+                recovery_code: RecoveryCode,
+            ) -> Result<bool, PersistenceError>;
+
+            async fn list_denied_recovery_codes(&self, transaction: &MockTransaction) -> Result<Vec<RecoveryCode>, PersistenceError>;
+
+            async fn allow_recovery_code(
+                &self,
+                transaction: &MockTransaction,
+                recovery_code: &RecoveryCode,
+            ) -> Result<bool, PersistenceError>;
         }
 
         impl TransactionStarter for TransactionalWalletUserRepository {
@@ -615,11 +1126,33 @@ pub mod mock {
         pub instruction_sequence_number: u64,
         pub apple_assertion_counter: Option<AssertionCounter>,
         pub state: WalletUserState,
-        pub transfer_session: Option<TransferSession>,
+        pub revocation_code_hmac: Vec<u8>,
+        pub revocation_registration: Option<RevocationRegistration>,
+        pub flags: DashMap<WalletFlag, bool>,
     }
 
     impl WalletUserRepository for WalletUserTestRepo {
         type TransactionType = MockTransaction;
+
+        async fn list_wallet_user_ids(
+            &self,
+            _transaction: &Self::TransactionType,
+        ) -> Result<Vec<Uuid>, PersistenceError> {
+            Ok(vec![
+                uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+                uuid!("a123f36e-ffbd-402f-b6f3-418cf4c49e09"),
+            ])
+        }
+
+        async fn list_wallets(
+            &self,
+            _transaction: &Self::TransactionType,
+        ) -> Result<Vec<WalletUserIsRevoked>, PersistenceError> {
+            Ok(vec![
+                wallet_user_1().into(),
+                wallet_user_with_id("wallet-456".to_owned().into()).into(),
+            ])
+        }
 
         async fn create_wallet_user(
             &self,
@@ -632,14 +1165,20 @@ pub mod mock {
         async fn find_wallet_user_by_wallet_id(
             &self,
             _transaction: &Self::TransactionType,
-            wallet_id: &str,
+            wallet_id: &WalletId,
         ) -> Result<WalletUserQueryResult, PersistenceError> {
-            Ok(WalletUserQueryResult::Found(Box::new(WalletUser {
+            Ok(QueryResult::Found(Box::new(WalletUser {
                 id: uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
-                wallet_id: wallet_id.to_string(),
+                wallet_id: wallet_id.to_owned(),
                 hw_pubkey: self.hw_pubkey,
-                encrypted_pin_pubkey: self.encrypted_pin_pubkey.clone(),
-                encrypted_previous_pin_pubkey: self.previous_encrypted_pin_pubkey.clone(),
+                encrypted_pin_pubkey: WithKid {
+                    value: self.encrypted_pin_pubkey.clone(),
+                    kid: Kid::try_from("0").unwrap(),
+                },
+                encrypted_previous_pin_pubkey: self.previous_encrypted_pin_pubkey.as_ref().map(|value| WithKid {
+                    value: value.clone(),
+                    kid: Kid::try_from("0").unwrap(),
+                }),
                 unsuccessful_pin_entries: 0,
                 last_unsuccessful_pin_entry: None,
                 instruction_challenge: self.challenge.clone().map(|c| InstructionChallenge {
@@ -649,17 +1188,88 @@ pub mod mock {
                 instruction_sequence_number: self.instruction_sequence_number,
                 attestation: match self.apple_assertion_counter {
                     Some(assertion_counter) => WalletUserAttestation::Apple { assertion_counter },
-                    None => WalletUserAttestation::Android,
+                    None => WalletUserAttestation::Android {
+                        identifiers: AndroidHardwareIdentifiers::default(),
+                    },
                 },
                 state: self.state,
+                revocation_code_hmac: self.revocation_code_hmac.clone(),
+                revocation_registration: self.revocation_registration,
                 recovery_code: None,
+                recovery_code_is_denied: false,
             })))
+        }
+
+        async fn find_wallet_user_state_by_wallet_id(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_id: &WalletId,
+        ) -> Result<WalletUserStateQueryResult, PersistenceError> {
+            Ok(QueryResult::Found(Box::new(self.state)))
+        }
+
+        async fn find_wallet_user_id_by_wallet_ids(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_id: &HashSet<WalletId>,
+        ) -> Result<HashMap<WalletId, Uuid>, PersistenceError> {
+            Ok([(
+                WalletId::from("wallet-123".to_owned()),
+                uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+            )]
+            .into())
+        }
+
+        async fn find_wallet_user_by_revocation_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _revocation_code_hmac: &[u8],
+        ) -> Result<WalletUserQueryResult, PersistenceError> {
+            Ok(QueryResult::Found(Box::new(WalletUser {
+                id: uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+                wallet_id: WalletId::from("wallet-123".to_owned()),
+                hw_pubkey: self.hw_pubkey,
+                encrypted_pin_pubkey: WithKid {
+                    value: self.encrypted_pin_pubkey.clone(),
+                    kid: Kid::try_from("0").unwrap(),
+                },
+                encrypted_previous_pin_pubkey: self.previous_encrypted_pin_pubkey.as_ref().map(|value| WithKid {
+                    value: value.clone(),
+                    kid: Kid::try_from("0").unwrap(),
+                }),
+                unsuccessful_pin_entries: 0,
+                last_unsuccessful_pin_entry: None,
+                instruction_challenge: self.challenge.clone().map(|c| InstructionChallenge {
+                    bytes: c,
+                    expiration_date_time: Utc::now() + Duration::from_millis(15000),
+                }),
+                instruction_sequence_number: self.instruction_sequence_number,
+                attestation: match self.apple_assertion_counter {
+                    Some(assertion_counter) => WalletUserAttestation::Apple { assertion_counter },
+                    None => WalletUserAttestation::Android {
+                        identifiers: AndroidHardwareIdentifiers::default(),
+                    },
+                },
+                state: self.state,
+                revocation_code_hmac: self.revocation_code_hmac.clone(),
+                revocation_registration: self.revocation_registration,
+                recovery_code: None,
+                recovery_code_is_denied: false,
+            })))
+        }
+
+        async fn find_wallet_user_ids_by_recovery_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: &RecoveryCode,
+        ) -> Result<Vec<Uuid>, PersistenceError> {
+            Ok([uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08")].into())
         }
 
         async fn clear_instruction_challenge(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -667,7 +1277,7 @@ pub mod mock {
         async fn update_instruction_challenge_and_sequence_number(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _challenge: InstructionChallenge,
             _instruction_sequence_number: u64,
         ) -> Result<(), PersistenceError> {
@@ -677,7 +1287,7 @@ pub mod mock {
         async fn update_instruction_sequence_number(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _instruction_sequence_number: u64,
         ) -> Result<(), PersistenceError> {
             Ok(())
@@ -686,7 +1296,7 @@ pub mod mock {
         async fn register_unsuccessful_pin_entry(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _is_blocked: bool,
             _datetime: DateTime<Utc>,
         ) -> Result<(), PersistenceError> {
@@ -696,7 +1306,7 @@ pub mod mock {
         async fn reset_unsuccessful_pin_entries(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -709,37 +1319,67 @@ pub mod mock {
             Ok(())
         }
 
-        async fn save_pin_recovery_keys(
-            &self,
-            _transaction: &MockTransaction,
-            _keys: WalletUserPinRecoveryKeys,
-        ) -> Result<(), PersistenceError> {
-            Ok(())
-        }
-
-        async fn is_pin_recovery_key(
+        async fn is_blocked_key(
             &self,
             _transaction: &MockTransaction,
             _wallet_user_id: Uuid,
             _key: VerifyingKey,
-        ) -> Result<bool, PersistenceError> {
-            Ok(true)
+        ) -> Result<Option<bool>, PersistenceError> {
+            Ok(Some(true))
         }
 
-        async fn find_keys_by_identifiers(
+        async fn delete_blocked_keys_in_batch(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+            _key: VerifyingKey,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+
+        async fn delete_all_blocked_keys(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+
+        async fn delete_keys(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+            _key_identifiers: &[String],
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+
+        async fn unblock_blocked_keys_in_batch(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Uuid,
+            _key: VerifyingKey,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+
+        async fn find_active_keys_by_identifiers(
             &self,
             _transaction: &Self::TransactionType,
             _wallet_user_id: Uuid,
             key_identifiers: &[String],
-        ) -> Result<HashMap<String, WrappedKey>, PersistenceError> {
+        ) -> Result<HashMap<String, WithKid<WrappedKey>>, PersistenceError> {
             Ok(key_identifiers
                 .iter()
                 .map(|id| {
-                    let privkey = SigningKey::random(&mut OsRng);
+                    let privkey = SigningKey::generate();
 
                     (
                         id.clone(),
-                        WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+                        WithKid {
+                            value: WrappedKey::new(privkey.to_bytes().to_vec(), *privkey.verifying_key()),
+                            kid: Kid::try_from("0").unwrap(),
+                        },
                     )
                 })
                 .collect())
@@ -748,9 +1388,18 @@ pub mod mock {
         async fn change_pin(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
-            _encrypted_pin_pubkey: Encrypted<VerifyingKey>,
+            _wallet_id: &WalletId,
+            _encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
             _user_state: WalletUserState,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+
+        async fn update_encrypted_pin_pubkey(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_id: &WalletId,
+            _encrypted_pin_pubkey: WithKid<Encrypted<VerifyingKey>>,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -758,7 +1407,7 @@ pub mod mock {
         async fn commit_pin_change(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -766,7 +1415,7 @@ pub mod mock {
         async fn rollback_pin_change(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -774,8 +1423,8 @@ pub mod mock {
         async fn store_recovery_code(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: &str,
-            _recovery_code: String,
+            _wallet_id: &WalletId,
+            _recovery_code: RecoveryCode,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -783,7 +1432,7 @@ pub mod mock {
         async fn recover_pin(
             &self,
             _transaction: &Self::TransactionType,
-            _wallet_id: Uuid,
+            _wallet_user_id: Uuid,
         ) -> Result<(), PersistenceError> {
             Ok(())
         }
@@ -791,7 +1440,7 @@ pub mod mock {
         async fn has_multiple_active_accounts_by_recovery_code(
             &self,
             _transaction: &Self::TransactionType,
-            _recovery_code: &str,
+            _recovery_code: &RecoveryCode,
         ) -> Result<bool, PersistenceError> {
             Ok(false)
         }
@@ -799,7 +1448,7 @@ pub mod mock {
         async fn update_apple_assertion_counter(
             &self,
             _transaction: &MockTransaction,
-            _wallet_id: &str,
+            _wallet_id: &WalletId,
             _assertion_counter: AssertionCounter,
         ) -> Result<(), PersistenceError> {
             Ok(())
@@ -890,13 +1539,60 @@ pub mod mock {
             Ok(())
         }
 
-        async fn store_wua_id(
+        async fn store_wia_id(
             &self,
             _transaction: &Self::TransactionType,
-            _wua_id: Uuid,
+            _wia_id: Uuid,
             _wallet_user_id: Uuid,
         ) -> Result<(), PersistenceError> {
             Ok(())
+        }
+
+        async fn revoke_wallet_users(
+            &self,
+            _transaction: &Self::TransactionType,
+            _wallet_user_id: Vec<Uuid>,
+            _revocation_reason: RevocationReason,
+            _revocation_date_time: DateTime<Utc>,
+        ) -> Result<RevokedWalletUsers, PersistenceError> {
+            Ok(RevokedWalletUsers {
+                revoked_count: 2,
+                wia_ids: vec![
+                    uuid!("d944f36e-ffbd-402f-b6f3-418cf4c49e08"),
+                    uuid!("a123f36e-ffbd-402f-b6f3-418cf4c49e09"),
+                ],
+            })
+        }
+
+        async fn deny_recovery_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: RecoveryCode,
+        ) -> Result<(), PersistenceError> {
+            Ok(())
+        }
+
+        async fn recovery_code_is_denied(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: RecoveryCode,
+        ) -> Result<bool, PersistenceError> {
+            Ok(false)
+        }
+
+        async fn list_denied_recovery_codes(
+            &self,
+            _transaction: &Self::TransactionType,
+        ) -> Result<Vec<RecoveryCode>, PersistenceError> {
+            Ok(vec![])
+        }
+
+        async fn allow_recovery_code(
+            &self,
+            _transaction: &Self::TransactionType,
+            _recovery_code: &RecoveryCode,
+        ) -> Result<bool, PersistenceError> {
+            Ok(false)
         }
     }
 

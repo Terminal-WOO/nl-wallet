@@ -1,18 +1,24 @@
 // Animation
 import 'package:flutter/painting.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 const kDefaultAnimationDuration = Duration(milliseconds: 300);
 
 // UI
 const double kCardBreakPointWidth = 300; // Used to calculate columns for MasonryGrid
 const EdgeInsets kDefaultTitlePadding = EdgeInsets.only(left: 16, right: 16, top: 12, bottom: 8);
+const double kDefaultHorizontalPadding = 16;
 
 // Security
 const kPinDigits = 6;
 const kMockPin = '123456';
 
-// DigiD
+// External URLs
 const kDigidWebsiteUrl = 'https://www.digid.nl/inlogmethodes/identiteitsbewijs';
+const kSafeBrowsingUrl = 'https://veiliginternetten.nl';
+const kFeedbackFormUrlEn = 'https://formulieren.pleio.nl/forms/55e9b98f-39f1-4aec-81e4-2e3ab11fbc88/introduction';
+const kFeedbackFormUrlNl = 'https://formulieren.pleio.nl/forms/f00f1f33-71f1-459f-a6c1-a34c84772eac/introduction';
 
 // Mocking
 const kDefaultMockDelay = Duration(milliseconds: 1000);
@@ -25,3 +31,22 @@ const kDeeplinkHost = 'deeplink'; //Used in our custom deeplinks
 const kDeeplinkPath = '/deeplink'; //Used to support deeplinks with dedicated host
 const kDeepDiveHost = 'deepdive'; //Used in our custom deepdives
 const kDeepDivePath = '/deepdive'; //Used to support deepdives with dedicated host
+
+// Notification related
+const kNotificationPayloadScheme = 'nlwallet';
+const kAndroidInitSettings = AndroidInitializationSettings('ic_notification');
+const kDarwinInitSettings = DarwinInitializationSettings(
+  requestAlertPermission: false,
+  requestBadgePermission: false,
+  requestCriticalPermission: false,
+  requestSoundPermission: false,
+  requestProvisionalPermission: false,
+  requestProvidesAppNotificationSettings: false,
+);
+
+// Permissions
+const kAndroidBlePermissions = [Permission.bluetoothConnect, Permission.bluetoothAdvertise];
+const kIosBlePermissions = [Permission.bluetooth];
+
+// Temporary Close Proximity fallback; keep in sync with wallet/close_proximity_disclosure.rs.
+const kWrprcSupportUnavailableUri = 'https://example.invalid/wrprc-support-unavailable';

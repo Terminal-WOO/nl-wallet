@@ -80,7 +80,9 @@ class SetupSecurityPinConfirmationFailed extends SetupSecurityState {
   FlowProgress get stepperProgress => FlowProgress(currentStep: 3, totalSteps: OnboardingHelper.totalSteps);
 }
 
-class SetupSecurityCreatingWallet extends SetupSecurityState {}
+class SetupSecurityCreatingWallet extends SetupSecurityState {
+  const SetupSecurityCreatingWallet();
+}
 
 class SetupSecurityConfigureBiometrics extends SetupSecurityState {
   final Biometrics biometrics;
@@ -102,44 +104,18 @@ class SetupSecurityCompleted extends SetupSecurityState {
 
   @override
   FlowProgress get stepperProgress =>
-      FlowProgress(currentStep: OnboardingHelper.totalSteps - 4, totalSteps: OnboardingHelper.totalSteps);
+      FlowProgress(currentStep: OnboardingHelper.totalSteps - 5, totalSteps: OnboardingHelper.totalSteps);
 
   @override
   List<Object?> get props => [enabledBiometrics, ...super.props];
 }
 
-class SetupSecurityGenericError extends SetupSecurityState implements ErrorState {
+class SetupSecurityError extends SetupSecurityState implements ErrorState {
   @override
   final ApplicationError error;
 
-  const SetupSecurityGenericError({required this.error});
+  const SetupSecurityError({required this.error});
 
   @override
   List<Object?> get props => [error, ...super.props];
-}
-
-class SetupSecurityDeviceIncompatibleError extends SetupSecurityState implements ErrorState {
-  @override
-  final ApplicationError error;
-
-  const SetupSecurityDeviceIncompatibleError({required this.error});
-
-  @override
-  List<Object?> get props => [error, ...super.props];
-}
-
-class SetupSecurityNetworkError extends SetupSecurityState implements NetworkErrorState {
-  @override
-  final ApplicationError error;
-
-  @override
-  final bool hasInternet;
-
-  @override
-  final int? statusCode;
-
-  const SetupSecurityNetworkError({required this.error, required this.hasInternet, this.statusCode});
-
-  @override
-  List<Object?> get props => [error, hasInternet, statusCode, ...super.props];
 }

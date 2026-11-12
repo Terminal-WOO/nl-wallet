@@ -3,29 +3,33 @@ use std::net::IpAddr;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
+use attestation_data::registration_certificate::BoundRegistrationCertificate;
+use attestation_data::registration_certificate::RegistrationCertificateAuthorizationError;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use attestation_data::registration_certificate::verify_registration_certificate_envelope;
+use attestation_data::x509::RelyingParty;
+use attestation_data::x509::RelyingPartyError;
 use chrono::DateTime;
 use chrono::Utc;
 use config::ConfigError;
+use crypto::p256_der::DerSigningKey;
+use crypto::server_keys::KeyPair as ParsedKeyPair;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::BorrowingCertificate;
+use crypto::x509::CertificateExtendedKeyUsage;
+use crypto::x509::CertificateParseError;
+use crypto::x509::CertificateVerifyError;
+use crypto::x509::DistinguishedNameError;
+use dcql::Query;
+use hsm::service::Pkcs11Hsm;
+use hsm::settings::Hsm;
 use nutype::nutype;
-use rustls_pki_types::TrustAnchor;
+use openid4vc::server_state::SessionStoreTimeouts;
 use serde::Deserialize;
 use serde_with::base64::Base64;
 use serde_with::hex::Hex;
 use serde_with::serde_as;
 use url::Url;
-
-use attestation_data::x509::CertificateType;
-use attestation_data::x509::CertificateTypeError;
-use crypto::p256_der::DerSigningKey;
-use crypto::server_keys::KeyPair as ParsedKeyPair;
-use crypto::trust_anchor::BorrowingTrustAnchor;
-use crypto::x509::BorrowingCertificate;
-use crypto::x509::CertificateError;
-use crypto::x509::CertificateUsage;
-use hsm::service::Pkcs11Hsm;
-use hsm::settings::Hsm;
-use http_utils::urls::BaseUrl;
-use openid4vc::server_state::SessionStoreTimeouts;
 use utils::generator::Generator;
 
 use crate::keys::PrivateKeySettingsError;
@@ -35,14 +39,15 @@ use crate::keys::PrivateKeyVariant;
 pub const NL_WALLET_CLIENT_ID: &str = "https://wallet.edi.rijksoverheid.nl";
 
 /// Settings shared by all variants of issuer/verifier servers.
-#[serde_as]
 #[derive(Clone, Deserialize)]
 pub struct Settings {
     // used by the wallet, MUST be reachable from the public internet.
     pub wallet_server: Server,
 
-    /// Publicly reachable URL used by the wallet during sessions
-    pub public_url: BaseUrl,
+    // used by the application, SHOULD be reachable only by the application.
+    // if not configured the wallet_server will be used, but an api_key is required in that case
+    // if it conflicts with wallet_server, the application will crash on startup
+    pub internal_server: ServerAuth,
 
     pub log_requests: bool,
     pub structured_logging: bool,
@@ -51,8 +56,13 @@ pub struct Settings {
 
     /// Issuer trust anchors are used to validate the keys and certificates in the issuer's private_keys configuration
     /// on application startup and the issuer of the disclosed attributes during disclosure sessions.
-    #[serde_as(as = "Vec<Base64>")]
-    pub issuer_trust_anchors: Vec<BorrowingTrustAnchor>,
+    pub issuer_trust_anchors: TrustAnchors,
+
+    /// Trust anchors for Wallet Relying Party Access Certificates, used by both issuers and verifiers.
+    pub wrpac_trust_anchors: TrustAnchors,
+
+    /// Trust anchors for Wallet Relying Party Registration Certificates, used by both issuers and verifiers.
+    pub wrprc_trust_anchors: TrustAnchors,
 
     /// Optional HSM settings in which private keys can be stored
     pub hsm: Option<Hsm>,
@@ -65,7 +75,7 @@ pub struct Server {
 }
 
 #[derive(Clone, Deserialize)]
-pub enum RequesterAuth {
+pub enum ServerAuth {
     #[serde(rename = "authentication")]
     Authentication(Authentication),
     #[serde(untagged)]
@@ -176,11 +186,38 @@ pub enum CertificateVerificationError {
     #[error("missing trust anchors, expected at least 1")]
     MissingTrustAnchors,
     #[error("invalid certificate `{1}`: {0}")]
-    InvalidCertificate(#[source] CertificateError, String),
+    InvalidCertificate(#[source] CertificateVerifyError, String),
     #[error("invalid key pair `{1}`: {0}")]
-    InvalidKeyPair(#[source] CertificateError, String),
-    #[error("no CertificateType found in certificate `{1}`: {0}")]
-    NoCertificateType(#[source] CertificateTypeError, String),
+    InvalidKeyPair(#[source] CertificateParseError, String),
+    #[error("invalid distinguished name in certificate `{1}`: {0}")]
+    InvalidDistinguishedName(#[source] DistinguishedNameError, String),
+    #[error("invalid relying party in certificate `{1}`: {0}")]
+    InvalidRelyingParty(#[source] RelyingPartyError, String),
+}
+
+pub struct VerifierUseCase<'a> {
+    pub id: &'a str,
+    pub key_pair: &'a KeyPair,
+    pub registration_certificate: &'a RegistrationCertificateEnvelope,
+    pub dcql_query: Option<&'a Query>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VerifierUseCasesValidationError {
+    #[error("{0}")]
+    Certificate(#[source] CertificateVerificationError),
+    #[error("invalid registration certificate for use case `{use_case_id}`: {source}")]
+    InvalidRegistrationCertificate {
+        use_case_id: String,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("DCQL query for use case `{use_case_id}` is not authorized by its registration certificate: {source}")]
+    UnauthorizedDcqlQuery {
+        use_case_id: String,
+        #[source]
+        source: RegistrationCertificateAuthorizationError,
+    },
 }
 
 pub trait ServerSettings: Sized {
@@ -193,8 +230,8 @@ pub trait ServerSettings: Sized {
 
 pub fn verify_key_pairs(
     key_pairs: &[(&str, &KeyPair)],
-    trust_anchors: &[TrustAnchor<'_>],
-    usage: CertificateUsage,
+    trust_anchors: &TrustAnchors,
+    usage: Option<CertificateExtendedKeyUsage>,
     time: &impl Generator<DateTime<Utc>>,
 ) -> Result<(), CertificateVerificationError> {
     if trust_anchors.is_empty() {
@@ -209,11 +246,68 @@ pub fn verify_key_pairs(
             .verify(usage, &[], time, trust_anchors)
             .map_err(|e| CertificateVerificationError::InvalidCertificate(e, key_pair_id.to_string()))?;
 
-        if CertificateType::has_certificate_type(usage) {
-            CertificateType::from_certificate(&key_pair.certificate)
-                .map_err(|e| CertificateVerificationError::NoCertificateType(e, key_pair_id.to_string()))?;
+        let subject = key_pair
+            .certificate
+            .to_distinguished_name()
+            .map_err(|e| CertificateVerificationError::InvalidDistinguishedName(e, key_pair_id.to_string()))?;
+        RelyingParty::try_from(subject)
+            .map_err(|e| CertificateVerificationError::InvalidRelyingParty(e, key_pair_id.to_string()))?;
+    }
+
+    Ok(())
+}
+
+pub fn validate_verifier_use_cases(
+    use_cases: &[VerifierUseCase<'_>],
+    wrpac_trust_anchors: &TrustAnchors,
+    wrprc_trust_anchors: &TrustAnchors,
+    time: &impl Generator<DateTime<Utc>>,
+) -> Result<(), VerifierUseCasesValidationError> {
+    let key_pairs = use_cases
+        .iter()
+        .map(|use_case| (use_case.id, use_case.key_pair))
+        .collect::<Vec<_>>();
+
+    verify_key_pairs(&key_pairs, wrpac_trust_anchors, None, time)
+        .map_err(VerifierUseCasesValidationError::Certificate)?;
+
+    for use_case in use_cases {
+        let registration_certificate = validate_registration_certificate(
+            use_case.registration_certificate,
+            &use_case.key_pair.certificate,
+            wrprc_trust_anchors,
+            time,
+        )
+        .map_err(
+            |source| VerifierUseCasesValidationError::InvalidRegistrationCertificate {
+                use_case_id: use_case.id.to_string(),
+                source,
+            },
+        )?;
+
+        if let Some(dcql_query) = use_case.dcql_query {
+            registration_certificate
+                .validate_dcql_authorization(dcql_query)
+                .map_err(|source| VerifierUseCasesValidationError::UnauthorizedDcqlQuery {
+                    use_case_id: use_case.id.to_string(),
+                    source,
+                })?;
         }
     }
 
     Ok(())
+}
+
+fn validate_registration_certificate(
+    registration_certificate: &RegistrationCertificateEnvelope,
+    access_certificate: &BorrowingCertificate,
+    trust_anchors: &TrustAnchors,
+    time: &impl Generator<DateTime<Utc>>,
+) -> Result<BoundRegistrationCertificate, anyhow::Error> {
+    let access_subject = RelyingParty::try_from(access_certificate.to_distinguished_name()?)?;
+
+    let payload =
+        verify_registration_certificate_envelope(registration_certificate, trust_anchors, time)?.into_payload();
+
+    payload.validate_binding(&access_subject).map_err(anyhow::Error::from)
 }

@@ -1,63 +1,62 @@
+use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
 use tokio::fs;
 
-use wallet_configuration::wallet_config::WalletConfiguration;
-
+use super::ConfigurationError;
 use super::FileStorageError;
+use super::WalletConfigJwt;
 
-pub async fn get_config_file(storage_path: &Path) -> Result<Option<WalletConfiguration>, FileStorageError> {
+pub async fn get_config_file(storage_path: &Path) -> Result<Option<WalletConfigJwt>, ConfigurationError> {
     let path = path_for_config_file(storage_path);
 
-    if !fs::try_exists(&path).await? {
-        return Ok(None);
+    match fs::read_to_string(path).await {
+        Ok(jwt_string) => Ok(Some(jwt_string.parse().map_err(ConfigurationError::JwtParse)?)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(FileStorageError::from(err))?,
     }
-
-    let config = read_config(path.as_path()).await?;
-    Ok(Some(config))
 }
 
-pub async fn update_config_file(storage_path: &Path, config: &WalletConfiguration) -> Result<(), FileStorageError> {
+pub async fn update_config_file(storage_path: &Path, jwt: &WalletConfigJwt) -> Result<(), FileStorageError> {
     let path = path_for_config_file(storage_path);
-    write_config(path.as_path(), config).await
-}
-
-async fn write_config(path: &Path, config: &WalletConfiguration) -> Result<(), FileStorageError> {
-    let contents = serde_json::to_vec(config)?;
-    fs::write(path, contents).await?;
+    fs::write(path, jwt.serialization()).await?;
     Ok(())
 }
 
-async fn read_config(path: &Path) -> Result<WalletConfiguration, FileStorageError> {
-    let content = fs::read(path).await?;
-    let config = serde_json::from_slice(&content)?;
-    Ok(config)
+fn path_for_config_file(storage_path: &Path) -> PathBuf {
+    storage_path.join("configuration.jwt")
 }
 
-fn path_for_config_file(storage_path: &Path) -> PathBuf {
-    storage_path.join("configuration.json")
+pub fn path_for_config_etag(storage_path: &Path) -> PathBuf {
+    storage_path.join("configuration.etag")
 }
 
 #[cfg(test)]
 mod tests {
+    use jwt::SignedJwt;
+
+    use crate::config::ConfigSigningKey;
     use crate::config::config_file::get_config_file;
     use crate::config::config_file::update_config_file;
     use crate::config::default_wallet_config;
 
     #[tokio::test]
     async fn should_read_and_update_config() {
+        let config_signing_key = ConfigSigningKey::new_with_kid("0");
+
+        let mut config = default_wallet_config();
+        config.lock_timeouts.background_timeout = 1500;
+        let jwt = SignedJwt::sign_with_kid(&config, &config_signing_key).await.unwrap();
+        let unverified = jwt.into_unverified();
+
         let tempdir = tempfile::tempdir().unwrap();
 
         assert!(get_config_file(tempdir.path()).await.unwrap().is_none());
 
-        let mut config = default_wallet_config();
-        config.lock_timeouts.background_timeout = 1500;
-        update_config_file(tempdir.path(), &config).await.unwrap();
+        update_config_file(tempdir.path(), &unverified).await.unwrap();
 
-        let updated = get_config_file(tempdir.path()).await.unwrap().unwrap();
-
-        assert_ne!(&default_wallet_config(), &updated);
-        assert_eq!(1500, updated.lock_timeouts.background_timeout);
+        let stored = get_config_file(tempdir.path()).await.unwrap().unwrap();
+        assert_eq!(unverified.serialization(), stored.serialization());
     }
 }

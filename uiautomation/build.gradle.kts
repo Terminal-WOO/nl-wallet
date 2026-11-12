@@ -1,5 +1,5 @@
 plugins {
-    kotlin("jvm") version "2.1.20"
+    kotlin("jvm") version "2.4.21"
     application
 }
 
@@ -7,23 +7,29 @@ group = "nl.ictu.edi.wallet.uiautomation"
 version = "1.0-SNAPSHOT"
 
 repositories {
-    mavenCentral()
+    if (System.getenv("CI") == "true" && System.getenv("CI_JOB_TAGS") == "[]") {
+        maven {
+            url = uri("${System.getenv("NEXUS_URL")}/repository/maven-central/")
+        }
+    } else {
+        mavenCentral()
+    }
 }
 
 kotlin {
-    jvmToolchain(jdkVersion = 21)
+    jvmToolchain(jdkVersion = 25)
 }
 
-val browserstackAgent by configurations.creating
+val browserstackAgent = configurations.create("browserstackAgent")
 
 dependencies {
-    browserstackAgent("com.browserstack:browserstack-java-sdk:latest.release")
+    browserstackAgent("com.browserstack:browserstack-java-sdk:1.65.1")
 
     implementation(kotlin("stdlib"))
 
     implementation("com.codeborne:selenide-appium:7.9.4")
     implementation("com.squareup.moshi:moshi-kotlin:1.15.2")
-    implementation("io.appium:java-client:10.0.0")
+    implementation("io.appium:java-client:10.1.1")
     implementation("io.rest-assured:rest-assured:5.5.5")
     implementation("org.junit.jupiter:junit-jupiter:5.13.4")
     implementation("org.junit-pioneer:junit-pioneer:2.3.0")
@@ -32,8 +38,11 @@ dependencies {
 
     implementation(platform("io.qameta.allure:allure-bom:2.29.1"))
     implementation("io.qameta.allure:allure-junit5")
-    implementation("org.json:json:20250517")
+    implementation("org.json:json:20260719")
     implementation("org.tomlj:tomlj:1.1.1")
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.zxing:javase:3.5.3")
+    implementation("com.upokecenter:cbor:4.5.4")
 }
 
 tasks.test {
@@ -49,13 +58,6 @@ tasks.register<Test>("smokeTest") {
     }
 }
 
-tasks.register<Test>("smokeTestIOS") {
-    useJUnitPlatform {
-        includeTags("smokeIOS")
-        exclude("suite/**")
-    }
-}
-
 tasks.register<Test>("testEnglish") {
     useJUnitPlatform {
         includeTags("english")
@@ -63,39 +65,45 @@ tasks.register<Test>("testEnglish") {
     }
 }
 
-tasks.register<Test>("testA11yBatch1") {
+tasks.register<Test>("testAllAndroids") {
     useJUnitPlatform {
-        includeTags("a11yBatch1")
-        exclude("suite/**")
-    }
-}
-
-tasks.register<Test>("testA11yBatch2") {
-    useJUnitPlatform {
-        includeTags("a11yBatch2")
+        includeTags("onallandroids")
         exclude("suite/**")
     }
 }
 
 tasks.withType<Test>().configureEach {
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
     jvmArgs("--add-modules=java.instrument")
     val testConfigMap = mapOf(
         "test.config.app.identifier" to "nl.ictu.edi.wallet.latest",
+        "test.config.app.path" to "",
         "test.config.device.name" to "emulator-5554",
         "test.config.platform.name" to "Android",
         "test.config.platform.version" to 14.0,
+        "test.config.device.udid" to "",
         "test.config.remote" to false,
         "test.config.automation.name" to "UIAutomator2",
         "test.config.commit.sha" to "",
+        "test.config.source.name" to "",
+        "test.config.source.platform.name" to "",
+        "test.config.source.platform.version" to "",
+        "test.config.source.udid" to "",
+        "test.config.source.app.path" to "",
+        "test.config.destination.name" to "",
+        "test.config.destination.platform.name" to "",
+        "test.config.destination.platform.version" to "",
+        "test.config.destination.udid" to "",
+        "test.config.destination.app.path" to "",
     )
     testConfigMap.forEach { (k, v) ->
         systemProperty(k, System.getProperty(k, v.toString()))
     }
 
-    val toolchains = project.extensions.getByType(JavaToolchainService::class.java)
-    javaLauncher.set(toolchains.launcherFor {
-        languageVersion.set(JavaLanguageVersion.of(21))
-    })
+    listOf("ENABLE_A11Y_CAPTURES", "A11Y_CAPTURE_DIR").forEach { name ->
+        (System.getProperty(name) ?: System.getenv(name))?.let { environment(name, it) }
+    }
 
     if (System.getProperty("test.config.remote", "false").toBoolean()) {
         val agentProvider = CommandLineArgumentProvider {

@@ -2,9 +2,8 @@ package feature.issuance
 
 import helper.IssuanceDataHelper
 import helper.LocalizationHelper
-import helper.OrganizationAuthMetadataHelper
-import helper.OrganizationAuthMetadataHelper.Organization.INSURANCE
-import helper.OrganizationAuthMetadataHelper.Organization.UNIVERSITY
+import helper.OrganizationMetadataHelper
+import helper.OrganizationMetadataHelper.Organization.UNIVERSITY
 import helper.TasDataHelper
 import helper.TestBase
 import navigator.MenuNavigator
@@ -12,13 +11,12 @@ import navigator.screen.MenuNavigatorScreen
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Tag
-import org.junit.jupiter.api.Tags
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.TestMethodOrder
 import org.junit.jupiter.api.assertAll
 import org.junitpioneer.jupiter.RetryingTest
 import screen.dashboard.DashboardScreen
+import screen.disclosure.SharingStoppedScreen
 import screen.error.NoCardsErrorScreen
 import screen.issuance.CardIssuanceScreen
 import screen.issuance.DisclosureIssuanceScreen
@@ -39,9 +37,10 @@ class DisclosureBasedIssuanceTests : TestBase() {
     private lateinit var l10n: LocalizationHelper
     private lateinit var tasData: TasDataHelper
     private lateinit var issuanceData : IssuanceDataHelper
-    private lateinit var organizationAuthMetadata: OrganizationAuthMetadataHelper
+    private lateinit var organizationAuthMetadata: OrganizationMetadataHelper
     private lateinit var dashboardScreen: DashboardScreen
     private lateinit var noCardsErrorScreen: NoCardsErrorScreen
+    private lateinit var sharingStoppedScreen: SharingStoppedScreen
 
     fun setUp(testInfo: TestInfo) {
         startDriver(testInfo)
@@ -50,50 +49,54 @@ class DisclosureBasedIssuanceTests : TestBase() {
         pinScreen = PinScreen()
         l10n = LocalizationHelper()
         tasData = TasDataHelper()
-        organizationAuthMetadata = OrganizationAuthMetadataHelper()
+        organizationAuthMetadata = OrganizationMetadataHelper()
         disclosureForIssuanceScreen = DisclosureIssuanceScreen()
         cardIssuanceScreen = CardIssuanceScreen()
         dashboardScreen = DashboardScreen()
         issuanceData = IssuanceDataHelper()
         noCardsErrorScreen = NoCardsErrorScreen()
+        sharingStoppedScreen = SharingStoppedScreen()
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
     @DisplayName("LTC5 Disclosure based Issuance happy flow, university, SD-JWT")
-    @Tags(Tag("a11yBatch1"))
     fun verifyDiplomaIssuanceSdJwt(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickHollandUniversitySdJwtButton()
         issuerWebPage.openSameDeviceWalletFlow()
 
         disclosureForIssuanceScreen.switchToNativeContext()
-        assertTrue(disclosureForIssuanceScreen.organizationNameVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", UNIVERSITY)))
+        assertTrue(disclosureForIssuanceScreen.organizationNameVisible(organizationAuthMetadata.getDisplayNameOfOrganization(UNIVERSITY)))
+        disclosureForIssuanceScreen.captureA11ySnapshot("DisclosureBasedIssuanceApprove")
 
         disclosureForIssuanceScreen.viewDetails()
         assertTrue(disclosureForIssuanceScreen.requestedAttributeVisible(tasData.getPidClaimLabel("bsn")))
+        disclosureForIssuanceScreen.captureA11ySnapshot("DisclosureBasedIssuanceDetails")
 
         disclosureForIssuanceScreen.goBack();
         disclosureForIssuanceScreen.share()
         pinScreen.enterPin(DEFAULT_PIN)
         cardIssuanceScreen.viewDetailsOfCard(issuanceData.getAttributeValues("university", DEFAULT_BSN, "education").last())
         assertAll(
-            { assertTrue(cardIssuanceScreen.organizationInSubtitleVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", UNIVERSITY)), "Subtitle is not visible") },
             { assertTrue(cardIssuanceScreen.labelVisible(tasData.getDiplomaClaimLabel("graduation_date")), "Label is not visible") },
             { assertTrue(cardIssuanceScreen.labelVisible(tasData.getDiplomaClaimLabel("grade")), "Label is not visible") },
             { assertTrue(cardIssuanceScreen.dataVisible(issuanceData.getAttributeValues("university", DEFAULT_BSN, "university").last()), "data is not visible") },
             { assertTrue(cardIssuanceScreen.dataVisible(issuanceData.getAttributeValues("university", DEFAULT_BSN, "education").last()), "data is not visible") },
         )
+        cardIssuanceScreen.captureA11ySnapshot("CardIssuanceCardDetails")
 
         cardIssuanceScreen.clickBackButton()
+        cardIssuanceScreen.captureA11ySnapshot("CardIssuanceMultiple")
         cardIssuanceScreen.clickAdd2CardsButton()
         pinScreen.enterPin(DEFAULT_PIN)
 
         cardIssuanceScreen.clickToDashboardButton()
         dashboardScreen.scrollToEndOfScreen()
         assertTrue(dashboardScreen.cardVisible(tasData.getDiplomaDisplayName()), "Diploma card not visible on dashboard")
+        dashboardScreen.captureA11ySnapshot("DashboardWithDiplomaCard")
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
@@ -102,12 +105,12 @@ class DisclosureBasedIssuanceTests : TestBase() {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickHollandUniversityMdocButton()
         issuerWebPage.openSameDeviceWalletFlow()
 
         disclosureForIssuanceScreen.switchToNativeContext()
-        assertTrue(disclosureForIssuanceScreen.organizationNameVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", UNIVERSITY)))
+        assertTrue(disclosureForIssuanceScreen.organizationNameVisible(organizationAuthMetadata.getDisplayNameOfOrganization(UNIVERSITY)))
 
         disclosureForIssuanceScreen.viewDetails()
         assertTrue(disclosureForIssuanceScreen.requestedAttributeVisible(tasData.getPidClaimLabel("bsn")))
@@ -117,7 +120,6 @@ class DisclosureBasedIssuanceTests : TestBase() {
         pinScreen.enterPin(DEFAULT_PIN)
         cardIssuanceScreen.viewDetailsOfCard(issuanceData.getAttributeValues("university", DEFAULT_BSN, "education").last())
         assertAll(
-            { assertTrue(cardIssuanceScreen.organizationInSubtitleVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", UNIVERSITY)), "Subtitle is not visible") },
             { assertTrue(cardIssuanceScreen.labelVisible(tasData.getDiplomaClaimLabel("graduation_date")), "Label is not visible") },
             { assertTrue(cardIssuanceScreen.labelVisible(tasData.getDiplomaClaimLabel("grade")), "Label is not visible") },
             { assertTrue(cardIssuanceScreen.dataVisible(issuanceData.getAttributeValues("university", DEFAULT_BSN, "grade").last()), "data is not visible") },
@@ -133,57 +135,43 @@ class DisclosureBasedIssuanceTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC5 Disclosure based Issuance happy flow, insurance")
-    fun verifyInsuranceIssuance(testInfo: TestInfo) {
-        setUp(testInfo)
-        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
-        MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
-        indexWebPage.clickInsuranceButton()
-        issuerWebPage.openSameDeviceWalletFlow()
-
-        disclosureForIssuanceScreen.switchToNativeContext()
-        assertTrue(disclosureForIssuanceScreen.organizationNameVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", INSURANCE)))
-
-        disclosureForIssuanceScreen.viewDetails()
-        assertTrue(disclosureForIssuanceScreen.requestedAttributeVisible(tasData.getPidClaimLabel("bsn")))
-
-        disclosureForIssuanceScreen.goBack();
-        disclosureForIssuanceScreen.share()
-        pinScreen.enterPin(DEFAULT_PIN)
-        cardIssuanceScreen.viewDetailsOfCard(issuanceData.getAttributeValues("insurance", DEFAULT_BSN, "coverage").first())
-        assertAll(
-            { assertTrue(cardIssuanceScreen.organizationInSubtitleVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", INSURANCE)), "Subtitle is not visible") },
-            { assertTrue(cardIssuanceScreen.labelVisible(tasData.getInsuranceClaimLabel("start_date")), "Label is not visible") },
-            { assertTrue(cardIssuanceScreen.labelVisible(tasData.getInsuranceClaimLabel("duration")), "Label is not visible") },
-            { assertTrue(cardIssuanceScreen.dataVisible(issuanceData.getAttributeValues("insurance", DEFAULT_BSN, "product").first()), "data is not visible") },
-            { assertTrue(cardIssuanceScreen.dataVisible(issuanceData.getAttributeValues("insurance", DEFAULT_BSN, "coverage").first()), "data is not visible") },
-        )
-
-        cardIssuanceScreen.clickBackButton()
-        cardIssuanceScreen.clickAddCardButton()
-        pinScreen.enterPin(DEFAULT_PIN)
-        cardIssuanceScreen.clickToDashboardButton();
-        dashboardScreen.scrollToEndOfScreen()
-        assertTrue(dashboardScreen.cardVisible(tasData.getInsuranceDisplayName()), "insurance card not visible on dashboard")
-    }
-
-    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC79 No cards to be issued")
+    @DisplayName("LTC9 No cards to be issued")
     fun verifyNoInsuranceCardAvailable(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu, "900265462")
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
-        indexWebPage.clickInsuranceButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickHollandUniversityMdocButton()
         issuerWebPage.openSameDeviceWalletFlow()
 
         disclosureForIssuanceScreen.switchToNativeContext()
         disclosureForIssuanceScreen.share()
         pinScreen.enterPin(DEFAULT_PIN)
         assertTrue(noCardsErrorScreen.titleVisible(), "no card error screen is not visible")
+        noCardsErrorScreen.captureA11ySnapshot("NoCardsError")
 
         noCardsErrorScreen.close()
         assertTrue(dashboardScreen.cardVisible(tasData.getPidDisplayName()), "Pid not visible on dashboard")
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC8 Reject disclosure of attributes")
+    fun verifyRejectDisclosureOfAttributes(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickHollandUniversityMdocButton()
+        issuerWebPage.openSameDeviceWalletFlow()
+        disclosureForIssuanceScreen.switchToNativeContext()
+        disclosureForIssuanceScreen.stop()
+        disclosureForIssuanceScreen.bottomSheetConfirmStop();
+        assertAll (
+            { assertTrue(sharingStoppedScreen.titleVisible(), "Title is not visible") },
+            { assertTrue(sharingStoppedScreen.descriptionVisible(), "Description is not visible") },
+        )
+
+        sharingStoppedScreen.close();
+        assertTrue(dashboardScreen.visible(), "Dashboard not visible")
     }
 }

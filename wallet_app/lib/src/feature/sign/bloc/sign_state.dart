@@ -22,10 +22,6 @@ sealed class SignState extends Equatable {
   ];
 }
 
-class SignInitial extends SignState {
-  const SignInitial();
-}
-
 class SignLoadInProgress extends SignState {
   const SignLoadInProgress();
 
@@ -83,14 +79,12 @@ class SignCheckAgreement extends SignState {
 class SignConfirmAgreement extends SignState {
   final bool afterBackPressed;
 
-  final Policy policy;
   final Organization relyingParty;
   final Organization trustProvider;
   final Document document;
   final List<Attribute> requestedAttributes;
 
   const SignConfirmAgreement({
-    required this.policy,
     required this.relyingParty,
     required this.trustProvider,
     required this.document,
@@ -108,7 +102,7 @@ class SignConfirmAgreement extends SignState {
   bool get didGoBack => afterBackPressed;
 
   @override
-  List<Object?> get props => [policy, relyingParty, trustProvider, document, requestedAttributes, ...super.props];
+  List<Object?> get props => [relyingParty, trustProvider, document, requestedAttributes, ...super.props];
 }
 
 class SignConfirmPin extends SignState {

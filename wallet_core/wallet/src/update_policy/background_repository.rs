@@ -3,19 +3,17 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 use tracing::error;
-
 use update_policy_model::update_policy::VersionState;
 
+use super::HttpUpdatePolicyRepository;
+use super::UpdatePolicyError;
+use super::UpdatePolicyRepository;
 use crate::repository::BackgroundUpdateableRepository;
 use crate::repository::ObservableRepository;
 use crate::repository::Repository;
 use crate::repository::RepositoryCallback;
 use crate::repository::RepositoryUpdateState;
 use crate::repository::UpdateableRepository;
-
-use super::HttpUpdatePolicyRepository;
-use super::UpdatePolicyError;
-use super::UpdatePolicyRepository;
 
 type UpdateTask = JoinHandle<Result<RepositoryUpdateState<VersionState>, UpdatePolicyError>>;
 
@@ -80,7 +78,7 @@ where
             .background_task
             .lock()
             .as_ref()
-            .is_none_or(|task| !task.is_finished())
+            .is_none_or(|task| task.is_finished())
         {
             let wrapped = Arc::clone(&self.wrapped);
             let callback = Arc::clone(&self.callback);
@@ -146,17 +144,15 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use http_utils::reqwest::test::get_tls_pinning_config_for_url;
     use parking_lot::RwLock;
     use tokio::sync::Notify;
-
-    use http_utils::tls::pinning::TlsPinningConfig;
     use update_policy_model::update_policy::VersionState;
 
+    use super::*;
     use crate::repository::Repository;
     use crate::repository::RepositoryUpdateState;
     use crate::repository::UpdateableRepository;
-
-    use super::*;
 
     struct TestRepo(RwLock<VersionState>);
 
@@ -198,10 +194,7 @@ mod tests {
         // No awaits, so the task will not be executed
         assert_eq!(repository.get(), VersionState::Ok);
 
-        repository.fetch_in_background(TlsPinningConfig {
-            base_url: "https://example.com".parse().unwrap(),
-            trust_anchors: vec![],
-        });
+        repository.fetch_in_background(get_tls_pinning_config_for_url("https://example.com"));
         notifier.notified().await;
         assert_eq!(repository.get(), VersionState::Block);
     }
@@ -225,10 +218,7 @@ mod tests {
             // No awaits, so the task will not be executed
             assert_eq!(repository.get(), VersionState::Ok);
 
-            repository.fetch_in_background(TlsPinningConfig {
-                base_url: "https://example.com".parse().unwrap(),
-                trust_anchors: vec![],
-            });
+            repository.fetch_in_background(get_tls_pinning_config_for_url("https://example.com"));
 
             // Drop the background repository
         }

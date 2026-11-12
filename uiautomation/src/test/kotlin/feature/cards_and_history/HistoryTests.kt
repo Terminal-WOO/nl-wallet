@@ -1,9 +1,9 @@
 package feature.cards_and_history
 
 import helper.LocalizationHelper
-import helper.OrganizationAuthMetadataHelper
-import helper.OrganizationAuthMetadataHelper.Organization.AMSTERDAM
-import helper.OrganizationAuthMetadataHelper.Organization.RVIG
+import helper.OrganizationMetadataHelper
+import helper.OrganizationMetadataHelper.Organization.MIJN_AMSTERDAM
+import helper.OrganizationMetadataHelper.Organization.PID
 import helper.TasDataHelper
 import helper.TestBase
 import navigator.OnboardingNavigator
@@ -11,8 +11,6 @@ import navigator.screen.OnboardingNavigatorScreen
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Tag
-import org.junit.jupiter.api.Tags
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.TestMethodOrder
 import org.junit.jupiter.api.assertAll
@@ -28,6 +26,7 @@ import screen.organization.OrganizationDetailScreen
 import screen.security.PinScreen
 import screen.web.demo.DemoIndexWebPage
 import screen.web.demo.rp.RelyingPartyAmsterdamWebPage
+import util.MobileActions.Companion.SCREEN_TRANSITION_MILLIS
 
 @TestMethodOrder(MethodOrderer.DisplayName::class)
 @DisplayName("UC6 Complete & card history overview and history events")
@@ -35,7 +34,7 @@ class HistoryTests : TestBase() {
 
     private lateinit var l10n: LocalizationHelper
     private lateinit var tasData: TasDataHelper
-    private lateinit var organizationAuthData: OrganizationAuthMetadataHelper
+    private lateinit var organizationAuthData: OrganizationMetadataHelper
 
     private lateinit var overviewWebPage: DemoIndexWebPage
     private lateinit var historyDetailScreen: HistoryDetailScreen
@@ -55,7 +54,7 @@ class HistoryTests : TestBase() {
 
         l10n = LocalizationHelper()
         tasData = TasDataHelper()
-        organizationAuthData = OrganizationAuthMetadataHelper()
+        organizationAuthData = OrganizationMetadataHelper()
 
         historyDetailScreen = HistoryDetailScreen()
         historyOverviewScreen = HistoryOverviewScreen()
@@ -73,13 +72,12 @@ class HistoryTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC30 View activity list")
-    @Tags(Tag("a11yBatch1"))
+    @DisplayName("LTC22 View activity list")
     fun verifyHistoryEntries(testInfo: TestInfo) {
         setUp(testInfo)
         dashboardScreen.clickMenuButton()
         menuScreen.clickBrowserTestButton()
-        overviewWebPage.switchToWebViewContext()
+        overviewWebPage.switchToIndexPage()
         overviewWebPage.clickAmsterdamMdocButton()
         amsterdamWebPage.openSameDeviceWalletFlow()
 
@@ -88,8 +86,9 @@ class HistoryTests : TestBase() {
         pinScreen.enterPin(DEFAULT_PIN)
         disclosureScreen.close()
 
-        amsterdamWebPage.switchToWalletApp()
+        amsterdamWebPage.openApp()
         amsterdamWebPage.switchToNativeContext()
+
         assertTrue(dashboardScreen.visible())
 
         dashboardScreen.clickMenuButton()
@@ -100,26 +99,27 @@ class HistoryTests : TestBase() {
             { assertTrue(historyOverviewScreen.visible(), "history overview screen is not visible") },
             { assertTrue(historyOverviewScreen.pidIssuanceLogEntryVisible(), "pid issuance log entry is not visible") },
             { assertTrue(historyOverviewScreen.issuanceSubtitleVisible(), "pid issuance log entry is not visible") },
-            { assertTrue(historyOverviewScreen.addressIssuanceLogEntryVisible(), "address issuance log entry is not visible") },
             { assertTrue(historyOverviewScreen.loginDisclosureLogEntryVisible(), "login log entry is not visible") },
-            { assertTrue(historyOverviewScreen.disclosureOrganizationVisible(organizationAuthData.getAttributeValueForOrganization("organization.displayName", AMSTERDAM))) }
+            { assertTrue(historyOverviewScreen.disclosureOrganizationVisible(organizationAuthData.getDisplayNameOfOrganization(MIJN_AMSTERDAM))) }
         )
+        historyOverviewScreen.captureA11ySnapshot("HistoryOverview")
 
         historyOverviewScreen.clickPidCardTitle()
         assertAll(
-            { assertTrue(historyDetailScreen.issuanceOrganizationVisible(organizationAuthData.getAttributeValueForOrganization("organization.displayName", RVIG)), "organization not visible") },
+            { assertTrue(historyDetailScreen.issuanceOrganizationVisible(organizationAuthData.getDisplayNameOfOrganization(PID)), "organization not visible") },
             { assertTrue(historyDetailScreen.titleCorrectForIssuance(tasData.getPidDisplayName()), "title not visible") }
         )
+        historyDetailScreen.captureA11ySnapshot("HistoryDetailIssuance")
 
         historyDetailScreen.openOrganizationScreen();
-        assertTrue(organizationDetailScreen.organizationInHeaderVisible(organizationAuthData.getAttributeValueForOrganization("organization.displayName", RVIG)), "organization not visible")
+        assertTrue(organizationDetailScreen.organizationInHeaderVisible(organizationAuthData.getDisplayNameOfOrganization(PID)), "organization not visible")
+        organizationDetailScreen.captureA11ySnapshot("OrganizationDetail")
 
         organizationDetailScreen.clickBackButton()
         assertAll(
             { assertTrue(historyDetailScreen.attributeLabelVisible(tasData.getPidClaimLabel("family_name")), "lastname label not visible") },
             { assertTrue(historyDetailScreen.attributeLabelVisible(tasData.getPidClaimLabel("given_name")), "first name label not visible") },
             { assertTrue(historyDetailScreen.attributeLabelVisible(tasData.getPidClaimLabel("birthdate")), "birthdate label not visible") },
-            { assertTrue(historyDetailScreen.attributeLabelVisible(tasData.getPidClaimLabel("age_over_18")), "18+ label not visible") },
             { assertTrue(historyDetailScreen.attributeLabelVisible(tasData.getPidClaimLabel("bsn")), "BSN label not visible") },
             { assertTrue(historyDetailScreen.reportProblemButtonVisible(), "report problem button not visible") }
         )
@@ -128,21 +128,23 @@ class HistoryTests : TestBase() {
         historyOverviewScreen.clickLoginEntryTitle()
         assertAll(
             { assertTrue(historyDetailScreen.reasonForSharingHeaderVisible(), "reason for sharing header not visible") },
-            { assertTrue(historyDetailScreen.reasonForSharingVisible(organizationAuthData.getAttributeValueForOrganization("purposeStatement", AMSTERDAM)), "reason for sharing not visible") },
+            { assertTrue(historyDetailScreen.reasonForSharingVisible(""), "reason for sharing not visible") },
             { assertTrue(historyDetailScreen.attributeLabelVisible(tasData.getPidClaimLabel("bsn")), "BSN label not visible") },
-            { assertTrue(historyDetailScreen.disclosureOrganizationVisible(organizationAuthData.getAttributeValueForOrganization("organization.displayName", AMSTERDAM)), "organization not visible") },
-            { assertTrue(historyDetailScreen.titleCorrectForLogin(organizationAuthData.getAttributeValueForOrganization("organization.displayName", AMSTERDAM)), "title not visible") },
+            { assertTrue(historyDetailScreen.disclosureOrganizationVisible(organizationAuthData.getDisplayNameOfOrganization(MIJN_AMSTERDAM)), "organization not visible") },
+            { assertTrue(historyDetailScreen.titleCorrectForLogin(organizationAuthData.getDisplayNameOfOrganization(MIJN_AMSTERDAM)), "title not visible") },
             { assertTrue(historyDetailScreen.reportProblemButtonVisible(), "report problem button not visible") },
-            { assertTrue(historyDetailScreen.termsVisible(), "terms not visible") }
         )
+        historyDetailScreen.captureA11ySnapshot("HistoryDetailLogin")
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC31 View card-specific activity list")
+    @DisplayName("LTC23 View card-specific activity list")
     fun verifyCardHistory(testInfo: TestInfo) {
         setUp(testInfo)
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
         dashboardScreen.clickCard(tasData.getPidDisplayName())
         cardDetailScreen.clickCardHistoryButton()
         assertTrue(cardHistoryScreen.visible(), "card history screen is not visible")
+        cardHistoryScreen.captureA11ySnapshot("CardHistory")
     }
 }

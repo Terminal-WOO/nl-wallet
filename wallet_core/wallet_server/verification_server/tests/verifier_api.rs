@@ -1,60 +1,53 @@
+use std::assert_matches;
 use std::collections::HashMap;
-use std::future;
-use std::future::Future;
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use assert_matches::assert_matches;
-use chrono::DateTime;
-use chrono::Utc;
-use futures::FutureExt;
-use http::StatusCode;
-use itertools::Itertools;
-use parking_lot::RwLock;
-use reqwest::Client;
-use reqwest::Response;
-use rstest::rstest;
-use rustls_pki_types::TrustAnchor;
-use ssri::Integrity;
-use tokio::net::TcpListener;
-use tokio::time;
-use url::Url;
-
-use attestation_data::auth::issuer_auth::IssuerRegistration;
-use attestation_data::auth::reader_auth::ReaderRegistration;
 use attestation_data::credential_payload::CredentialPayload;
 use attestation_data::credential_payload::PreviewableCredentialPayload;
 use attestation_data::disclosure::DisclosedAttestations;
 use attestation_data::disclosure::DisclosedAttributes;
-use attestation_data::x509::generate::mock::generate_pid_issuer_mock_with_registration;
-use attestation_data::x509::generate::mock::generate_reader_mock_with_registration;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use attestation_data::registration_certificate::mock::MockRegistrationCertificate;
+use attestation_data::registration_certificate::mock::StaticStatusListClient;
 use attestation_types::claim_path::ClaimPath;
-use attestation_types::qualification::AttestationQualification;
-use attestation_types::status_claim::StatusClaim;
+use attestation_types::credential_format::Format;
+use attestation_types::pid_constants::PID_MDOC_DOCTYPE;
+use attestation_types::pid_constants::pid_attestation_type;
+use attestation_types::status_claim::StatusListClaim;
+use chrono::DateTime;
+use chrono::Utc;
+use crypto::examples::EXAMPLE_KEY_IDENTIFIER;
+use crypto::keys::PublicKeyRef;
+use crypto::mock_remote::DisclosureMockRemoteWscd;
 use crypto::server_keys::KeyPair;
 use crypto::server_keys::generate::Ca;
-use crypto::server_keys::generate::mock::PID_ISSUER_CERT_CN;
-use dcql::CredentialFormat;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::crl::mock::MockCertificateCrlVerifier;
 use dcql::CredentialQuery;
 use dcql::Query;
 use dcql::unique_id_vec::UniqueIdVec;
-use hsm::service::Pkcs11Hsm;
+use futures::FutureExt;
+use http::StatusCode;
 use http_utils::error::HttpJsonErrorBody;
+use http_utils::reqwest::HttpClient;
 use http_utils::reqwest::default_reqwest_client_builder;
 use http_utils::urls::BaseUrl;
+use itertools::Itertools;
 use mdoc::holder::Mdoc;
 use mdoc::holder::disclosure::PartialMdoc;
 use openid4vc::disclosure_session::DisclosableAttestations;
 use openid4vc::disclosure_session::DisclosureClient;
 use openid4vc::disclosure_session::DisclosureSession;
+use openid4vc::disclosure_session::DisclosureTrustAnchors;
 use openid4vc::disclosure_session::DisclosureUriSource;
+use openid4vc::disclosure_session::HttpVpMessageClient;
 use openid4vc::disclosure_session::VpDisclosureClient;
-use openid4vc::mock::MOCK_WALLET_CLIENT_ID;
-use openid4vc::server_state::CLEANUP_INTERVAL_SECONDS;
 use openid4vc::server_state::MemorySessionStore;
 use openid4vc::server_state::SessionStore;
 use openid4vc::server_state::SessionStoreTimeouts;
@@ -66,23 +59,30 @@ use openid4vc::verifier::StatusResponse;
 use openid4vc_server::verifier::StartDisclosureRequest;
 use openid4vc_server::verifier::StartDisclosureResponse;
 use openid4vc_server::verifier::StatusParams;
+use parking_lot::RwLock;
+use reqwest::Client;
+use reqwest::Response;
+use rstest::rstest;
 use sd_jwt::builder::SignedSdJwt;
 use sd_jwt_vc_metadata::NormalizedTypeMetadata;
 use server_utils::settings::Authentication;
-use server_utils::settings::RequesterAuth;
 use server_utils::settings::Server;
+use server_utils::settings::ServerAuth;
 use server_utils::settings::Settings;
 use server_utils::settings::Storage;
+use server_utils::status_list_token_cache_settings::StatusListTokenCacheSettings;
+use ssri::Integrity;
 use token_status_list::verification::client::StatusListClient;
 use token_status_list::verification::client::mock::StatusListClientStub;
+use tokio::net::TcpListener;
+use tokio::time;
+use url::Url;
 use utils::generator::mock::MockTimeGenerator;
 use utils::vec_nonempty;
 use verification_server::server;
 use verification_server::settings::UseCaseSettings;
 use verification_server::settings::VerifierSettings;
-use wscd::mock_remote::MockRemoteWscd;
 
-const PID_ATTESTATION_TYPE: &str = "urn:eudi:pid:nl:1";
 const USECASE_NAME: &str = "usecase";
 
 static EXAMPLE_START_DISCLOSURE_REQUEST: LazyLock<StartDisclosureRequest> = LazyLock::new(|| StartDisclosureRequest {
@@ -107,11 +107,11 @@ fn memory_storage_settings() -> Storage {
     }
 }
 
-async fn request_server_settings_and_listener() -> (RequesterAuth, Option<TcpListener>) {
+async fn internal_server_settings_and_listener() -> (ServerAuth, Option<TcpListener>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     (
-        RequesterAuth::InternalEndpoint(Server {
+        ServerAuth::InternalEndpoint(Server {
             ip: addr.ip(),
             port: addr.port(),
         }),
@@ -120,53 +120,69 @@ async fn request_server_settings_and_listener() -> (RequesterAuth, Option<TcpLis
 }
 
 async fn wallet_server_settings_and_listener(
-    requester_server: RequesterAuth,
+    internal_server: ServerAuth,
     request: &StartDisclosureRequest,
-) -> (VerifierSettings, TcpListener, Ca, TrustAnchor<'static>) {
+) -> (
+    VerifierSettings,
+    TcpListener,
+    Ca,
+    TrustAnchors,
+    MockCertificateCrlVerifier,
+    TrustAnchors,
+    StaticStatusListClient,
+) {
     // Set up the listener.
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = Server {
+    let wallet_server = Server {
         ip: addr.ip(),
         port: addr.port(),
     };
 
     // Create the issuer CA and derive the trust anchors from it.
     let issuer_ca = Ca::generate_issuer_mock_ca().unwrap();
-    let issuer_trust_anchors = vec![issuer_ca.as_borrowing_trust_anchor().clone()];
+    let issuer_trust_anchors = issuer_ca.to_trust_anchors();
 
-    // Create the RP CA, derive the trust anchor from it and generate
-    // a reader registration, based on the example items request.
-    let rp_ca = Ca::generate_reader_mock_ca().unwrap();
-    let reader_trust_anchors = vec![rp_ca.as_borrowing_trust_anchor().clone()];
-    let rp_trust_anchor = rp_ca.to_trust_anchor().to_owned();
-    let reader_registration = ReaderRegistration::mock_from_dcql_query(request.dcql_query.as_ref().unwrap());
+    // Create the WRPAC CA, derive the trust anchor from it
+    let wrpac_ca = Ca::generate_wrpac_mock_ca().unwrap();
+    let wrpac_trust_anchors = wrpac_ca.to_trust_anchors();
 
-    // Set up the use case, based on RP CA and reader registration.
-    let usecase_keypair = generate_reader_mock_with_registration(&rp_ca, reader_registration).unwrap();
+    // Set up the use case with a WRPAC and a bound WRPRC.
+    let usecase_keypair = wrpac_ca.generate_wrpac_verifier_mock_with_crl().unwrap();
+    let crl_verifier = MockCertificateCrlVerifier::new_for_ca(&wrpac_ca);
+    let registration_certificate =
+        MockRegistrationCertificate::new_verifier(usecase_keypair.certificate(), request.dcql_query.clone().unwrap());
     let usecases = HashMap::from([(
         USECASE_NAME.to_string(),
         UseCaseSettings {
             session_type_return_url: SessionTypeReturnUrl::SameDevice,
             key_pair: usecase_keypair.into(),
+            registration_certificate: RegistrationCertificateEnvelope::from_slice(
+                registration_certificate.certificate.as_slice(),
+            )
+            .unwrap(),
             dcql_query: None,
             return_url_template: None,
+            disclosure_base_deep_link: None,
+            accept_undetermined_revocation_status: false,
         },
     )])
     .into();
 
     // Generate a complete configuration for the verifier, including
     // a section for the issuer if that feature is enabled.
-    let ws_port = server.port;
+    let ws_addr = SocketAddr::new(wallet_server.ip, wallet_server.port);
     let settings = Settings {
-        wallet_server: server,
+        wallet_server,
 
-        public_url: format!("http://localhost:{ws_port}/").parse().unwrap(),
+        internal_server,
 
         log_requests: true,
         structured_logging: false,
         storage: memory_storage_settings(),
         issuer_trust_anchors,
+        wrpac_trust_anchors: TrustAnchors::empty(),
+        wrprc_trust_anchors: registration_certificate.trust_anchors.clone(),
 
         hsm: None,
     };
@@ -176,41 +192,48 @@ async fn wallet_server_settings_and_listener(
         ephemeral_id_secret: crypto::utils::random_bytes(64).try_into().unwrap(),
 
         allow_origins: None,
-        reader_trust_anchors,
-        requester_server,
+
+        public_url: format!("http://{ws_addr}/").parse().unwrap(),
 
         universal_link_base_url: "http://universal.link/".parse().unwrap(),
 
         server_settings: settings,
 
-        wallet_client_ids: vec![MOCK_WALLET_CLIENT_ID.to_string()],
-
         extending_vct_values: None,
+
+        status_list_token_cache_settings: StatusListTokenCacheSettings::default(),
     };
 
-    (settings, listener, issuer_ca, rp_trust_anchor)
+    (
+        settings,
+        listener,
+        issuer_ca,
+        wrpac_trust_anchors,
+        crl_verifier,
+        registration_certificate.trust_anchors,
+        registration_certificate.status_list_client,
+    )
 }
 
 async fn start_wallet_server<S, C>(
     wallet_listener: TcpListener,
-    requester_listener: Option<TcpListener>,
+    internal_listener: Option<TcpListener>,
     settings: VerifierSettings,
-    hsm: Option<Pkcs11Hsm>,
-    disclosure_sessions: S,
+    disclosure_sessions: Arc<S>,
     status_list_client: C,
 ) where
     S: SessionStore<DisclosureData> + Send + Sync + 'static,
     C: StatusListClient + Sync + 'static,
 {
-    let public_url = settings.server_settings.public_url.clone();
+    let public_url = settings.public_url.clone();
 
     tokio::spawn(async move {
         if let Err(error) = server::serve_with_listeners(
             wallet_listener,
-            requester_listener,
+            internal_listener,
             settings,
-            hsm,
-            Arc::new(disclosure_sessions),
+            None,
+            disclosure_sessions,
             status_list_client,
         )
         .await
@@ -225,17 +248,23 @@ async fn start_wallet_server<S, C>(
 }
 
 async fn wait_for_server(base_url: BaseUrl) {
-    let client = default_reqwest_client_builder().build().unwrap();
+    let client = default_reqwest_client_builder()
+        .connect_timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
 
     time::timeout(Duration::from_secs(3), async {
-        let mut interval = time::interval(Duration::from_millis(10));
+        let mut interval = time::interval(Duration::from_millis(100));
         loop {
-            match client.get(base_url.join("health")).send().await {
+            interval.tick().await;
+            match client
+                .get(base_url.join("health"))
+                .send()
+                .await
+                .and_then(|r| r.error_for_status())
+            {
                 Ok(_) => break,
-                Err(error) => {
-                    println!("Server not yet up: {error}");
-                    interval.tick().await;
-                }
+                Err(error) => tracing::info!("Server not yet up: {error}"),
             }
         }
     })
@@ -244,60 +273,55 @@ async fn wait_for_server(base_url: BaseUrl) {
 }
 
 fn internal_url(settings: &VerifierSettings) -> BaseUrl {
-    match settings.requester_server {
-        RequesterAuth::ProtectedInternalEndpoint {
-            server: Server { port, .. },
+    match settings.server_settings.internal_server {
+        ServerAuth::ProtectedInternalEndpoint {
+            server: Server { ip, port },
             ..
         }
-        | RequesterAuth::InternalEndpoint(Server { port, .. }) => format!("http://localhost:{port}/").parse().unwrap(),
-        RequesterAuth::Authentication(_) => settings.server_settings.public_url.clone(),
+        | ServerAuth::InternalEndpoint(Server { ip, port }) => {
+            format!("http://{}/", SocketAddr::new(ip, port)).parse().unwrap()
+        }
+        ServerAuth::Authentication(_) => settings.public_url.clone(),
     }
 }
 
 #[rstest]
-#[case(RequesterAuth::Authentication(Authentication::ApiKey(String::from("secret_key"))))]
-#[case(RequesterAuth::ProtectedInternalEndpoint {
+#[case(ServerAuth::Authentication(Authentication::ApiKey(String::from("secret_key"))))]
+#[case(ServerAuth::ProtectedInternalEndpoint {
     authentication: Authentication::ApiKey(String::from("secret_key")),
     server: Server {
         ip: IpAddr::from_str("127.0.0.1").unwrap(),
         port: 0,
     }
 })]
-#[case(RequesterAuth::InternalEndpoint(Server {
+#[case(ServerAuth::InternalEndpoint(Server {
     ip: IpAddr::from_str("127.0.0.1").unwrap(),
     port: 0,
 }))]
 #[tokio::test]
-async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
-    let requester_listener = match &mut auth {
-        RequesterAuth::Authentication(_) => None,
-        RequesterAuth::ProtectedInternalEndpoint { server, .. } | RequesterAuth::InternalEndpoint(server) => {
-            let listener = TcpListener::bind(("localhost", 0)).await.unwrap();
+async fn test_internal_authentication(#[case] mut auth: ServerAuth) {
+    let internal_listener = match &mut auth {
+        ServerAuth::Authentication(_) => None,
+        ServerAuth::ProtectedInternalEndpoint { server, .. } | ServerAuth::InternalEndpoint(server) => {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
             server.port = listener.local_addr().unwrap().port();
             Some(listener)
         }
     };
 
-    let (settings, wallet_listener, issuer_ca, _) =
+    let (settings, wallet_listener, issuer_ca, _, _, _, _) =
         wallet_server_settings_and_listener(auth, &EXAMPLE_START_DISCLOSURE_REQUEST).await;
-    let hsm = settings
-        .server_settings
-        .hsm
-        .clone()
-        .map(Pkcs11Hsm::from_settings)
-        .transpose()
-        .unwrap();
-    let auth = &settings.requester_server;
+    let auth = &settings.server_settings.internal_server;
 
     let internal_url = internal_url(&settings);
 
+    assert!(settings.server_settings.hsm.is_none());
     start_wallet_server(
         wallet_listener,
-        requester_listener,
+        internal_listener,
         settings.clone(),
-        hsm,
-        MemorySessionStore::default(),
-        StatusListClientStub::new(issuer_ca.generate_status_list_mock().unwrap()),
+        Arc::new(MemorySessionStore::default()),
+        StatusListClientStub::new(issuer_ca.generate_issuer_status_list_mock().unwrap()),
     )
     .await;
 
@@ -306,14 +330,14 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
     // check if using no token returns a 401 on the (public) start URL if an API key is used and a 404 otherwise
     // (because it is served on the internal URL)
     let response = client
-        .post(settings.server_settings.public_url.join("disclosure/sessions"))
+        .post(settings.public_url.join("disclosure/sessions"))
         .json(LazyLock::force(&EXAMPLE_START_DISCLOSURE_REQUEST))
         .send()
         .await
         .unwrap();
 
     match auth {
-        RequesterAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
+        ServerAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
         _ => assert_eq!(response.status(), StatusCode::NOT_FOUND),
     };
 
@@ -326,14 +350,14 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
         .unwrap();
 
     match auth {
-        RequesterAuth::InternalEndpoint(_) => assert_eq!(response.status(), StatusCode::OK),
+        ServerAuth::InternalEndpoint(_) => assert_eq!(response.status(), StatusCode::OK),
         _ => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
     };
 
     // check if using a token returns a 200 on the (public) start URL if an API key is used and a 404 otherwise (because
     // it is served on the internal URL)
     let response = client
-        .post(settings.server_settings.public_url.join("disclosure/sessions"))
+        .post(settings.public_url.join("disclosure/sessions"))
         .header("Authorization", "Bearer secret_key")
         .json(LazyLock::force(&EXAMPLE_START_DISCLOSURE_REQUEST))
         .send()
@@ -341,7 +365,7 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
         .unwrap();
 
     match auth {
-        RequesterAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::OK),
+        ServerAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::OK),
         _ => assert_eq!(response.status(), StatusCode::NOT_FOUND),
     };
 
@@ -358,7 +382,6 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
 
     let session_token = response.json::<StartDisclosureResponse>().await.unwrap().session_token;
     let public_disclosed_attributes_url = settings
-        .server_settings
         .public_url
         .join(&format!("disclosure/sessions/{session_token}/disclosed_attributes"));
     let internal_disclosed_attributes_url =
@@ -374,7 +397,7 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
         .unwrap();
 
     match auth {
-        RequesterAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
+        ServerAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
         _ => assert_eq!(response.status(), StatusCode::NOT_FOUND),
     };
 
@@ -388,7 +411,7 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
         .unwrap();
 
     match auth {
-        RequesterAuth::InternalEndpoint(_) => assert_eq!(response.status(), StatusCode::BAD_REQUEST),
+        ServerAuth::InternalEndpoint(_) => assert_eq!(response.status(), StatusCode::BAD_REQUEST),
         _ => assert_eq!(response.status(), StatusCode::UNAUTHORIZED),
     };
 
@@ -403,7 +426,7 @@ async fn test_requester_authentication(#[case] mut auth: RequesterAuth) {
         .unwrap();
 
     match auth {
-        RequesterAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::BAD_REQUEST),
+        ServerAuth::Authentication(_) => assert_eq!(response.status(), StatusCode::BAD_REQUEST),
         _ => assert_eq!(response.status(), StatusCode::NOT_FOUND),
     };
 
@@ -437,28 +460,22 @@ async fn test_http_json_error_body(
 
 #[tokio::test]
 async fn test_new_session_parameters_error() {
-    let (requester_server, requester_listener) = request_server_settings_and_listener().await;
-    let (settings, wallet_listener, _, _) =
-        wallet_server_settings_and_listener(requester_server, &EXAMPLE_START_DISCLOSURE_REQUEST).await;
-    let hsm = settings
-        .server_settings
-        .hsm
-        .clone()
-        .map(Pkcs11Hsm::from_settings)
-        .transpose()
-        .unwrap();
+    let (internal_server, internal_listener) = internal_server_settings_and_listener().await;
+    let (settings, wallet_listener, _, _, _, _, _) =
+        wallet_server_settings_and_listener(internal_server, &EXAMPLE_START_DISCLOSURE_REQUEST).await;
 
     let internal_url = internal_url(&settings);
+
+    assert!(settings.server_settings.hsm.is_none());
     start_wallet_server(
         wallet_listener,
-        requester_listener,
+        internal_listener,
         settings,
-        hsm,
-        MemorySessionStore::default(),
+        Arc::new(MemorySessionStore::default()),
         StatusListClientStub::new(
             Ca::generate_issuer_mock_ca()
                 .unwrap()
-                .generate_status_list_mock()
+                .generate_issuer_status_list_mock()
                 .unwrap(),
         ),
     )
@@ -491,28 +508,22 @@ async fn test_new_session_parameters_error() {
 
 #[tokio::test]
 async fn test_disclosure_not_found() {
-    let (requester_server, requester_listener) = request_server_settings_and_listener().await;
-    let (settings, wallet_listener, _, _) =
-        wallet_server_settings_and_listener(requester_server, &EXAMPLE_START_DISCLOSURE_REQUEST).await;
-    let hsm = settings
-        .server_settings
-        .hsm
-        .clone()
-        .map(Pkcs11Hsm::from_settings)
-        .transpose()
-        .unwrap();
+    let (internal_server, internal_listener) = internal_server_settings_and_listener().await;
+    let (settings, wallet_listener, _, _, _, _, _) =
+        wallet_server_settings_and_listener(internal_server, &EXAMPLE_START_DISCLOSURE_REQUEST).await;
 
     let internal_url = internal_url(&settings);
+
+    assert!(settings.server_settings.hsm.is_none());
     start_wallet_server(
         wallet_listener,
-        requester_listener,
+        internal_listener,
         settings.clone(),
-        hsm,
-        MemorySessionStore::default(),
+        Arc::new(MemorySessionStore::default()),
         StatusListClientStub::new(
             Ca::generate_issuer_mock_ca()
                 .unwrap()
-                .generate_status_list_mock()
+                .generate_issuer_status_list_mock()
                 .unwrap(),
         ),
     )
@@ -521,19 +532,13 @@ async fn test_disclosure_not_found() {
     let client = default_reqwest_client_builder().build().unwrap();
 
     // check if a non-existent token returns a 404 on the status URL
-    let status_url = settings
-        .server_settings
-        .public_url
-        .join("disclosure/sessions/nonexistent_session");
+    let status_url = settings.public_url.join("disclosure/sessions/nonexistent_session");
     let response = client.get(status_url).send().await.unwrap();
 
     test_http_json_error_body(response, StatusCode::NOT_FOUND, "unknown_session").await;
 
     // check if a non-existent token returns a 404 on the cancel URL
-    let cancel_url = settings
-        .server_settings
-        .public_url
-        .join("disclosure/sessions/nonexistent_session");
+    let cancel_url = settings.public_url.join("disclosure/sessions/nonexistent_session");
     let response = client.delete(cancel_url).send().await.unwrap();
 
     test_http_json_error_body(response, StatusCode::NOT_FOUND, "unknown_session").await;
@@ -559,7 +564,7 @@ fn format_status_url(public_url: &BaseUrl, session_token: &SessionToken, session
     let mut status_url = public_url.join(&format!("disclosure/sessions/{session_token}"));
 
     if let Some(session_type) = session_type {
-        let status_query = serde_urlencoded::to_string(StatusParams {
+        let status_query = serde_qs::to_string(&StatusParams {
             session_type: Some(session_type),
         })
         .unwrap();
@@ -578,7 +583,7 @@ async fn get_status_ok(client: &Client, status_url: Url) -> StatusResponse {
 }
 
 async fn start_disclosure<S>(
-    disclosure_sessions: S,
+    disclosure_sessions: Arc<S>,
     request: &StartDisclosureRequest,
 ) -> (
     VerifierSettings,
@@ -586,31 +591,33 @@ async fn start_disclosure<S>(
     SessionToken,
     BaseUrl,
     Ca,
-    TrustAnchor<'static>,
+    TrustAnchors,
+    MockCertificateCrlVerifier,
+    TrustAnchors,
+    StaticStatusListClient,
 )
 where
     S: SessionStore<DisclosureData> + Send + Sync + 'static,
 {
-    let (requester_server, requester_listener) = request_server_settings_and_listener().await;
-    let (settings, wallet_listener, issuer_ca, rp_trust_anchor) =
-        wallet_server_settings_and_listener(requester_server, request).await;
-    let hsm = settings
-        .server_settings
-        .hsm
-        .clone()
-        .map(Pkcs11Hsm::from_settings)
-        .transpose()
-        .unwrap();
+    let (internal_server, internal_listener) = internal_server_settings_and_listener().await;
+    let (
+        settings,
+        wallet_listener,
+        issuer_ca,
+        rp_trust_anchor,
+        crl_verifier,
+        registration_certificate_trust_anchors,
+        registration_certificate_status_list_client,
+    ) = wallet_server_settings_and_listener(internal_server, request).await;
 
     let internal_url = internal_url(&settings);
-
+    assert!(settings.server_settings.hsm.is_none());
     start_wallet_server(
         wallet_listener,
-        requester_listener,
+        internal_listener,
         settings.clone(),
-        hsm,
         disclosure_sessions,
-        StatusListClientStub::new(issuer_ca.generate_status_list_mock_with_dn(PID_ISSUER_CERT_CN).unwrap()),
+        StatusListClientStub::new(issuer_ca.generate_pid_issuer_status_list_mock().unwrap()),
     )
     .await;
 
@@ -632,16 +639,22 @@ where
         internal_url,
         issuer_ca,
         rp_trust_anchor,
+        crl_verifier,
+        registration_certificate_trust_anchors,
+        registration_certificate_status_list_client,
     )
 }
 
 #[tokio::test]
 async fn test_disclosure_missing_session_type() {
-    let (settings, client, session_token, _, _, _) =
-        start_disclosure(MemorySessionStore::default(), &EXAMPLE_START_DISCLOSURE_REQUEST).await;
+    let (settings, client, session_token, _, _, _, _, _, _) = start_disclosure(
+        Arc::new(MemorySessionStore::default()),
+        &EXAMPLE_START_DISCLOSURE_REQUEST,
+    )
+    .await;
 
     // Check if requesting the session status without a session_type returns a 200, but without the universal link.
-    let status_url = format_status_url(&settings.server_settings.public_url, &session_token, None);
+    let status_url = format_status_url(&settings.public_url, &session_token, None);
 
     assert_matches!(
         get_status_ok(&client, status_url).await,
@@ -651,15 +664,14 @@ async fn test_disclosure_missing_session_type() {
 
 #[tokio::test]
 async fn test_disclosure_cancel() {
-    let (settings, client, session_token, internal_url, _, _) =
-        start_disclosure(MemorySessionStore::default(), &EXAMPLE_START_DISCLOSURE_REQUEST).await;
+    let (settings, client, session_token, internal_url, _, _, _, _, _) = start_disclosure(
+        Arc::new(MemorySessionStore::default()),
+        &EXAMPLE_START_DISCLOSURE_REQUEST,
+    )
+    .await;
 
     // Fetching the status should return OK and be in the Created state.
-    let status_url = format_status_url(
-        &settings.server_settings.public_url,
-        &session_token,
-        Some(SessionType::SameDevice),
-    );
+    let status_url = format_status_url(&settings.public_url, &session_token, Some(SessionType::SameDevice));
 
     assert_matches!(
         get_status_ok(&client, status_url.clone()).await,
@@ -668,7 +680,6 @@ async fn test_disclosure_cancel() {
 
     // Cancel the newly created session, which should return 204 and no body.
     let cancel_url = settings
-        .server_settings
         .public_url
         .join(&format!("disclosure/sessions/{session_token}"));
     let response = client.delete(cancel_url).send().await.unwrap();
@@ -681,7 +692,6 @@ async fn test_disclosure_cancel() {
 
     // Cancelling the session again should return a 400.
     let cancel_url = settings
-        .server_settings
         .public_url
         .join(&format!("disclosure/sessions/{session_token}"));
     let response = client.delete(cancel_url).send().await.unwrap();
@@ -705,26 +715,16 @@ async fn test_disclosure_cancel() {
     );
 }
 
-async fn test_disclosure_expired<S, F, Fut>(
-    storage: Storage,
-    session_store: S,
-    mock_time: &RwLock<DateTime<Utc>>,
-    create_cleanup_awaiter: F,
-) where
+async fn test_disclosure_expired<S>(timeouts: SessionStoreTimeouts, session_store: S, mock_time: &RwLock<DateTime<Utc>>)
+where
     S: SessionStore<DisclosureData> + Send + Sync + 'static,
-    F: Fn() -> Fut,
-    Fut: Future<Output = ()>,
 {
-    let (settings, client, session_token, internal_url, _, _) =
-        start_disclosure(session_store, &EXAMPLE_START_DISCLOSURE_REQUEST).await;
-    let timeouts = SessionStoreTimeouts::from(&storage);
+    let session_store = Arc::new(session_store);
+    let (settings, client, session_token, internal_url, _, _, _, _, _) =
+        start_disclosure(session_store.clone(), &EXAMPLE_START_DISCLOSURE_REQUEST).await;
 
     // Fetch the status, this should return OK and be in the Created state.
-    let status_url = format_status_url(
-        &settings.server_settings.public_url,
-        &session_token,
-        Some(SessionType::SameDevice),
-    );
+    let status_url = format_status_url(&settings.public_url, &session_token, Some(SessionType::SameDevice));
     assert_matches!(
         get_status_ok(&client, status_url.clone()).await,
         StatusResponse::Created { ul: Some(_) }
@@ -741,15 +741,8 @@ async fn test_disclosure_expired<S, F, Fut>(
     let expiry_time = Utc::now() + timeouts.expiration;
     *mock_time.write() = expiry_time;
 
-    time::pause();
-    let cleanup_awaiter = create_cleanup_awaiter();
-    time::advance(CLEANUP_INTERVAL_SECONDS + Duration::from_millis(1)).await;
-    time::resume();
-
-    // Wait for the database to have run the cleanup.
-    time::timeout(Duration::from_secs(10), cleanup_awaiter)
-        .await
-        .expect("timeout waiting for database cleanup");
+    // Call cleanup manually
+    session_store.cleanup().await.unwrap();
 
     // Fetching the status should return OK and be in the Expired state.
     assert_matches!(
@@ -765,15 +758,8 @@ async fn test_disclosure_expired<S, F, Fut>(
     // Advance the clock again so that the expired session will be purged.
     *mock_time.write() = expiry_time + timeouts.failed_deletion + Duration::from_millis(1);
 
-    time::pause();
-    let cleanup_awaiter = create_cleanup_awaiter();
-    time::advance(CLEANUP_INTERVAL_SECONDS + Duration::from_millis(1)).await;
-    time::resume();
-
-    // Wait for the database to have run the cleanup.
-    time::timeout(Duration::from_secs(10), cleanup_awaiter)
-        .await
-        .expect("timeout waiting for database cleanup");
+    // Call cleanup manually
+    session_store.cleanup().await.unwrap();
 
     // Both the status and disclosed attribute requests should now return 404.
     let response = client.get(status_url).send().await.unwrap();
@@ -796,136 +782,38 @@ async fn test_disclosure_expired_memory() {
 
     // The `MemorySessionStore` performs cleanup instantly, so we simply pass
     // an already completed future as the cleanup awaiter in the closure.
-    test_disclosure_expired(storage, session_store, mock_time.as_ref(), || future::ready(())).await;
+    test_disclosure_expired(timeouts, session_store, mock_time.as_ref()).await;
 }
 
 #[cfg(feature = "db_test")]
 mod db_test {
-    use std::future::Future;
-    use std::mem;
     use std::sync::Arc;
 
-    use futures::FutureExt;
-    use parking_lot::Mutex;
-    use tokio::sync::oneshot;
-
-    use openid4vc::server_state::SessionState;
-    use openid4vc::server_state::SessionStore;
-    use openid4vc::server_state::SessionStoreError;
+    use db_test::DbSetup;
+    use db_test::connection_from_url;
     use openid4vc::server_state::SessionStoreTimeouts;
-    use openid4vc::server_state::SessionToken;
-    use openid4vc::verifier::DisclosureData;
-    use server_utils::settings::ServerSettings;
-    use server_utils::store::postgres;
     use server_utils::store::postgres::PostgresSessionStore;
     use utils::generator::mock::MockTimeGenerator;
-    use verification_server::settings::VerifierSettings;
 
     use super::test_disclosure_expired;
 
-    /// Helper type created along with [`PostgresSessionStoreProxy`]
-    /// that can be used to register awaiters for the cleanup task.
-    struct PostgresSessionStoreNotifier {
-        cleanup_oneshots: Arc<Mutex<Vec<oneshot::Sender<()>>>>,
-    }
-
-    impl PostgresSessionStoreNotifier {
-        // Note that this method is not async, which means it creates a new
-        // oneshot channel as soon as it is called, i.e. hot instead of cold.
-        fn register_cleanup_awaiter(&self) -> impl Future<Output = ()> {
-            let (tx, rx) = oneshot::channel();
-
-            self.cleanup_oneshots.lock().push(tx);
-
-            // Ignore errors.
-            rx.map(|result| result.unwrap())
-        }
-    }
-
-    /// A wrapper for [`PostgresSessionStore`] that can be used to
-    /// monitor execution of cleanups from another tokio task.
-    struct PostgresSessionStoreProxy {
-        session_store: PostgresSessionStore<MockTimeGenerator>,
-        cleanup_oneshots: Arc<Mutex<Vec<oneshot::Sender<()>>>>,
-    }
-
-    impl PostgresSessionStoreProxy {
-        /// This creates both a [`PostgresSessionStoreProxy`] and a [`PostgresSessionStoreNotifier`].
-        fn new(session_store: PostgresSessionStore<MockTimeGenerator>) -> (Self, PostgresSessionStoreNotifier) {
-            let cleanup_oneshots = Arc::new(Mutex::new(Vec::new()));
-
-            let proxy = PostgresSessionStoreProxy {
-                session_store,
-                cleanup_oneshots: Arc::clone(&cleanup_oneshots),
-            };
-            let notifier = PostgresSessionStoreNotifier {
-                cleanup_oneshots: Arc::clone(&cleanup_oneshots),
-            };
-
-            (proxy, notifier)
-        }
-    }
-
-    impl SessionStore<DisclosureData> for PostgresSessionStoreProxy {
-        async fn get(&self, token: &SessionToken) -> Result<Option<SessionState<DisclosureData>>, SessionStoreError> {
-            self.session_store.get(token).await
-        }
-
-        async fn write(&self, session: SessionState<DisclosureData>, is_new: bool) -> Result<(), SessionStoreError> {
-            self.session_store.write(session, is_new).await
-        }
-
-        async fn cleanup(&self) -> Result<(), SessionStoreError> {
-            // Before performing cleanup, take all of the oneshots that are currently
-            // waiting and replace the value of the mutex with an empty Vec.
-            let cleanup_oneshots: Vec<oneshot::Sender<()>> = mem::take(&mut self.cleanup_oneshots.lock());
-
-            <PostgresSessionStore<MockTimeGenerator> as SessionStore<DisclosureData>>::cleanup(&self.session_store)
-                .await
-                .inspect(|_| {
-                    // Then after the cleanup, notify all of the those oneshots, which consumes them.
-                    for cleanup_oneshot in cleanup_oneshots {
-                        cleanup_oneshot.send(()).unwrap()
-                    }
-                })
-        }
-    }
-
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_disclosure_expired_postgres() {
-        // Combine the generated settings with the storage settings from the configuration file.
-        let storage = VerifierSettings::new("verification_server.toml", "verification_server")
-            .unwrap()
-            .server_settings
-            .storage;
-
-        assert_eq!(
-            storage.url.scheme(),
-            "postgres",
-            "should be configured to use PostgreSQL storage"
-        );
-
-        let timeouts = SessionStoreTimeouts::from(&storage);
+        let db_setup = DbSetup::create().await;
+        let timeouts = SessionStoreTimeouts::default();
         let time_generator = MockTimeGenerator::default();
         let mock_time = Arc::clone(&time_generator.time);
-        let session_store = PostgresSessionStore::new_with_time(
-            postgres::new_connection(storage.url.clone()).await.unwrap(),
-            timeouts,
-            time_generator,
-        );
-        let (store_proxy, cleanup_notify) = PostgresSessionStoreProxy::new(session_store);
+        let connection = connection_from_url(db_setup.verification_server_url()).await;
+        let session_store = PostgresSessionStore::new_with_time(connection, timeouts, time_generator);
 
-        test_disclosure_expired(storage, store_proxy, mock_time.as_ref(), || {
-            cleanup_notify.register_cleanup_awaiter()
-        })
-        .await;
+        test_disclosure_expired(timeouts, session_store, mock_time.as_ref()).await;
     }
 }
 
-fn pid_start_disclosure_request(format: CredentialFormat) -> StartDisclosureRequest {
+fn pid_start_disclosure_request(format: Format) -> StartDisclosureRequest {
     let query = match format {
-        CredentialFormat::MsoMdoc => Query::new_mock_mdoc_pid_example(),
-        CredentialFormat::SdJwt => Query::new_mock_sd_jwt_pid_example(),
+        Format::MsoMdoc => Query::new_mock_mdoc_pid_example(),
+        Format::SdJwt => Query::new_mock_sd_jwt_pid_example(),
     };
 
     StartDisclosureRequest {
@@ -936,45 +824,49 @@ fn pid_start_disclosure_request(format: CredentialFormat) -> StartDisclosureRequ
 }
 
 fn prepare_example_credential_payload(
+    format: Format,
     issuer_ca: &Ca,
-    wscd: &MockRemoteWscd,
+    wscd: &DisclosureMockRemoteWscd,
 ) -> (CredentialPayload, KeyPair, String, NormalizedTypeMetadata) {
-    let payload_preview = PreviewableCredentialPayload::nl_pid_example(&MockTimeGenerator::default());
+    let payload_preview = match format {
+        Format::MsoMdoc => PreviewableCredentialPayload::nl_pid_mdoc_example(&MockTimeGenerator::default()),
+        Format::SdJwt => PreviewableCredentialPayload::nl_pid_example(&MockTimeGenerator::default()),
+    };
     let metadata = NormalizedTypeMetadata::nl_pid_example();
 
-    let issuer_keypair = generate_pid_issuer_mock_with_registration(issuer_ca, IssuerRegistration::new_mock()).unwrap();
+    let issuer_keypair = issuer_ca.generate_pid_issuer_mock().unwrap();
 
     // Generate a new private key and use that and the issuer key to sign the Mdoc.
     let holder_privkey = wscd.create_random_key();
     let payload = CredentialPayload::from_previewable_credential_payload_unvalidated(
         payload_preview,
         Utc::now(),
-        holder_privkey.verifying_key(),
-        Integrity::from(""),
-        StatusClaim::new_mock(),
+        &PublicKeyRef::from(holder_privkey.verifying_key()),
+        Some(Integrity::from("")),
+        Some(StatusListClaim::new_mock()),
     )
     .unwrap();
 
     (payload, issuer_keypair, holder_privkey.identifier, metadata)
 }
 
-fn prepare_example_mdoc_mock(issuer_ca: &Ca, wscd: &MockRemoteWscd) -> Mdoc {
+fn prepare_example_mdoc_mock(issuer_ca: &Ca, wscd: &DisclosureMockRemoteWscd) -> (Mdoc, String) {
     let (credential_payload, issuer_keypair, holder_privkey_identifier, _) =
-        prepare_example_credential_payload(issuer_ca, wscd);
+        prepare_example_credential_payload(Format::MsoMdoc, issuer_ca, wscd);
     let (issuer_signed, mso) = credential_payload
         .into_signed_mdoc(&issuer_keypair)
         .now_or_never()
         .unwrap()
         .unwrap();
 
-    Mdoc::new_unverified(mso, holder_privkey_identifier, issuer_signed)
+    (Mdoc::new_unverified(mso, issuer_signed), holder_privkey_identifier)
 }
 
-fn prepare_example_sd_jwt_mock(issuer_ca: &Ca, wscd: &MockRemoteWscd) -> (SignedSdJwt, String) {
+fn prepare_example_sd_jwt_mock(issuer_ca: &Ca, wscd: &DisclosureMockRemoteWscd) -> (SignedSdJwt, String) {
     let (credential_payload, issuer_keypair, holder_privkey_identifier, metadata) =
-        prepare_example_credential_payload(issuer_ca, wscd);
+        prepare_example_credential_payload(Format::SdJwt, issuer_ca, wscd);
     let sd_jwt = credential_payload
-        .into_signed_sd_jwt(&metadata, &issuer_keypair)
+        .into_signed_sd_jwt(Some(&metadata), &issuer_keypair)
         .now_or_never()
         .unwrap()
         .unwrap();
@@ -984,14 +876,27 @@ fn prepare_example_sd_jwt_mock(issuer_ca: &Ca, wscd: &MockRemoteWscd) -> (Signed
 
 async fn perform_full_disclosure(
     session_type: SessionType,
-    format: CredentialFormat,
-) -> (Client, SessionToken, BaseUrl, Option<BaseUrl>) {
+    format: Format,
+) -> (Client, SessionToken, BaseUrl, Option<Url>) {
     // Start the verification_server and create a disclosure request.
-    let (settings, client, session_token, internal_url, issuer_ca, rp_trust_anchor) =
-        start_disclosure(MemorySessionStore::default(), &pid_start_disclosure_request(format)).await;
+    let (
+        settings,
+        client,
+        session_token,
+        internal_url,
+        issuer_ca,
+        rp_trust_anchor,
+        crl_verifier,
+        registration_certificate_trust_anchors,
+        registration_certificate_status_list_client,
+    ) = start_disclosure(
+        Arc::new(MemorySessionStore::default()),
+        &pid_start_disclosure_request(format),
+    )
+    .await;
 
     // Fetching the status should return OK, be in the Created state and include a universal link.
-    let status_url = format_status_url(&settings.server_settings.public_url, &session_token, Some(session_type));
+    let status_url = format_status_url(&settings.public_url, &session_token, Some(session_type));
 
     let StatusResponse::Created { ul: Some(ul) } = get_status_ok(&client, status_url.clone()).await else {
         panic!("session should be in CREATED state and a universal link should be provided")
@@ -1004,9 +909,20 @@ async fn perform_full_disclosure(
         SessionType::SameDevice => DisclosureUriSource::Link,
         SessionType::CrossDevice => DisclosureUriSource::QrCode,
     };
-    let disclosure_client = VpDisclosureClient::new_http(default_reqwest_client_builder()).unwrap();
+    let disclosure_client = VpDisclosureClient::new(
+        HttpVpMessageClient::new(HttpClient::try_new(default_reqwest_client_builder()).unwrap()),
+        crl_verifier,
+        registration_certificate_status_list_client,
+    );
     let disclosure_session = disclosure_client
-        .start(&request_uri_query, uri_source, &[rp_trust_anchor])
+        .start(
+            &request_uri_query,
+            uri_source,
+            DisclosureTrustAnchors {
+                wrpac: &rp_trust_anchor,
+                wrprc: &registration_certificate_trust_anchors,
+            },
+        )
         .await
         .expect("disclosure session should start at client side");
 
@@ -1018,30 +934,21 @@ async fn perform_full_disclosure(
 
     // Have the holder actually disclosure the example attributes to the verification_server,
     // after which the status endpoint should report that the session is Done.
-    let wscd = MockRemoteWscd::default();
+    let wscd = DisclosureMockRemoteWscd::default();
 
-    let attestations = match format {
-        CredentialFormat::MsoMdoc => {
-            let partial_mdocs = disclosure_session
-                .credential_requests()
-                .as_ref()
-                .iter()
-                .map(|request| {
-                    let mdoc = prepare_example_mdoc_mock(&issuer_ca, &wscd);
+    let attestations = disclosure_session
+        .credential_requests()
+        .as_ref()
+        .iter()
+        .map(|request| {
+            let attestations = match format {
+                Format::MsoMdoc => {
+                    let (mdoc, holder_privkey_identifier) = prepare_example_mdoc_mock(&issuer_ca, &wscd);
                     let partial_mdoc = PartialMdoc::try_new(mdoc, request.claim_paths()).unwrap();
 
-                    (request.id().clone(), vec_nonempty![partial_mdoc])
-                })
-                .collect();
-
-            DisclosableAttestations::MsoMdoc(partial_mdocs)
-        }
-        CredentialFormat::SdJwt => {
-            let presentations = disclosure_session
-                .credential_requests()
-                .as_ref()
-                .iter()
-                .map(|request| {
+                    DisclosableAttestations::MsoMdoc(vec_nonempty![(partial_mdoc, holder_privkey_identifier)])
+                }
+                Format::SdJwt => {
                     let (sd_jwt, key_id) = prepare_example_sd_jwt_mock(&issuer_ca, &wscd);
                     let presentation = request
                         .claim_paths()
@@ -1050,13 +957,13 @@ async fn perform_full_disclosure(
                         })
                         .finish();
 
-                    (request.id().clone(), vec_nonempty![(presentation, key_id)])
-                })
-                .collect();
+                    DisclosableAttestations::SdJwt(vec_nonempty![(presentation, key_id)])
+                }
+            };
 
-            DisclosableAttestations::SdJwt(presentations)
-        }
-    };
+            (request.id().clone(), attestations)
+        })
+        .collect::<HashMap<_, _>>();
 
     let return_url = disclosure_session
         .disclose(attestations.try_into().unwrap(), &wscd, &MockTimeGenerator::default())
@@ -1068,37 +975,32 @@ async fn perform_full_disclosure(
     (client, session_token, internal_url, return_url)
 }
 
-fn check_example_disclosed_attributes(
-    disclosed_attributes: &UniqueIdVec<DisclosedAttestations>,
-    format: CredentialFormat,
-) {
+fn check_example_disclosed_attributes(disclosed_attributes: &UniqueIdVec<DisclosedAttestations>, format: Format) {
     assert_eq!(disclosed_attributes.len().get(), 1);
     let attestations = &disclosed_attributes.as_ref().iter().exactly_one().unwrap().attestations;
 
+    let expected_attestation_type = pid_attestation_type(format);
     itertools::assert_equal(
-        attestations.iter().map(|attestation| {
-            (
-                attestation.attestation_type.as_str(),
-                attestation.attestation_qualification,
-            )
-        }),
-        [(PID_ATTESTATION_TYPE, AttestationQualification::EAA)],
+        attestations
+            .iter()
+            .map(|attestation| attestation.attestation_type.as_str()),
+        [expected_attestation_type],
     );
 
     let attributes = &attestations
         .iter()
-        .find(|attestation| attestation.attestation_type == *PID_ATTESTATION_TYPE)
+        .find(|attestation| attestation.attestation_type == expected_attestation_type)
         .unwrap()
         .attributes;
 
     match (format, attributes) {
-        (CredentialFormat::MsoMdoc, DisclosedAttributes::MsoMdoc(attributes)) => {
-            itertools::assert_equal(attributes.keys(), [PID_ATTESTATION_TYPE]);
+        (Format::MsoMdoc, DisclosedAttributes::MsoMdoc(attributes)) => {
+            itertools::assert_equal(attributes.keys(), [PID_MDOC_DOCTYPE]);
 
-            let bsn_value = attributes.get(PID_ATTESTATION_TYPE).unwrap().get("bsn").unwrap();
+            let bsn_value = attributes.get(PID_MDOC_DOCTYPE).unwrap().get("bsn").unwrap();
             assert_eq!(bsn_value.to_string(), "999991772");
         }
-        (CredentialFormat::SdJwt, DisclosedAttributes::SdJwt(attributes)) => {
+        (Format::SdJwt, DisclosedAttributes::SdJwt(attributes)) => {
             let bsn_value = attributes
                 .get(&vec_nonempty![ClaimPath::SelectByKey("bsn".to_string())])
                 .unwrap()
@@ -1111,9 +1013,7 @@ fn check_example_disclosed_attributes(
 
 #[rstest]
 #[tokio::test]
-async fn test_disclosed_attributes_without_nonce(
-    #[values(CredentialFormat::MsoMdoc, CredentialFormat::SdJwt)] format: CredentialFormat,
-) {
+async fn test_disclosed_attributes_without_nonce(#[values(Format::MsoMdoc, Format::SdJwt)] format: Format) {
     let (client, session_token, internal_url, _) = perform_full_disclosure(SessionType::CrossDevice, format).await;
 
     // Check if the disclosed attributes endpoint returns a 200 for the session, with the attributes.
@@ -1134,9 +1034,7 @@ async fn test_disclosed_attributes_without_nonce(
 
 #[rstest]
 #[tokio::test]
-async fn test_disclosed_attributes_with_nonce(
-    #[values(CredentialFormat::MsoMdoc, CredentialFormat::SdJwt)] format: CredentialFormat,
-) {
+async fn test_disclosed_attributes_with_nonce(#[values(Format::MsoMdoc, Format::SdJwt)] format: Format) {
     let (client, session_token, internal_url, return_url) =
         perform_full_disclosure(SessionType::SameDevice, format).await;
 
@@ -1167,7 +1065,6 @@ async fn test_disclosed_attributes_with_nonce(
     // with the attributes, when we include the nonce from the return URL.
     let nonce = return_url
         .expect("a same-device disclosure session should produce a return URL")
-        .into_inner()
         .query_pairs()
         .find_map(|(key, value)| (key == "nonce").then_some(value.into_owned()))
         .unwrap();
@@ -1186,24 +1083,44 @@ async fn test_disclosed_attributes_with_nonce(
 #[tokio::test]
 async fn test_disclosed_attributes_failed_session() {
     // Start the verification_server and create a disclosure request.
-    let (settings, client, session_token, internal_url, issuer_ca, rp_trust_anchor) =
-        start_disclosure(MemorySessionStore::default(), &EXAMPLE_START_DISCLOSURE_REQUEST).await;
+    let (
+        settings,
+        client,
+        session_token,
+        internal_url,
+        issuer_ca,
+        rp_trust_anchor,
+        crl_verifier,
+        registration_certificate_trust_anchors,
+        registration_certificate_status_list_client,
+    ) = start_disclosure(
+        Arc::new(MemorySessionStore::default()),
+        &EXAMPLE_START_DISCLOSURE_REQUEST,
+    )
+    .await;
 
     // Fetching the status should return OK, be in the Created state and include a universal link.
-    let status_url = format_status_url(
-        &settings.server_settings.public_url,
-        &session_token,
-        Some(SessionType::CrossDevice),
-    );
+    let status_url = format_status_url(&settings.public_url, &session_token, Some(SessionType::CrossDevice));
 
     let StatusResponse::Created { ul: Some(ul) } = get_status_ok(&client, status_url.clone()).await else {
         panic!("session should be in CREATED state and a universal link should be provided")
     };
 
     let request_uri_query = ul.as_ref().query().unwrap().to_string();
-    let disclosure_client = VpDisclosureClient::new_http(default_reqwest_client_builder()).unwrap();
+    let disclosure_client = VpDisclosureClient::new(
+        HttpVpMessageClient::new(HttpClient::try_new(default_reqwest_client_builder()).unwrap()),
+        crl_verifier,
+        registration_certificate_status_list_client,
+    );
     let disclosure_session = disclosure_client
-        .start(&request_uri_query, DisclosureUriSource::QrCode, &[rp_trust_anchor])
+        .start(
+            &request_uri_query,
+            DisclosureUriSource::QrCode,
+            DisclosureTrustAnchors {
+                wrpac: &rp_trust_anchor,
+                wrprc: &registration_certificate_trust_anchors,
+            },
+        )
         .await
         .expect("disclosure session should start at client side");
 
@@ -1223,13 +1140,13 @@ async fn test_disclosed_attributes_failed_session() {
 
     disclosure_session
         .disclose(
-            DisclosableAttestations::MsoMdoc(HashMap::from([(
+            HashMap::from([(
                 CredentialQuery::new_mock_mdoc_iso_example().id,
-                vec_nonempty![partial_mdoc],
-            )]))
+                DisclosableAttestations::MsoMdoc(vec_nonempty![(partial_mdoc, EXAMPLE_KEY_IDENTIFIER.to_string())]),
+            )])
             .try_into()
             .unwrap(),
-            &MockRemoteWscd::new_example(),
+            &DisclosureMockRemoteWscd::new_example(),
             &MockTimeGenerator::default(),
         )
         .await

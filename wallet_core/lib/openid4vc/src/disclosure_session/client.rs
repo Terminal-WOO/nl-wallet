@@ -1,206 +1,278 @@
-use derive_more::Constructor;
+use std::sync::Arc;
+
+use attestation_types::credential_format::Format;
+use crypto::utils as crypto_utils;
+use crypto::x509::crl::CertificateCrlVerifier;
+use crypto::x509::crl::CrlFetcher;
+use crypto::x509::crl::HttpCrlFetcher;
+use dcql::normalized::NormalizedCredentialRequest;
+use http_utils::urls::BaseUrl;
 use itertools::Itertools;
-use reqwest::ClientBuilder;
+use oauth::errors::AuthorizationErrorResponse;
+use oauth::errors::ErrorResponse;
+use serde::Deserialize;
+use token_status_list::verification::client::StatusListClient;
+use token_status_list::verification::reqwest::HttpStatusListClient;
+use token_status_list::verification::verifier::RevocationVerifier;
 use tracing::info;
 use tracing::warn;
-
-use crypto::utils as crypto_utils;
-use crypto::x509::BorrowingCertificate;
-use dcql::normalized::NormalizedCredentialRequest;
-use dcql::normalized::NormalizedCredentialRequests;
-use http_utils::urls::BaseUrl;
-
-use crate::errors::AuthorizationErrorCode;
-use crate::errors::ErrorResponse;
-use crate::errors::VpAuthorizationErrorCode;
-use crate::openid4vp::RequestUriMethod;
-use crate::openid4vp::VpAuthorizationRequest;
-use crate::openid4vp::VpRequestUriObject;
-use crate::verifier::VerifierUrlParameters;
+use utils::generator::TimeGenerator;
 
 use super::DisclosureClient;
-use super::VerifierCertificate;
+use super::DisclosureTrustAnchors;
+use super::error::UnsupportedRequestUriVariant;
 use super::error::VpClientError;
 use super::error::VpSessionError;
 use super::error::VpVerifierError;
 use super::message_client::HttpVpMessageClient;
 use super::message_client::VpMessageClient;
-use super::message_client::VpMessageClientError;
 use super::session::VpDisclosureSession;
 use super::uri_source::DisclosureUriSource;
+use crate::errors::VpAuthorizationErrorCode;
+use crate::openid4vp::AuthRequestValidationError;
+use crate::openid4vp::MsoMdocAlgValues;
+use crate::openid4vp::SdJwtAlgValues;
+use crate::openid4vp::VpAuthorizationRequest;
+use crate::openid4vp::VpRequestUri;
+use crate::openid4vp::VpRequestUriMethod;
+use crate::openid4vp::VpRequestUriObject;
+use crate::registration_certificate::validate_registration_certificate_and_query;
+use crate::verifier::SessionType;
 
-#[derive(Debug, Constructor)]
-pub struct VpDisclosureClient<H = HttpVpMessageClient> {
+#[derive(Debug)]
+pub struct VpDisclosureClient<H = HttpVpMessageClient, F = HttpCrlFetcher, C = HttpStatusListClient> {
     client: H,
+    crl_verifier: CertificateCrlVerifier<F>,
+    wrprc_revocation_verifier: RevocationVerifier<C>,
 }
 
-impl VpDisclosureClient<HttpVpMessageClient> {
-    pub fn new_http(client_builder: ClientBuilder) -> Result<Self, reqwest::Error> {
-        let client = Self::new(HttpVpMessageClient::new(client_builder)?);
-
-        Ok(client)
+impl<H, F, C> VpDisclosureClient<H, F, C>
+where
+    C: StatusListClient,
+{
+    pub fn new(client: H, crl_verifier: CertificateCrlVerifier<F>, status_list_client: C) -> Self {
+        Self {
+            client,
+            crl_verifier,
+            wrprc_revocation_verifier: RevocationVerifier::new_with_defaults(
+                Arc::new(status_list_client),
+                TimeGenerator,
+            ),
+        }
     }
-}
 
-impl<H> VpDisclosureClient<H> {
-    /// Report an error back to the RP. Note: this function only reports errors that are the RP's fault.
-    async fn report_error_back(&self, url: BaseUrl, error: VpVerifierError) -> VpVerifierError
+    /// Report an error back to the RP.
+    async fn report_error_back(&self, url: BaseUrl, state: Option<String>, error: VpVerifierError) -> VpVerifierError
     where
         H: VpMessageClient,
     {
-        match error {
-            VpVerifierError::Request(VpMessageClientError::Json(_))
-            | VpVerifierError::AuthRequestValidation(_)
-            | VpVerifierError::IncorrectClientId { .. }
-            | VpVerifierError::RpCertificate(_)
-            | VpVerifierError::NoReaderCertificate
-            | VpVerifierError::RequestedAttributesValidation(_) => {
-                let error_code = VpAuthorizationErrorCode::AuthorizationError(AuthorizationErrorCode::InvalidRequest);
+        let error_code = match &error {
+            // Unsupported response type.
+            VpVerifierError::AuthRequestValidation(AuthRequestValidationError::UnsupportedFieldValue {
+                field: "response_type",
+                ..
+            }) => Some(VpAuthorizationErrorCode::UnsupportedResponseType),
 
-                let error_response = ErrorResponse {
+            // Invalid request.
+            VpVerifierError::AuthRequestValidation(_) | VpVerifierError::IncorrectClientId { .. } => {
+                Some(VpAuthorizationErrorCode::InvalidRequest)
+            }
+
+            // None.
+            VpVerifierError::Request(_) => None,
+
+            // Formats not supported.
+            VpVerifierError::VpFormatsNotSupported(_) => Some(VpAuthorizationErrorCode::VpFormatsNotSupported),
+        };
+
+        if let Some(error_code) = error_code {
+            let error_response = AuthorizationErrorResponse {
+                error_response: ErrorResponse {
                     error: error_code,
                     error_description: Some(error.to_string()),
                     error_uri: None,
-                };
+                },
+                state,
+            };
 
-                // If sending the error results in an error, log it but do nothing else.
-                let _ = self
-                    .client
-                    .send_error(url, error_response)
-                    .await
-                    .inspect_err(|err| warn!("failed to send error to verifier: {err}"));
-            }
-            // don't report other errors
-            _ => {}
-        };
+            // If sending the error results in an error, log it but do nothing else.
+            let _ = self
+                .client
+                .send_error(url, error_response)
+                .await
+                .inspect_err(|err| warn!("failed to send error to verifier: {err}"));
+        }
 
         error
     }
-
-    /// Internal helper function for processing and checking the Authorization Request.
-    fn process_auth_request(
-        request_uri_client_id: &str,
-        auth_request_client_id: &str,
-        credential_requests: &NormalizedCredentialRequests,
-        certificate: BorrowingCertificate,
-    ) -> Result<VerifierCertificate, VpVerifierError> {
-        // The `client_id` in the Authorization Request, which has been authenticated, has to equal
-        // the `client_id` that the RP sent in the Request URI object at the start of the session.
-        if auth_request_client_id != request_uri_client_id {
-            return Err(VpVerifierError::IncorrectClientId {
-                expected: request_uri_client_id.to_string(),
-                found: auth_request_client_id.to_string(),
-            })?;
-        }
-
-        // Extract `ReaderRegistration` from the certificate.
-        let verifier_certificate = VerifierCertificate::try_new(certificate)
-            .map_err(VpVerifierError::RpCertificate)?
-            .ok_or(VpVerifierError::NoReaderCertificate)?;
-
-        // Verify that the requested attributes are included in the reader authentication.
-        verifier_certificate
-            .registration()
-            .verify_requested_attributes(credential_requests.as_ref())
-            .map_err(VpVerifierError::RequestedAttributesValidation)?;
-
-        Ok(verifier_certificate)
-    }
 }
 
-impl<H> DisclosureClient for VpDisclosureClient<H>
+impl<H, F, C> DisclosureClient for VpDisclosureClient<H, F, C>
 where
     H: VpMessageClient + Clone,
+    F: CrlFetcher,
+    C: StatusListClient,
 {
     type Session = VpDisclosureSession<H>;
 
     async fn start(
         &self,
-        request_uri_query: &str,
+        uri_query: &str,
         uri_source: DisclosureUriSource,
-        trust_anchors: &[rustls_pki_types::TrustAnchor<'_>],
+        trust_anchors: DisclosureTrustAnchors<'_>,
     ) -> Result<Self::Session, VpSessionError> {
         info!("start disclosure session");
 
-        let request_uri_object: VpRequestUriObject =
-            serde_urlencoded::from_str(request_uri_query).map_err(VpClientError::RequestUri)?;
+        let request = serde_qs::from_str::<VpRequestUri>(uri_query)
+            .map_err(VpClientError::RequestUri)
+            .map_err(VpSessionError::Client)?;
+        let (request_uri, request_uri_method) = match request.object {
+            VpRequestUriObject::AsReference {
+                request_uri,
+                request_uri_method,
+            } => Ok((request_uri, request_uri_method)),
+            VpRequestUriObject::AsValue { .. } => Err(VpClientError::UnsupportedRequestUriVariant(
+                UnsupportedRequestUriVariant::RequestObjectAsValue,
+            )),
+            VpRequestUriObject::AsQueryParameters { .. } => Err(VpClientError::UnsupportedRequestUriVariant(
+                UnsupportedRequestUriVariant::RequestObjectAsQueryParameters,
+            )),
+        }
+        .map_err(VpSessionError::Client)?;
+
+        #[derive(Deserialize)]
+        struct UrlSessionType {
+            session_type: SessionType,
+        }
 
         // Parse the `SessionType` from the verifier URL.
-        let VerifierUrlParameters { session_type, .. } = serde_urlencoded::from_str(
-            request_uri_object
-                .request_uri
-                .as_ref()
-                .query()
-                .ok_or(VpVerifierError::MissingSessionType)?,
-        )
-        .map_err(VpVerifierError::MalformedSessionType)?;
+        // If it is not present, or if it does not contain one of the two expected values, we simply ignore it.
+        let url_session_type = request_uri
+            .as_ref()
+            .query()
+            .and_then(|query| serde_qs::from_str(query).ok()) // discard the error: see comment below
+            .map(|params: UrlSessionType| params.session_type);
 
-        // Check the `SessionType` that was contained in the verifier URL against the source of the URI.
-        // A same-device session is expected to come from a Universal Link,
-        // while a cross-device session should come from a scanned QR code.
-        if uri_source.session_type() != session_type {
-            return Err(VpClientError::DisclosureUriSourceMismatch(session_type, uri_source).into());
+        let source_session_type = uri_source.session_type();
+
+        // If the verifier URL contained a `session_type` parameter of one of the two allowed values,
+        // (i.e., `same_device` or `cross_device`), check it against the source of the URI.
+        // A `same_device` session is expected to come from a Universal Link, while a `cross_device` session
+        // should come from a scanned QR code.
+        //
+        // The `verification_server` will always use the `session_type` parameters. In case of other verifiers:
+        // - If they don't use it, or if they do but with values other than `same_device` or `cross_device`, the
+        //   deserialization above maps it to `None`. (This does not break the downgrade attack prevention that this
+        //   mechanism realizes for the `verification_server`.)
+        // - If they use it in the correct manner (e.g. `same_device` for a UL), this will work fine.
+        // - If they use it incorrectly (e.g. `same_device` for a QR code) this will break the session and therefore
+        //   compatibility with that verifier, but such a situation would be bizarre and is not to be expected.
+        if let Some(session_type) = url_session_type
+            && source_session_type != session_type
+        {
+            return Err(VpSessionError::Client(VpClientError::DisclosureUriSourceMismatch(
+                session_type,
+                uri_source,
+            )));
         }
 
         // If the server supports it, require it to include a nonce in the Authorization Request JWT
-        let method = request_uri_object.request_uri_method.unwrap_or_default();
-        let request_nonce = match method {
-            RequestUriMethod::GET => None,
-            RequestUriMethod::POST => Some(crypto_utils::random_string(32)),
+        let request_method = request_uri_method.unwrap_or_default();
+        let request_nonce = match request_method {
+            VpRequestUriMethod::GET => None,
+            VpRequestUriMethod::POST => Some(crypto_utils::random_string(32)),
         };
 
         let jws = self
             .client
-            .get_authorization_request(request_uri_object.request_uri, request_nonce.clone())
+            .get_authorization_request(request_uri, request_nonce.clone())
             .await?;
 
-        let (vp_auth_request, certificate) = VpAuthorizationRequest::try_new(&jws, trust_anchors)?;
+        let (vp_auth_request, certificate) =
+            VpAuthorizationRequest::authenticate_request(&jws, trust_anchors.wrpac, &self.crl_verifier).await?;
         let response_uri = vp_auth_request.response_uri.clone();
+        let state = vp_auth_request.oauth_request.state.clone();
 
-        let auth_request_result = vp_auth_request
-            .validate(&certificate, request_nonce.as_deref())
-            .map_err(VpVerifierError::AuthRequestValidation);
-        let auth_request = match (auth_request_result, response_uri) {
-            (Err(error), Some(response_uri)) => {
-                return Err(self.report_error_back(response_uri, error).await)?;
+        // The `client_id` in the Authorization Request, which has been authenticated, has to equal
+        // the `client_id` that the RP sent in the request URI at the start of the session.
+        if vp_auth_request.oauth_request.client_id != request.client_id.to_string() {
+            let error = VpVerifierError::IncorrectClientId {
+                expected: request.client_id.to_string(),
+                found: vp_auth_request.oauth_request.client_id.clone(),
+            };
+
+            if let Some(response_uri) = response_uri {
+                return Err(VpSessionError::Verifier(
+                    self.report_error_back(response_uri, state, error).await,
+                ));
             }
-            (result, _) => result?,
+            return Err(VpSessionError::Verifier(error));
+        }
+
+        let dcql_query = vp_auth_request.dcql_query.clone();
+        let auth_request_result = vp_auth_request
+            .normalize_request(&certificate, request_nonce.as_deref())
+            .map_err(VpVerifierError::AuthRequestValidation);
+
+        let auth_request_result = match auth_request_result {
+            Ok((auth_request, selected_encryption_algorithm)) => validate_registration_certificate_and_query(
+                &auth_request.registration_certificate,
+                &dcql_query,
+                &certificate,
+                trust_anchors.wrprc,
+                &self.wrprc_revocation_verifier,
+                &TimeGenerator,
+            )
+            .await
+            .map(|registration| (auth_request, selected_encryption_algorithm, (&registration).into()))
+            .map_err(|error| {
+                VpVerifierError::AuthRequestValidation(AuthRequestValidationError::RegistrationCertificate(Box::new(
+                    error,
+                )))
+            }),
+            Err(error) => Err(error),
         };
 
-        let process_request_result = Self::process_auth_request(
-            &request_uri_object.client_id,
-            &auth_request.client_id,
-            &auth_request.credential_requests,
-            certificate,
-        );
-        let verifier_certificate = match process_request_result {
-            Ok(value) => value,
-            Err(error) => return Err(self.report_error_back(auth_request.response_uri, error).await)?,
+        let (auth_request, selected_encryption_algorithm, organization) = match (auth_request_result, response_uri) {
+            (Err(error), Some(response_uri)) => {
+                return Err(VpSessionError::Verifier(
+                    self.report_error_back(response_uri, state, error).await,
+                ))?;
+            }
+            (result, _) => result.map_err(VpSessionError::Verifier)?,
         };
 
-        // TODO (PVW-4955): Signing of disclosures using a mix of formats is currently unsupported, because of how we
-        //                  use the `DisclosureWscd` trait. If the credential request contains this, simply terminate
-        //                  the session and return an error. In the future, we should change our use of `DisclosureWscd`
-        //                  to support disclosing both mdoc and SD-JWT credentials in the same response.
-        let format_count = auth_request
+        // Validate that the verifier's vp_formats_supported covers each of the requested formats and includes ES256.
+        let vp_formats = &auth_request.client_metadata.vp_formats_supported;
+        let unsupported_format = auth_request
             .credential_requests
             .as_ref()
             .iter()
             .map(NormalizedCredentialRequest::format)
             .unique()
-            .count();
-        if format_count > 1 {
-            let _ = self
-                .client
-                .terminate(auth_request.response_uri)
-                .await
-                // If termination results in an error, log it and do not return it.
-                .inspect_err(|error| warn!("failed to send session termination to verifier: {error}"));
+            .find(|format| match format {
+                Format::MsoMdoc => !vp_formats
+                    .mso_mdoc
+                    .as_ref()
+                    .is_some_and(MsoMdocAlgValues::contains_ecdsa_p256),
+                Format::SdJwt => !vp_formats.sd_jwt.as_ref().is_some_and(SdJwtAlgValues::contains_es_256),
+            });
 
-            return Err(VpClientError::MixedFormatCredentialRequest.into());
+        if let Some(format) = unsupported_format {
+            let error = VpVerifierError::VpFormatsNotSupported(format);
+            return Err(VpSessionError::Verifier(
+                self.report_error_back(auth_request.response_uri, auth_request.state, error)
+                    .await,
+            ));
         }
 
-        let session = VpDisclosureSession::new(self.client.clone(), session_type, verifier_certificate, auth_request);
+        let session = VpDisclosureSession::new(
+            self.client.clone(),
+            source_session_type,
+            organization,
+            auth_request,
+            selected_encryption_algorithm,
+        );
 
         Ok(session)
     }
@@ -208,70 +280,92 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
     use std::collections::HashMap;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::LazyLock;
 
-    use assert_matches::assert_matches;
-    use futures::FutureExt;
-    use http::StatusCode;
-    use itertools::Itertools;
-    use rstest::rstest;
-    use serde::de::Error;
-
-    use attestation_data::attributes::AttributeValue;
-    use attestation_data::auth::reader_auth::ReaderRegistration;
-    use attestation_data::auth::reader_auth::ValidationError;
+    use attestation_data::attributes::Attribute;
     use attestation_data::disclosure::DisclosedAttributes;
-    use attestation_data::x509::CertificateTypeError;
+    use attestation_data::registration_certificate::RegistrationCertificateAuthorizationError;
+    use attestation_data::registration_certificate::RegistrationCertificateValidationError;
+    use attestation_data::registration_certificate::mock::verifier_registration_certificate_payload;
     use attestation_types::claim_path::ClaimPath;
+    use attestation_types::credential_format::Format;
     use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
+    use attestation_types::pid_constants::PID_MDOC_DOCTYPE;
+    use base64::prelude::*;
+    use cose::wrprc_cwt::SignedWrprcCwt;
+    use crypto::keys::PublicKeyRef;
+    use crypto::mock_remote::DisclosureMockRemoteWscd;
     use crypto::mock_remote::MockRemoteEcdsaKey;
     use crypto::server_keys::generate::Ca;
-    use crypto::server_keys::generate::mock::ISSUANCE_CERT_CN;
-    use crypto::x509::BorrowingCertificateExtension;
-    use crypto::x509::CertificateUsage;
-    use dcql::CredentialFormat;
+    use crypto::trust_anchor::TrustAnchors;
+    use crypto::x509::crl::mock::MockCertificateCrlVerifier;
     use dcql::normalized::NormalizedCredentialRequest;
     use dcql::normalized::NormalizedCredentialRequests;
+    use futures::FutureExt;
+    use http::StatusCode;
     use http_utils::urls::BaseUrl;
+    use itertools::Itertools;
+    use jwt::SignedJwt;
+    use jwt::UnverifiedJwt;
+    use jwt::error::JwtParseError;
+    use jwt::headers::HeaderWithX5c;
+    use jwt::jades_b_b::JadesbbHeader;
     use mdoc::holder::disclosure::PartialMdoc;
+    use oauth::errors::AuthorizationErrorResponse;
+    use rstest::rstest;
     use sd_jwt::builder::SignedSdJwt;
+    use serde::Serialize;
+    use serde::de::Error;
+    use serde_json::json;
+    use token_status_list::verification::client::StatusListClient;
     use token_status_list::verification::client::mock::StatusListClientStub;
     use token_status_list::verification::verifier::RevocationVerifier;
+    use url::Url;
+    use utils::generator::TimeGenerator;
     use utils::generator::mock::MockTimeGenerator;
     use utils::vec_nonempty;
-    use wscd::mock_remote::MOCK_WALLET_CLIENT_ID;
-    use wscd::mock_remote::MockRemoteWscd;
-
-    use crate::errors::AuthorizationErrorCode;
-    use crate::errors::VpAuthorizationErrorCode;
-    use crate::mock::ExtendingVctRetrieverStub;
-    use crate::openid4vp::AuthRequestValidationError;
-    use crate::openid4vp::RequestUriMethod;
-    use crate::openid4vp::VpAuthorizationResponse;
-    use crate::openid4vp::VpRequestUriObject;
-    use crate::openid4vp::WalletRequest;
-    use crate::verifier::SessionType;
 
     use super::super::DisclosableAttestations;
     use super::super::DisclosureClient;
     use super::super::DisclosureSession;
+    use super::super::DisclosureTrustAnchors;
     use super::super::DisclosureUriSource;
-    use super::super::client::VpMessageClientError;
+    use super::super::error::UnsupportedRequestUriVariant;
     use super::super::error::VpClientError;
     use super::super::error::VpSessionError;
     use super::super::error::VpVerifierError;
+    use super::super::message_client::VpMessageClient;
+    use super::super::message_client::VpMessageClientError;
     use super::super::message_client::mock::MockErrorFactoryVpMessageClient;
     use super::super::message_client::mock::MockVerifierSession;
     use super::super::message_client::mock::MockVerifierVpMessageClient;
     use super::super::message_client::mock::WalletMessage;
-    use super::super::message_client::mock::request_uri_object;
+    use super::super::message_client::mock::request_uri;
     use super::super::session::VpDisclosureSession;
     use super::VpDisclosureClient;
+    use crate::errors::VpAuthorizationErrorCode;
+    use crate::mock::ExtendingVctRetrieverStub;
+    use crate::openid4vp::AuthRequestValidationError;
+    use crate::openid4vp::VpAuthorizationRequest;
+    use crate::openid4vp::VpAuthorizationResponse;
+    use crate::openid4vp::VpFormatsSupported;
+    use crate::openid4vp::VpRequestUri;
+    use crate::openid4vp::VpRequestUriMethod;
+    use crate::openid4vp::VpRequestUriObject;
+    use crate::openid4vp::WalletRequest;
+    use crate::registration_certificate::RegistrationCertificateError;
+    use crate::verifier::SessionType;
 
-    static VERIFIER_URL: LazyLock<BaseUrl> = LazyLock::new(|| "http://example.com/disclosure".parse().unwrap());
+    static VERIFIER_URL: LazyLock<BaseUrl> = LazyLock::new(|| "http://cert.rp.example.com/disclosure".parse().unwrap());
+
+    enum RegistrationCertificateFormat {
+        Jwt,
+        Cwt,
+    }
 
     type StartDisclosureResult = Result<
         (
@@ -281,14 +375,54 @@ mod tests {
         (Box<VpSessionError>, Arc<MockVerifierSession>),
     >;
 
-    #[expect(clippy::too_many_arguments)]
+    #[derive(Serialize)]
+    #[serde(transparent)]
+    struct MalformedVpAuthorizationRequest(serde_json::Value);
+
+    impl jwt::JwtTyp for MalformedVpAuthorizationRequest {
+        const TYP: &'static str = "oauth-authz-req+jwt";
+    }
+
+    #[derive(Debug, Clone)]
+    struct MalformedVpAuthorizationRequestMessageClient(UnverifiedJwt<VpAuthorizationRequest, HeaderWithX5c>);
+
+    impl VpMessageClient for MalformedVpAuthorizationRequestMessageClient {
+        async fn get_authorization_request(
+            &self,
+            _url: BaseUrl,
+            _wallet_nonce: Option<String>,
+        ) -> Result<UnverifiedJwt<VpAuthorizationRequest, HeaderWithX5c>, VpMessageClientError> {
+            Ok(self.0.clone())
+        }
+
+        async fn send_authorization_response(
+            &self,
+            _url: BaseUrl,
+            _jwe: String,
+        ) -> Result<Option<Url>, VpMessageClientError> {
+            panic!("a malformed authorization request should not produce an authorization response")
+        }
+
+        async fn send_error(
+            &self,
+            _url: BaseUrl,
+            _error: AuthorizationErrorResponse<VpAuthorizationErrorCode>,
+        ) -> Result<Option<Url>, VpMessageClientError> {
+            panic!("a malformed authorization request should not be reported to the verifier")
+        }
+    }
+
+    fn status_list_client() -> impl StatusListClient {
+        let ca = Ca::generate_mock();
+        StatusListClientStub::new(ca.generate_issuer_status_list_mock().unwrap())
+    }
+
     fn start_disclosure_session<SF>(
         session_type: SessionType,
         uri_source: DisclosureUriSource,
-        request_uri_method: RequestUriMethod,
-        redirect_uri: Option<BaseUrl>,
+        request_uri_method: VpRequestUriMethod,
+        redirect_uri: Option<Url>,
         credential_requests: NormalizedCredentialRequests,
-        reader_registration: Option<ReaderRegistration>,
         transform_verifier_session: SF,
     ) -> StartDisclosureResult
     where
@@ -300,20 +434,29 @@ mod tests {
             session_type,
             request_uri_method,
             redirect_uri,
-            reader_registration,
             credential_requests,
         );
+        let registration_certificate = verifier_session.registration_certificate.as_ref().unwrap();
+        let registration_certificate_trust_anchors = registration_certificate.trust_anchors.clone();
+        let registration_certificate_status_list_client = registration_certificate.status_list_client.clone();
         let verifier_session = Arc::new(transform_verifier_session(verifier_session));
         let mock_client = MockVerifierVpMessageClient::new(Arc::clone(&verifier_session));
 
         // Create a new `VpDisclosureClient` and start a disclosure session.
-        let client = VpDisclosureClient::new(mock_client);
+        let client = VpDisclosureClient::new(
+            mock_client,
+            verifier_session.crl_verifier.clone(),
+            registration_certificate_status_list_client,
+        );
 
         let disclosure_session_result = client
             .start(
                 &verifier_session.request_uri_query(),
                 uri_source,
-                &verifier_session.trust_anchors,
+                DisclosureTrustAnchors {
+                    wrpac: &verifier_session.trust_anchors,
+                    wrprc: &registration_certificate_trust_anchors,
+                },
             )
             .now_or_never()
             .unwrap();
@@ -327,31 +470,17 @@ mod tests {
     fn start_disclosure_session_format<SF>(
         session_type: SessionType,
         uri_source: DisclosureUriSource,
-        request_uri_method: RequestUriMethod,
-        redirect_uri: Option<BaseUrl>,
-        credential_format: CredentialFormat,
+        request_uri_method: VpRequestUriMethod,
+        redirect_uri: Option<Url>,
+        credential_format: Format,
         transform_verifier_session: SF,
     ) -> StartDisclosureResult
     where
         SF: FnOnce(MockVerifierSession) -> MockVerifierSession,
     {
         let credential_request = match credential_format {
-            CredentialFormat::MsoMdoc => NormalizedCredentialRequest::new_mock_mdoc_pid_example(),
-            CredentialFormat::SdJwt => NormalizedCredentialRequest::new_mock_sd_jwt_pid_example(),
-        };
-
-        let authorized_attributes = credential_request
-            .credential_types()
-            .map(|credential_type| {
-                (
-                    credential_type.to_string(),
-                    credential_request.claim_paths().cloned().collect(),
-                )
-            })
-            .collect();
-        let reader_registration = ReaderRegistration {
-            authorized_attributes,
-            ..ReaderRegistration::new_mock()
+            Format::MsoMdoc => NormalizedCredentialRequest::new_mock_mdoc_pid_example(),
+            Format::SdJwt => NormalizedCredentialRequest::new_mock_sd_jwt_pid_example(),
         };
 
         start_disclosure_session(
@@ -360,7 +489,6 @@ mod tests {
             request_uri_method,
             redirect_uri,
             vec![credential_request].try_into().unwrap(),
-            Some(reader_registration),
             transform_verifier_session,
         )
     }
@@ -370,11 +498,11 @@ mod tests {
     #[case(SessionType::SameDevice, DisclosureUriSource::Link)]
     #[case(SessionType::CrossDevice, DisclosureUriSource::QrCode)]
     fn test_vp_disclosure_client_full(
-        #[values(CredentialFormat::MsoMdoc, CredentialFormat::SdJwt)] credential_format: CredentialFormat,
+        #[values(Format::MsoMdoc, Format::SdJwt)] credential_format: Format,
         #[case] session_type: SessionType,
         #[case] uri_source: DisclosureUriSource,
-        #[values(RequestUriMethod::GET, RequestUriMethod::POST)] request_uri_method: RequestUriMethod,
-        #[values(None, Some("http://example.com/redirect".parse().unwrap()))] redirect_uri: Option<BaseUrl>,
+        #[values(VpRequestUriMethod::GET, VpRequestUriMethod::POST)] request_uri_method: VpRequestUriMethod,
+        #[values(None, Some("http://example.com/redirect".parse().unwrap()))] redirect_uri: Option<Url>,
     ) {
         let (disclosure_session, verifier_session) = start_disclosure_session_format(
             session_type,
@@ -399,8 +527,8 @@ mod tests {
             };
 
             match request_uri_method {
-                RequestUriMethod::GET => assert!(wallet_nonce.is_none()),
-                RequestUriMethod::POST => assert!(wallet_nonce.is_some()),
+                VpRequestUriMethod::GET => assert!(wallet_nonce.is_none()),
+                VpRequestUriMethod::POST => assert!(wallet_nonce.is_some()),
             }
 
             // Extract the wallet nonce for response validation later on.
@@ -413,48 +541,34 @@ mod tests {
         assert_eq!(
             *disclosure_session.credential_requests(),
             match credential_format {
-                CredentialFormat::MsoMdoc => NormalizedCredentialRequests::new_mock_mdoc_pid_example(),
-                CredentialFormat::SdJwt => NormalizedCredentialRequests::new_mock_sd_jwt_pid_example(),
+                Format::MsoMdoc => NormalizedCredentialRequests::new_mock_mdoc_pid_example(),
+                Format::SdJwt => NormalizedCredentialRequests::new_mock_sd_jwt_pid_example(),
             }
         );
 
-        assert_eq!(
-            disclosure_session.verifier_certificate().certificate(),
-            verifier_session.key_pair.certificate()
-        );
-        assert_eq!(
-            *disclosure_session.verifier_certificate().registration(),
-            ReaderRegistration::from_certificate(disclosure_session.verifier_certificate().certificate())
-                .unwrap()
-                .unwrap(),
-        );
-        assert_eq!(
-            disclosure_session.verifier_certificate().registration(),
-            verifier_session.reader_registration.as_ref().unwrap()
-        );
+        assert_eq!(disclosure_session.organization().display_name, "Mock verifier");
 
         // Create an attestation and disclose it.
         let ca = Ca::generate_issuer_mock_ca().unwrap();
         let attestation_key = MockRemoteEcdsaKey::new_random("attestation_key".to_string());
-        let wscd = MockRemoteWscd::new(vec![attestation_key.clone()]);
+        let wscd = DisclosureMockRemoteWscd::new(vec![attestation_key.clone()]);
 
         let attestations = match credential_format {
-            CredentialFormat::MsoMdoc => {
+            Format::MsoMdoc => {
                 let partial_mdoc = PartialMdoc::new_mock_with_ca_and_key(&ca, &attestation_key);
 
-                DisclosableAttestations::MsoMdoc(HashMap::from([(
+                HashMap::from([(
                     "mdoc_pid_example".try_into().unwrap(),
-                    vec_nonempty![partial_mdoc],
-                )]))
+                    DisclosableAttestations::MsoMdoc(vec_nonempty![(partial_mdoc, "attestation_key".to_string())]),
+                )])
                 .try_into()
                 .unwrap()
             }
-            CredentialFormat::SdJwt => {
-                let issuer_key_pair = ca
-                    .generate_key_pair(ISSUANCE_CERT_CN, CertificateUsage::Mdl, Default::default())
-                    .unwrap();
+            Format::SdJwt => {
+                let issuer_key_pair = ca.generate_issuer_mock().unwrap();
                 let verified_sd_jwt =
-                    SignedSdJwt::pid_example(&issuer_key_pair, attestation_key.verifying_key()).into_verified();
+                    SignedSdJwt::pid_example(&issuer_key_pair, &PublicKeyRef::from(attestation_key.verifying_key()))
+                        .into_verified();
                 let unsigned_presentation = verified_sd_jwt
                     .into_presentation_builder()
                     .disclose(&vec_nonempty![ClaimPath::SelectByKey("bsn".to_string())])
@@ -465,10 +579,13 @@ mod tests {
                     .unwrap()
                     .finish();
 
-                DisclosableAttestations::SdJwt(HashMap::from([(
+                HashMap::from([(
                     "sd_jwt_pid_example".try_into().unwrap(),
-                    vec_nonempty![(unsigned_presentation, "attestation_key".to_string())],
-                )]))
+                    DisclosableAttestations::SdJwt(vec_nonempty![(
+                        unsigned_presentation,
+                        "attestation_key".to_string()
+                    )]),
+                )])
                 .try_into()
                 .unwrap()
             }
@@ -496,13 +613,15 @@ mod tests {
         // Decrypt and verify the response that was sent by `VpDisclosureSession`.
         let disclosed_attestations = VpAuthorizationResponse::decrypt_and_verify(
             jwe,
-            &verifier_session.encryption_keypair,
+            &verifier_session.encryption_secret_key,
             &verifier_session.normalized_auth_request(wallet_nonce),
-            &[MOCK_WALLET_CLIENT_ID.to_string()],
             &MockTimeGenerator::default(),
-            &[ca.to_trust_anchor()],
+            &ca.to_trust_anchors(),
             &ExtendingVctRetrieverStub,
-            &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                ca.generate_issuer_status_list_mock().unwrap(),
+            ))),
+            false,
         )
         .now_or_never()
         .unwrap()
@@ -515,20 +634,24 @@ mod tests {
             .ok()
             .and_then(|attestations| attestations.attestations.iter().exactly_one().ok())
             .and_then(|attestation| {
-                (attestation.attestation_type.as_str() == PID_ATTESTATION_TYPE).then_some(attestation)
+                let expected_attestation_type = match &attestation.attributes {
+                    DisclosedAttributes::MsoMdoc(_) => PID_MDOC_DOCTYPE,
+                    DisclosedAttributes::SdJwt(_) => PID_ATTESTATION_TYPE,
+                };
+                (attestation.attestation_type.as_str() == expected_attestation_type).then_some(attestation)
             })
             .and_then(|attestation| match &attestation.attributes {
                 DisclosedAttributes::MsoMdoc(attributes) => attributes
                     .iter()
                     .exactly_one()
                     .ok()
-                    .and_then(|(namespaces, attributes)| (namespaces == PID_ATTESTATION_TYPE).then_some(attributes))
+                    .and_then(|(namespaces, attributes)| (namespaces == PID_MDOC_DOCTYPE).then_some(attributes))
                     .map(|attributes| {
                         attributes
                             .iter()
                             .filter_map(|(key, value)| {
                                 match value {
-                                    AttributeValue::Text(text) => Some(text),
+                                    Attribute::Text(text) => Some(text),
                                     _ => None,
                                 }
                                 .map(|text| (key.as_str(), text.as_str()))
@@ -540,7 +663,7 @@ mod tests {
                         .flattened()
                         .into_iter()
                         .flat_map(|(path, value)| match (path.iter().exactly_one().ok(), value) {
-                            (Some(path), AttributeValue::Text(text)) => Some((*path, text.as_str())),
+                            (Some(path), Attribute::Text(text)) => Some((*path, text.as_str())),
                             _ => None,
                         })
                         .collect(),
@@ -559,80 +682,330 @@ mod tests {
     }
 
     #[test]
-    fn test_vp_disclosure_client_start_error_request_uri() {
-        // Calling `VpDisclosureClient::start()` with an invalid request URI object should result in an error.
+    fn test_vp_disclosure_client_rejects_missing_registration_certificate() {
         let (error, verifier_session) = start_disclosure_session_format(
             SessionType::SameDevice,
             DisclosureUriSource::Link,
-            RequestUriMethod::POST,
+            VpRequestUriMethod::GET,
             None,
-            CredentialFormat::MsoMdoc,
+            Format::MsoMdoc,
             |mut verifier_session| {
-                verifier_session.request_uri_override = Some(String::new());
-
+                verifier_session.registration_certificate = None;
                 verifier_session
             },
         )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
-
-        assert_matches!(*error, VpSessionError::Client(VpClientError::RequestUri(_)));
-        assert_eq!(verifier_session.wallet_messages.lock().len(), 0);
-    }
-
-    #[test]
-    fn test_vp_disclosure_client_start_error_missing_session_type() {
-        // Calling `VpDisclosureClient::start()` with a request URI object
-        // that does not contain a request URI should result in an error.
-        let (error, verifier_session) = start_disclosure_session_format(
-            SessionType::SameDevice,
-            DisclosureUriSource::Link,
-            RequestUriMethod::POST,
-            None,
-            CredentialFormat::MsoMdoc,
-            |mut verifier_session| {
-                let mut request_uri = verifier_session.request_uri_object.request_uri.clone().into_inner();
-                request_uri.set_query(None);
-
-                verifier_session.request_uri_object.request_uri = request_uri.try_into().unwrap();
-
-                verifier_session
-            },
-        )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
-
-        assert_matches!(*error, VpSessionError::Verifier(VpVerifierError::MissingSessionType));
-        assert_eq!(verifier_session.wallet_messages.lock().len(), 0);
-    }
-
-    #[test]
-    fn test_vp_disclosure_client_start_error_malformed_session_type() {
-        // Calling `VpDisclosureClient::start()` with a request URI object that contains
-        // a request URI with an invalid session_type should result in an error.
-        let (error, verifier_session) = start_disclosure_session_format(
-            SessionType::SameDevice,
-            DisclosureUriSource::Link,
-            RequestUriMethod::POST,
-            None,
-            CredentialFormat::MsoMdoc,
-            |mut verifier_session| {
-                let mut request_uri_object: VpRequestUriObject =
-                    serde_urlencoded::from_str(&verifier_session.request_uri_query()).unwrap();
-                request_uri_object.request_uri = format!("{}?session_type=invalid", LazyLock::force(&VERIFIER_URL))
-                    .parse()
-                    .unwrap();
-
-                verifier_session.request_uri_object = request_uri_object;
-
-                verifier_session
-            },
-        )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+        .expect_err("starting a disclosure session without a registration certificate should fail");
 
         assert_matches!(
             *error,
-            VpSessionError::Verifier(VpVerifierError::MalformedSessionType(_))
+            VpSessionError::Verifier(VpVerifierError::AuthRequestValidation(
+                AuthRequestValidationError::RegistrationCertificate(ref registration_error)
+            )) if matches!(registration_error.as_ref(), RegistrationCertificateError::Missing)
         );
-        assert_eq!(verifier_session.wallet_messages.lock().len(), 0);
+        assert_matches!(
+            verifier_session.wallet_messages.lock().last(),
+            Some(WalletMessage::Error(_))
+        );
+    }
+
+    #[rstest]
+    #[case::not_an_envelope(b"not a registration certificate")]
+    #[case::invalid_utf8(b"\xff")]
+    fn test_vp_disclosure_client_does_not_report_malformed_registration_certificate(
+        #[case] malformed_certificate: &[u8],
+    ) {
+        let verifier_session = MockVerifierSession::new(
+            &VERIFIER_URL,
+            SessionType::SameDevice,
+            VpRequestUriMethod::GET,
+            None,
+            NormalizedCredentialRequests::new_mock_mdoc_pid_example(),
+        );
+        let registration_certificate = verifier_session.registration_certificate.as_ref().unwrap();
+        let registration_certificate_trust_anchors = registration_certificate.trust_anchors.clone();
+        let registration_certificate_status_list_client = registration_certificate.status_list_client.clone();
+        let mut auth_request = serde_json::to_value(VpAuthorizationRequest::from(
+            verifier_session.normalized_auth_request(None),
+        ))
+        .unwrap();
+        auth_request["verifier_info"][0]["data"] =
+            serde_json::Value::String(BASE64_URL_SAFE_NO_PAD.encode(malformed_certificate));
+        let signed_auth_request = SignedJwt::<_, HeaderWithX5c>::sign_with_certificate(
+            &MalformedVpAuthorizationRequest(auth_request),
+            &verifier_session.key_pair,
+        )
+        .now_or_never()
+        .unwrap()
+        .unwrap();
+        let auth_request = signed_auth_request.to_string().parse().unwrap();
+        let client = VpDisclosureClient::new(
+            MalformedVpAuthorizationRequestMessageClient(auth_request),
+            verifier_session.crl_verifier.clone(),
+            registration_certificate_status_list_client,
+        );
+
+        let error = client
+            .start(
+                &verifier_session.request_uri_query(),
+                DisclosureUriSource::Link,
+                DisclosureTrustAnchors {
+                    wrpac: &verifier_session.trust_anchors,
+                    wrprc: &registration_certificate_trust_anchors,
+                },
+            )
+            .now_or_never()
+            .unwrap()
+            .expect_err("starting a disclosure session with a malformed registration certificate should fail");
+
+        assert_matches!(
+            error,
+            VpSessionError::Verifier(VpVerifierError::AuthRequestValidation(
+                AuthRequestValidationError::JwtVerification(_)
+            ))
+        );
+    }
+
+    #[rstest]
+    #[case::missing_jwt_part(|jwt: &str| jwt.rsplit_once('.').unwrap().0.to_string())]
+    #[case::extra_jwt_part(|jwt: &str| format!("{jwt}.extra"))]
+    fn test_vp_disclosure_client_reports_malformed_registration_certificate_jwt(
+        #[case] malformed_jwt: fn(&str) -> String,
+    ) {
+        let (error, verifier_session) = start_disclosure_session_format(
+            SessionType::SameDevice,
+            DisclosureUriSource::Link,
+            VpRequestUriMethod::GET,
+            None,
+            Format::MsoMdoc,
+            |mut verifier_session| {
+                let registration_certificate = verifier_session.registration_certificate.as_mut().unwrap();
+                let jwt = std::str::from_utf8(&registration_certificate.certificate).unwrap();
+                registration_certificate.certificate = malformed_jwt(jwt).into_bytes();
+                verifier_session
+            },
+        )
+        .expect_err("a malformed registration certificate JWT should be rejected during verification");
+
+        assert_matches!(
+            *error,
+            VpSessionError::Verifier(VpVerifierError::AuthRequestValidation(
+                AuthRequestValidationError::RegistrationCertificate(ref registration_error)
+            )) if matches!(registration_error.as_ref(), RegistrationCertificateError::Envelope(_))
+        );
+        assert_matches!(
+            verifier_session.wallet_messages.lock().last(),
+            Some(WalletMessage::Error(response)) if response.error_response.error == VpAuthorizationErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn test_vp_disclosure_client_rejects_query_not_authorized_by_registration_certificate() {
+        let (error, verifier_session) = start_disclosure_session_format(
+            SessionType::SameDevice,
+            DisclosureUriSource::Link,
+            VpRequestUriMethod::GET,
+            None,
+            Format::MsoMdoc,
+            |mut verifier_session| {
+                verifier_session.credential_requests = NormalizedCredentialRequests::new_mock_sd_jwt_pid_example();
+                verifier_session
+            },
+        )
+        .expect_err("starting a disclosure session with an unauthorized query should fail");
+
+        assert_matches!(
+            *error,
+            VpSessionError::Verifier(VpVerifierError::AuthRequestValidation(
+                AuthRequestValidationError::RegistrationCertificate(ref registration_error)
+            )) if matches!(
+                registration_error.as_ref(),
+                RegistrationCertificateError::Authorization(
+                    RegistrationCertificateAuthorizationError::UnauthorizedCredentialQuery(_)
+                )
+            )
+        );
+        assert_matches!(
+            verifier_session.wallet_messages.lock().last(),
+            Some(WalletMessage::Error(_))
+        );
+    }
+
+    #[rstest]
+    #[case::jwt(RegistrationCertificateFormat::Jwt)]
+    #[case::cwt(RegistrationCertificateFormat::Cwt)]
+    #[tokio::test]
+    async fn test_vp_disclosure_client_reports_intrinsically_invalid_registration_certificate_payload(
+        #[case] format: RegistrationCertificateFormat,
+    ) {
+        let mut verifier_session = MockVerifierSession::new(
+            &VERIFIER_URL,
+            SessionType::SameDevice,
+            VpRequestUriMethod::GET,
+            None,
+            NormalizedCredentialRequests::new_mock_mdoc_pid_example(),
+        );
+        let mut payload = verifier_registration_certificate_payload(
+            verifier_session.key_pair.certificate(),
+            verifier_session.credential_requests.clone().into(),
+        );
+        payload.0["country"] = json!("N");
+        let ca = Ca::generate_mock();
+        let signer = ca.generate_issuer_mock().unwrap();
+        let certificate = match format {
+            RegistrationCertificateFormat::Jwt => {
+                SignedJwt::<_, JadesbbHeader>::sign_with_iat(&payload, &signer, &TimeGenerator)
+                    .await
+                    .unwrap()
+                    .to_string()
+                    .into_bytes()
+            }
+            RegistrationCertificateFormat::Cwt => {
+                SignedWrprcCwt::sign_with_certificate(&payload, &signer, &TimeGenerator)
+                    .await
+                    .unwrap()
+                    .to_vec()
+                    .unwrap()
+            }
+        };
+        let registration_certificate = verifier_session.registration_certificate.as_mut().unwrap();
+        registration_certificate.certificate = certificate;
+        registration_certificate.trust_anchors = ca.to_trust_anchors();
+        let verifier_session = Arc::new(verifier_session);
+        let registration_certificate = verifier_session.registration_certificate.as_ref().unwrap();
+        let client = VpDisclosureClient::new(
+            MockVerifierVpMessageClient::new(Arc::clone(&verifier_session)),
+            verifier_session.crl_verifier.clone(),
+            registration_certificate.status_list_client.clone(),
+        );
+
+        let error = client
+            .start(
+                &verifier_session.request_uri_query(),
+                DisclosureUriSource::Link,
+                DisclosureTrustAnchors {
+                    wrpac: &verifier_session.trust_anchors,
+                    wrprc: &registration_certificate.trust_anchors,
+                },
+            )
+            .await
+            .expect_err("an intrinsically invalid payload should be rejected during payload deserialization");
+
+        assert_matches!(
+            error,
+            VpSessionError::Verifier(VpVerifierError::AuthRequestValidation(
+                AuthRequestValidationError::RegistrationCertificate(ref registration_error)
+            )) if matches!(registration_error.as_ref(), RegistrationCertificateError::Envelope(_))
+                && registration_error.to_string().contains(&RegistrationCertificateValidationError::InvalidCountry.to_string())
+        );
+        assert_matches!(
+            verifier_session.wallet_messages.lock().last(),
+            Some(WalletMessage::Error(response)) if response.error_response.error == VpAuthorizationErrorCode::InvalidRequest
+        );
+    }
+
+    #[test]
+    fn test_vp_disclosure_client_start_error_request_uri() {
+        // Calling `VpDisclosureClient::start()` with an invalid request URI object should result in an error.
+        let client = VpDisclosureClient::new(
+            MockErrorFactoryVpMessageClient::new(|| panic!("message client should not be called"), false),
+            MockCertificateCrlVerifier::default(),
+            status_list_client(),
+        );
+
+        let error = client
+            .start(
+                "",
+                DisclosureUriSource::Link,
+                DisclosureTrustAnchors {
+                    wrpac: &TrustAnchors::empty(),
+                    wrprc: &TrustAnchors::empty(),
+                },
+            )
+            .now_or_never()
+            .unwrap()
+            .expect_err("starting a new disclosure session with an invalid request URI object should not succeed");
+
+        assert_matches!(error, VpSessionError::Client(VpClientError::RequestUri(_)));
+    }
+
+    #[test]
+    fn test_vp_disclosure_client_start_error_unsupported_request_object_as_value() {
+        let client = VpDisclosureClient::new(
+            MockErrorFactoryVpMessageClient::new(|| panic!("message client should not be called"), false),
+            MockCertificateCrlVerifier::default(),
+            status_list_client(),
+        );
+
+        let query = serde_qs::to_string(&VpRequestUri {
+            client_id: "client_id".into(),
+            object: VpRequestUriObject::AsValue {
+                request: "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJzIiwiYXVkIjoicyJ9.sig".to_string(),
+            },
+        })
+        .unwrap();
+
+        let error = client
+            .start(
+                &query,
+                DisclosureUriSource::Link,
+                DisclosureTrustAnchors {
+                    wrpac: &TrustAnchors::empty(),
+                    wrprc: &TrustAnchors::empty(),
+                },
+            )
+            .now_or_never()
+            .unwrap()
+            .expect_err(
+                "starting a new disclosure session with a request uri object passed as value should not succeed",
+            );
+
+        assert_matches!(
+            error,
+            VpSessionError::Client(VpClientError::UnsupportedRequestUriVariant(
+                UnsupportedRequestUriVariant::RequestObjectAsValue
+            ))
+        );
+    }
+
+    #[test]
+    fn test_vp_disclosure_client_start_error_unsupported_request_object_as_query_parameters() {
+        let client = VpDisclosureClient::new(
+            MockErrorFactoryVpMessageClient::new(|| panic!("message client should not be called"), false),
+            MockCertificateCrlVerifier::default(),
+            status_list_client(),
+        );
+
+        let query = serde_qs::to_string(&VpRequestUri {
+            client_id: "client_id".into(),
+            object: VpRequestUriObject::AsQueryParameters {
+                response_type: "vp_token".to_string(),
+                nonce: "nonce".to_string(),
+            },
+        })
+        .unwrap();
+
+        let error = client
+            .start(
+                &query,
+                DisclosureUriSource::Link,
+                DisclosureTrustAnchors {
+                    wrpac: &TrustAnchors::empty(),
+                    wrprc: &TrustAnchors::empty(),
+                },
+            )
+            .now_or_never()
+            .unwrap()
+            .expect_err(
+                "starting a new disclosure session with a request uri object passed as query parameters should not \
+                 succeed",
+            );
+
+        assert_matches!(
+            error,
+            VpSessionError::Client(VpClientError::UnsupportedRequestUriVariant(
+                UnsupportedRequestUriVariant::RequestObjectAsQueryParameters
+            ))
+        );
     }
 
     #[rstest]
@@ -647,12 +1020,15 @@ mod tests {
         let (error, verifier_session) = start_disclosure_session_format(
             session_type,
             uri_source,
-            RequestUriMethod::POST,
+            VpRequestUriMethod::POST,
             None,
-            CredentialFormat::MsoMdoc,
+            Format::MsoMdoc,
             std::convert::identity,
         )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+        .expect_err(
+            "starting a new disclosure session with a session type which is incompatible with its source should not \
+             succeed",
+        );
 
         assert_matches!(
             *error,
@@ -664,21 +1040,65 @@ mod tests {
     }
 
     #[test]
+    fn test_vp_disclosure_client_start_missing_session_type_is_allowed() {
+        // A request URI without a session_type query parameter should succeed: the wallet
+        // falls back to the URI source to determine the session type.
+        let (disclosure_session, _) = start_disclosure_session_format(
+            SessionType::SameDevice,
+            DisclosureUriSource::Link,
+            VpRequestUriMethod::POST,
+            None,
+            Format::MsoMdoc,
+            |mut verifier_session| {
+                let mut request_uri = verifier_session.request_uri.clone().into_inner();
+                request_uri.set_query(None);
+                verifier_session.request_uri = request_uri.try_into().unwrap();
+                verifier_session
+            },
+        )
+        .expect("starting a new disclosure session without a session_type parameter should succeed");
+
+        assert_eq!(disclosure_session.session_type(), SessionType::SameDevice);
+    }
+
+    #[test]
+    fn test_vp_disclosure_client_start_unrecognized_session_type_is_allowed() {
+        // A request URI with an unrecognized session_type value should succeed: the wallet
+        // ignores the unrecognized value and falls back to the URI source.
+        let (disclosure_session, _) = start_disclosure_session_format(
+            SessionType::SameDevice,
+            DisclosureUriSource::Link,
+            VpRequestUriMethod::POST,
+            None,
+            Format::MsoMdoc,
+            |mut verifier_session| {
+                let mut request_uri = verifier_session.request_uri.clone().into_inner();
+                request_uri.set_query(Some("session_type=unrecognized_value"));
+                verifier_session.request_uri = request_uri.try_into().unwrap();
+                verifier_session
+            },
+        )
+        .expect("starting a new disclosure session with an unrecognized session_type value should succeed");
+
+        assert_eq!(disclosure_session.session_type(), SessionType::SameDevice);
+    }
+
+    #[test]
     fn test_vp_disclosure_client_start_error_auth_request_validation() {
         // Calling `VpDisclosureClient::start()` without trust anchors should result in an error.
         let (error, verifier_session) = start_disclosure_session_format(
             SessionType::SameDevice,
             DisclosureUriSource::Link,
-            RequestUriMethod::POST,
+            VpRequestUriMethod::POST,
             None,
-            CredentialFormat::MsoMdoc,
+            Format::MsoMdoc,
             |mut verifier_session| {
-                verifier_session.trust_anchors.clear();
+                verifier_session.trust_anchors = TrustAnchors::empty();
 
                 verifier_session
             },
         )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+        .expect_err("starting a new disclosure session without trust anchors should not succeed");
 
         assert_matches!(
             *error,
@@ -702,20 +1122,31 @@ mod tests {
         let error_client = MockErrorFactoryVpMessageClient::new(error_factory, error_has_error);
         let wallet_messages = Arc::clone(&error_client.wallet_messages);
 
-        let request_query = serde_urlencoded::to_string(request_uri_object(
+        let request_query = serde_qs::to_string(&request_uri(
             VERIFIER_URL.join_base_url("redirect_uri").into_inner(),
             SessionType::SameDevice,
-            RequestUriMethod::POST,
-            "client_id".to_string(),
+            VpRequestUriMethod::POST,
+            "client_id",
         ))
         .unwrap();
 
-        let client = VpDisclosureClient::new(error_client);
+        let client = VpDisclosureClient::new(
+            error_client,
+            MockCertificateCrlVerifier::default(),
+            status_list_client(),
+        );
         let error = client
-            .start(&request_query, DisclosureUriSource::Link, &[])
+            .start(
+                &request_query,
+                DisclosureUriSource::Link,
+                DisclosureTrustAnchors {
+                    wrpac: &TrustAnchors::empty(),
+                    wrprc: &TrustAnchors::empty(),
+                },
+            )
             .now_or_never()
             .unwrap()
-            .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+            .expect_err("starting a new disclosure session which encounters an http error should not succeed");
 
         // Collect the messages sent through the `VpMessageClient`.
         let wallet_messages = wallet_messages.lock();
@@ -728,11 +1159,24 @@ mod tests {
         let (error, wallet_messages) =
             start_disclosure_session_http_error(|| serde_json::Error::custom("").into(), error_has_error);
 
-        // Trying to start a session in which the transport gives a
-        // JSON error should result in the error being forwarded.
         assert_matches!(
             error,
             VpSessionError::Verifier(VpVerifierError::Request(VpMessageClientError::Json(_)))
+        );
+        assert_eq!(wallet_messages.len(), 1);
+        assert_matches!(wallet_messages.first().unwrap(), WalletMessage::Request(_));
+    }
+
+    #[rstest]
+    fn test_vp_disclosure_client_start_error_verifier_request_invalid_jwt(
+        #[values(false, true)] error_has_error: bool,
+    ) {
+        let (error, wallet_messages) =
+            start_disclosure_session_http_error(|| JwtParseError::MissingTyp.into(), error_has_error);
+
+        assert_matches!(
+            error,
+            VpSessionError::Verifier(VpVerifierError::Request(VpMessageClientError::InvalidJwt(_)))
         );
         assert_eq!(wallet_messages.len(), 1);
         assert_matches!(wallet_messages.first().unwrap(), WalletMessage::Request(_));
@@ -769,16 +1213,20 @@ mod tests {
         let (error, verifier_session) = start_disclosure_session_format(
             SessionType::SameDevice,
             DisclosureUriSource::Link,
-            RequestUriMethod::POST,
+            VpRequestUriMethod::POST,
             None,
-            CredentialFormat::MsoMdoc,
+            Format::MsoMdoc,
             |mut verifier_session| {
-                verifier_session.request_uri_object.client_id = "other_client_id".to_string();
+                verifier_session.client_id = "other_client_id".to_string();
+                verifier_session.state = Some("authorization_state".to_string());
 
                 verifier_session
             },
         )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+        .expect_err(
+            "starting a new disclosure session where the request uri client_id does not match the RP certificate \
+             client_id should not succeed",
+        );
 
         assert_matches!(
             *error,
@@ -792,120 +1240,162 @@ mod tests {
         assert_eq!(wallet_messages.len(), 2);
         assert_matches!(&wallet_messages[0], WalletMessage::Request(_));
         // This error should be reported back to the verifier.
-        let expected_error_code = VpAuthorizationErrorCode::AuthorizationError(AuthorizationErrorCode::InvalidRequest);
-        assert_matches!(&wallet_messages[1], WalletMessage::Error(response) if response.error == expected_error_code);
+        let expected_error_code = VpAuthorizationErrorCode::InvalidRequest;
+        assert_matches!(
+            &wallet_messages[1],
+            WalletMessage::Error(response)
+                if response.error() == &expected_error_code
+                    && response.state.as_deref() == Some("authorization_state")
+        );
     }
 
     #[test]
-    fn test_vp_disclosure_client_start_error_missing_reader_registration() {
-        // Calling `VpDisclosureClient::start()` with an Authorization Request JWT that contains
-        // a valid reader certificate but no `ReaderRegistration` should result in an error.
-        // Note that the test for `VpVerifierError::NoReaderCertificate` is missing,
-        // which is too convoluted of an error condition to simulate.
-        let (error, verifier_session) = start_disclosure_session(
+    fn test_vp_disclosure_client_mixed_formats() {
+        // A credential request with a mix of requested formats should result in an
+        // authorization response that contains attestations of both formats.
+        let (disclosure_session, verifier_session) = start_disclosure_session(
             SessionType::SameDevice,
             DisclosureUriSource::Link,
-            RequestUriMethod::POST,
+            VpRequestUriMethod::GET,
             None,
-            NormalizedCredentialRequests::new_mock_sd_jwt_pid_example(),
-            None,
+            vec![
+                NormalizedCredentialRequest::new_mock_mdoc_pid_example(),
+                NormalizedCredentialRequest::new_mock_sd_jwt_pid_example(),
+            ]
+            .try_into()
+            .unwrap(),
             std::convert::identity,
         )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+        .expect("starting a new disclosure session with a mix of requested formats should succeed");
 
-        assert_matches!(
-            *error,
-            VpSessionError::Verifier(VpVerifierError::RpCertificate(
-                CertificateTypeError::ReaderRegistrationNotFound
-            ))
-        );
+        let ca = Ca::generate_issuer_mock_ca().unwrap();
+        let mdoc_key = MockRemoteEcdsaKey::new_random("mdoc_key".to_string());
+        let sd_jwt_key = MockRemoteEcdsaKey::new_random("sd_jwt_key".to_string());
 
-        let wallet_messages = verifier_session.wallet_messages.lock();
-        assert_eq!(wallet_messages.len(), 2);
-        assert_matches!(&wallet_messages[0], WalletMessage::Request(_));
-        // This error should be reported back to the verifier.
-        let expected_error_code = VpAuthorizationErrorCode::AuthorizationError(AuthorizationErrorCode::InvalidRequest);
-        assert_matches!(&wallet_messages[1], WalletMessage::Error(response) if response.error == expected_error_code);
-    }
+        let partial_mdoc = PartialMdoc::new_mock_with_ca_and_key(&ca, &mdoc_key);
+        let sd_jwt = SignedSdJwt::pid_example(
+            &ca.generate_issuer_mock().unwrap(),
+            &PublicKeyRef::from(sd_jwt_key.verifying_key()),
+        )
+        .into_verified();
 
-    #[test]
-    fn test_vp_disclosure_client_start_error_requested_attributes_validation() {
-        // Calling `VpDisclosureClient::start()` where the Authorization Request contains
-        // an attribute that is not in the `ReaderRegistration` should result in an error.
-        let reader_registration = ReaderRegistration {
-            authorized_attributes: ReaderRegistration::create_attributes(
-                PID_ATTESTATION_TYPE,
-                [["given_name"], ["family_name"]],
+        let unsigned_presentation = sd_jwt
+            .into_presentation_builder()
+            .disclose(&vec_nonempty![ClaimPath::SelectByKey("bsn".to_string())])
+            .unwrap()
+            .disclose(&vec_nonempty![ClaimPath::SelectByKey("given_name".to_string())])
+            .unwrap()
+            .disclose(&vec_nonempty![ClaimPath::SelectByKey("family_name".to_string())])
+            .unwrap()
+            .finish();
+
+        let attestations = HashMap::from([
+            (
+                "mdoc_pid_example".try_into().unwrap(),
+                DisclosableAttestations::MsoMdoc(vec_nonempty![(partial_mdoc, "mdoc_key".to_string())]),
             ),
-            ..ReaderRegistration::new_mock()
-        };
-        let (error, verifier_session) = start_disclosure_session(
-            SessionType::SameDevice,
-            DisclosureUriSource::Link,
-            RequestUriMethod::POST,
-            None,
-            NormalizedCredentialRequests::new_mock_sd_jwt_pid_example(),
-            Some(reader_registration),
-            std::convert::identity,
-        )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+            (
+                "sd_jwt_pid_example".try_into().unwrap(),
+                DisclosableAttestations::SdJwt(vec_nonempty![(unsigned_presentation, "sd_jwt_key".to_string())]),
+            ),
+        ])
+        .try_into()
+        .unwrap();
 
-        let unregistered_attributes = HashMap::from([(
-            PID_ATTESTATION_TYPE.to_string(),
-            HashSet::from([vec![ClaimPath::SelectByKey("bsn".to_string())].try_into().unwrap()]),
-        )]);
-        assert_matches!(*error, VpSessionError::Verifier(VpVerifierError::RequestedAttributesValidation(
-            ValidationError::UnregisteredAttributes(unregistered)
-        )) if unregistered == unregistered_attributes);
+        let wscd = DisclosureMockRemoteWscd::new(vec![mdoc_key, sd_jwt_key]);
+        disclosure_session
+            .disclose(attestations, &wscd, &MockTimeGenerator::default())
+            .now_or_never()
+            .unwrap()
+            .expect("disclosing a mix of formats using VpDisclosureSession should succeed");
 
         let wallet_messages = verifier_session.wallet_messages.lock();
         assert_eq!(wallet_messages.len(), 2);
-        assert_matches!(&wallet_messages[0], WalletMessage::Request(_));
-        // This error should be reported back to the verifier.
-        let expected_error_code = VpAuthorizationErrorCode::AuthorizationError(AuthorizationErrorCode::InvalidRequest);
-        assert_matches!(&wallet_messages[1], WalletMessage::Error(response) if response.error == expected_error_code);
-    }
-
-    #[test]
-    fn test_vp_disclosure_client_start_error_mixed_format_credential_request() {
-        // Calling `VpDisclosureClient::start()` where the Authorization Request contains
-        // a credential request with a mix of requested formats should result in an error.
-        let mdoc_credential_request = NormalizedCredentialRequest::new_mock_mdoc_pid_example();
-        let sd_jwt_credential_request = NormalizedCredentialRequest::new_mock_sd_jwt_pid_example();
-
-        let authorized_attributes = mdoc_credential_request
-            .claim_paths()
-            .chain(sd_jwt_credential_request.claim_paths())
-            .cloned()
-            .collect();
-        let reader_registration = ReaderRegistration {
-            authorized_attributes: HashMap::from([(PID_ATTESTATION_TYPE.to_string(), authorized_attributes)]),
-            ..ReaderRegistration::new_mock()
+        let WalletMessage::Disclosure(jwe) = &wallet_messages[1] else {
+            panic!("verifier should have received authentication response from holder");
         };
 
-        let (error, verifier_session) = start_disclosure_session(
+        let disclosed_attestations = VpAuthorizationResponse::decrypt_and_verify(
+            jwe,
+            &verifier_session.encryption_secret_key,
+            &verifier_session.normalized_auth_request(None),
+            &MockTimeGenerator::default(),
+            &ca.to_trust_anchors(),
+            &ExtendingVctRetrieverStub,
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                ca.generate_issuer_status_list_mock().unwrap(),
+            ))),
+            false,
+        )
+        .now_or_never()
+        .unwrap()
+        .expect("decrypting and verifying VPDisclosureSession authorization response should succeed");
+
+        // The response should contain exactly one attestation for each credential query,
+        // in the format that was requested by that query.
+        let disclosed_formats = disclosed_attestations
+            .iter()
+            .map(|attestations| {
+                let formats = attestations
+                    .attestations
+                    .iter()
+                    .map(|attestation| match attestation.attributes {
+                        DisclosedAttributes::MsoMdoc(_) => Format::MsoMdoc,
+                        DisclosedAttributes::SdJwt(_) => Format::SdJwt,
+                    })
+                    .collect_vec();
+
+                (attestations.id.clone(), formats)
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(
+            disclosed_formats,
+            HashMap::from([
+                ("mdoc_pid_example".try_into().unwrap(), vec![Format::MsoMdoc]),
+                ("sd_jwt_pid_example".try_into().unwrap(), vec![Format::SdJwt]),
+            ])
+        );
+    }
+
+    #[rstest]
+    fn test_vp_disclosure_client_start_error_vp_formats_not_supported(
+        #[values(Format::MsoMdoc, Format::SdJwt)] credential_format: Format,
+    ) {
+        // Calling `VpDisclosureClient::start()` where the verifier's vp_formats_supported does not
+        // include ES256 for the required format should result in an error.
+        let (error, verifier_session) = start_disclosure_session_format(
             SessionType::SameDevice,
             DisclosureUriSource::Link,
-            RequestUriMethod::POST,
+            VpRequestUriMethod::POST,
             None,
-            vec![mdoc_credential_request, sd_jwt_credential_request]
-                .try_into()
-                .unwrap(),
-            Some(reader_registration),
-            std::convert::identity,
+            credential_format,
+            |mut verifier_session| {
+                // Remove ES256 from vp_formats_supported for the relevant format.
+                verifier_session.vp_formats_supported = VpFormatsSupported {
+                    mso_mdoc: None,
+                    sd_jwt: None,
+                };
+                verifier_session
+            },
         )
-        .expect_err("starting a new disclosure session on VpDisclosureClient should not succeed");
+        .expect_err(
+            "starting a new disclosure session where vp_formats_supported does not include ES256 should not succeed",
+        );
 
         assert_matches!(
             *error,
-            VpSessionError::Client(VpClientError::MixedFormatCredentialRequest)
+            VpSessionError::Verifier(VpVerifierError::VpFormatsNotSupported(_))
         );
 
         let wallet_messages = verifier_session.wallet_messages.lock();
         assert_eq!(wallet_messages.len(), 2);
         assert_matches!(&wallet_messages[0], WalletMessage::Request(_));
-        // A termination message should be sent to the verifier.
-        let expected_error_code = VpAuthorizationErrorCode::AuthorizationError(AuthorizationErrorCode::AccessDenied);
-        assert_matches!(&wallet_messages[1], WalletMessage::Error(response) if response.error == expected_error_code);
+        // This error should be reported back to the verifier with vp_formats_not_supported.
+        let expected_error_code = VpAuthorizationErrorCode::VpFormatsNotSupported;
+        assert_matches!(
+            &wallet_messages[1],
+            WalletMessage::Error(response) if response.error() == &expected_error_code
+        );
     }
 }

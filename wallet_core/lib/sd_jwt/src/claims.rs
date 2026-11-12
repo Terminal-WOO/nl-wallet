@@ -1,19 +1,27 @@
 use std::collections::HashMap;
 use std::iter::Peekable;
-
-use derive_more::Display;
-use indexmap::IndexMap;
-use itertools::Itertools;
-use nutype::nutype;
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::Number;
-use serde_with::serde_as;
-use serde_with::skip_serializing_none;
+use std::iter::repeat_n;
 
 use attestation_types::claim_path::ClaimPath;
+use derive_more::Display;
+use indexmap::IndexMap;
+use indexmap::IndexSet;
+use itertools::Itertools;
+use nutype::nutype;
 use sd_jwt_vc_metadata::ClaimSelectiveDisclosureMetadata;
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Map;
+use serde_json::Number;
+use serde_json::Value;
+use serde_with::serde_as;
+use serde_with::skip_serializing_none;
+use thiserror::Error;
+use utils::single_unique::MultipleItemsFound;
+use utils::single_unique::SingleUnique;
+use utils::vec_at_least::VecNonEmpty;
 use utils::vec_at_least::VecNonEmptyUnique;
+use utils::vec_nonempty;
 
 use crate::disclosure::Disclosure;
 use crate::disclosure::DisclosureContent;
@@ -64,6 +72,14 @@ impl ObjectClaims {
 
     pub fn get(&self, key: &ClaimName) -> Option<&ClaimValue> {
         self.claims.get(key)
+    }
+
+    /// Converts to a plain JSON object, discarding any digests (`_sd` and `...` array elements).
+    pub fn into_bare_json(self) -> Map<String, Value> {
+        self.claims
+            .into_iter()
+            .map(|(name, value)| (name.into_inner(), value.into_bare_json()))
+            .collect()
     }
 
     fn remove(&mut self, key: &ClaimName) -> Option<ClaimValue> {
@@ -243,6 +259,40 @@ impl ObjectClaims {
         }
         Ok(())
     }
+
+    fn non_selectively_disclosable_claims(
+        &self,
+    ) -> Result<IndexSet<VecNonEmpty<ClaimPath>>, NonSelectivelyDisclosableClaimsError> {
+        self.claims
+            .iter()
+            .map(|(name, claim)| {
+                let path = ClaimPath::SelectByKey(name.to_string());
+                let sub_claims = claim.non_selectively_disclosable_claims()?;
+                Ok(prefix_all(sub_claims, path))
+            })
+            .flatten_ok()
+            .try_collect()
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum NonSelectivelyDisclosableClaimsError {
+    #[error("invalid array structure")]
+    ArrayStructure(#[from] MultipleItemsFound),
+}
+
+/// Inserts `[path]` at the beginning of all elements in `[sub_claims]`.
+fn prefix_all(sub_claims: IndexSet<VecNonEmpty<ClaimPath>>, path: ClaimPath) -> IndexSet<VecNonEmpty<ClaimPath>> {
+    let sub_claims_len = sub_claims.len();
+    sub_claims
+        .into_iter()
+        .zip(repeat_n(path.clone(), sub_claims_len))
+        .map(|(mut claim, path)| {
+            claim.insert(0, path);
+            claim
+        })
+        .chain([vec_nonempty![path]])
+        .collect()
 }
 
 #[cfg_attr(test, derive(derive_more::Unwrap), unwrap(ref))]
@@ -259,6 +309,22 @@ pub enum ClaimValue {
 }
 
 impl ClaimValue {
+    /// Converts to a plain JSON value, discarding any digests (`_sd` and `...` array elements).
+    ///
+    /// Note that discarding `...` array elements shifts the indices of the remaining elements.
+    pub fn into_bare_json(self) -> Value {
+        match self {
+            Self::Array(elements) => {
+                Value::Array(elements.into_iter().filter_map(ArrayClaim::into_bare_json).collect())
+            }
+            Self::Object(object) => Value::Object(object.into_bare_json()),
+            Self::Null => Value::Null,
+            Self::Bool(bool) => Value::Bool(bool),
+            Self::Number(number) => Value::Number(number),
+            Self::String(string) => Value::String(string),
+        }
+    }
+
     pub(crate) fn traverse_by_claim_paths<'a, 'b>(
         &'a mut self,
         mut claim_paths: impl Iterator<Item = &'b ClaimPath>,
@@ -482,6 +548,44 @@ impl ClaimValue {
             )),
         }
     }
+
+    pub(crate) fn non_selectively_disclosable_claims(
+        &self,
+    ) -> Result<IndexSet<VecNonEmpty<ClaimPath>>, NonSelectivelyDisclosableClaimsError> {
+        match self {
+            ClaimValue::Array(array_claims) => {
+                let non_sd_claims_per_element: Vec<_> = array_claims
+                    .iter()
+                    .filter_map(|claim| match claim {
+                        ArrayClaim::Value(value) => Some(value),
+                        ArrayClaim::Hash { .. } => None,
+                    })
+                    .map(ClaimValue::non_selectively_disclosable_claims)
+                    .try_collect()?;
+
+                if !non_sd_claims_per_element.is_empty() {
+                    // The `single_unique` requires that all sub-elements in the array are uniform, i.e. have the same
+                    // `ClaimPath` structure. This requirement can be invalidated when the array contains a combination
+                    // of primitive values, objects and arrays, e.g.:
+                    // - [ 1, [] ]
+                    // - [ 1, { "claim": 2 } ]
+                    // Instances like this are considered invalid, and should be reported back to the issuer.
+                    match non_sd_claims_per_element.into_iter().single_unique()? {
+                        Some(sub_claims) => Ok(prefix_all(sub_claims, ClaimPath::SelectAll)),
+                        None => Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectAll]])),
+                    }
+                } else {
+                    // Nothing non-selectively disclosable here
+                    Ok(IndexSet::new())
+                }
+            }
+            ClaimValue::Object(object_claims) => object_claims.non_selectively_disclosable_claims(),
+            ClaimValue::Null => Ok(IndexSet::new()),
+            ClaimValue::Bool(_) => Ok(IndexSet::new()),
+            ClaimValue::Number(_) => Ok(IndexSet::new()),
+            ClaimValue::String(_) => Ok(IndexSet::new()),
+        }
+    }
 }
 
 #[serde_as]
@@ -496,6 +600,13 @@ pub enum ArrayClaim {
 }
 
 impl ArrayClaim {
+    fn into_bare_json(self) -> Option<Value> {
+        match self {
+            Self::Hash { .. } => None,
+            Self::Value(value) => Some(value.into_bare_json()),
+        }
+    }
+
     pub fn digests(&self) -> Vec<(String, ClaimType)> {
         match &self {
             ArrayClaim::Hash { digest } => vec![(digest.to_string(), ClaimType::Array)],
@@ -624,13 +735,43 @@ impl From<ClaimValue> for ClaimType {
 
 #[cfg(test)]
 mod tests {
-    use assert_matches::assert_matches;
+    use std::assert_matches;
+    use std::num::NonZeroUsize;
+
     use rstest::rstest;
     use serde_json::json;
 
+    use super::*;
     use crate::hasher::Sha256Hasher;
 
-    use super::*;
+    #[test]
+    fn test_claim_value_into_bare_json() {
+        let claim_value: ClaimValue = serde_json::from_value(json!({
+            "_sd": ["digest_1"],
+            "string": "value",
+            "number": 42,
+            "bool": true,
+            "null": null,
+            "array": [{"...": "digest_2"}, "element"],
+            "object": {
+                "_sd": ["digest_3"],
+                "nested": "value",
+            },
+        }))
+        .unwrap();
+
+        let expected = json!({
+            "string": "value",
+            "number": 42,
+            "bool": true,
+            "null": null,
+            "array": ["element"],
+            "object": {
+                "nested": "value",
+            },
+        });
+        assert_eq!(claim_value.into_bare_json(), expected);
+    }
 
     #[test]
     fn test_object_claims_conceal() {
@@ -648,7 +789,7 @@ mod tests {
 
         assert_eq!(object_claims.claims.len(), 2);
         assert!(object_claims._sd.is_some());
-        assert_eq!(object_claims._sd.unwrap().len(), 1.try_into().unwrap());
+        assert_eq!(object_claims._sd.unwrap().len(), NonZeroUsize::MIN);
 
         assert_eq!(
             disclosure.content,
@@ -764,5 +905,41 @@ mod tests {
         let claim: ClaimValue = serde_json::from_value(value).unwrap();
 
         assert_eq!(claim, expected);
+    }
+
+    #[rstest]
+    #[case(json!(1), Ok(IndexSet::new()))]
+    #[case(json!(true), Ok(IndexSet::new()))]
+    #[case(json!(null), Ok(IndexSet::new()))]
+    #[case(json!("".to_string()), Ok(IndexSet::new()))]
+    #[case(json!({}), Ok(IndexSet::new()))]
+    #[case(json!([]), Ok(IndexSet::new()))]
+    #[case(json!({"value": 5}), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectByKey("value".to_string())]])))]
+    #[case(json!({"a": 1, "b": true}), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectByKey("a".to_string())], vec_nonempty![ClaimPath::SelectByKey("b".to_string())]])))]
+    #[case(json!([1, 2]), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectAll]])))]
+    #[case(json!([1, "a", true]), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectAll]])))]
+    #[case(json!([["a"], [2]]), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectAll, ClaimPath::SelectAll], vec_nonempty![ClaimPath::SelectAll]])))]
+    #[case(json!([{"a": 1}, {"a": 2}]), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectAll, ClaimPath::SelectByKey("a".to_string())], vec_nonempty![ClaimPath::SelectAll]])))]
+    #[case(json!({"a": [1, 2]}), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectByKey("a".to_string()), ClaimPath::SelectAll], vec_nonempty![ClaimPath::SelectByKey("a".to_string())]])))]
+    #[case(json!([1, { "a": 2 }]), Err(NonSelectivelyDisclosableClaimsError::ArrayStructure(MultipleItemsFound)))]
+    #[case(json!([1, [2]]), Err(NonSelectivelyDisclosableClaimsError::ArrayStructure(MultipleItemsFound)))]
+    #[case(json!([1, 2, 3, { "...": "some_digest" }]), Ok(IndexSet::from_iter([vec_nonempty![ClaimPath::SelectAll]])))]
+    #[case(json!([{ "...": "some_digest" }]), Ok(IndexSet::new()))]
+    fn non_selectively_disclosable_claims(
+        #[case] value: serde_json::Value,
+        #[case] expected_result: Result<IndexSet<VecNonEmpty<ClaimPath>>, NonSelectivelyDisclosableClaimsError>,
+    ) {
+        let value: ClaimValue = serde_json::from_value(value).unwrap();
+
+        let result = value.non_selectively_disclosable_claims();
+        match expected_result {
+            Ok(expected) => assert_eq!(result.unwrap(), expected),
+            Err(NonSelectivelyDisclosableClaimsError::ArrayStructure(_)) => {
+                assert_matches!(
+                    result.unwrap_err(),
+                    NonSelectivelyDisclosableClaimsError::ArrayStructure(_)
+                )
+            }
+        }
     }
 }

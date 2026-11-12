@@ -1,76 +1,185 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::IpAddr;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-
-use config::Config;
-use config::ConfigError;
-use config::Environment;
-use config::File;
-use derive_more::From;
-use derive_more::Into;
-use serde::Deserialize;
-use serde_with::DurationMilliSeconds;
-use serde_with::base64::Base64;
-use serde_with::hex::Hex;
-use serde_with::serde_as;
 
 use android_attest::play_integrity::verification::InstallationMethod;
 use android_attest::root_public_key::RootPublicKey;
 use apple_app_attest::AttestationEnvironment;
+use chrono::DateTime;
+use chrono::Utc;
+use config::Config;
+use config::ConfigError;
+use config::Environment;
+use config::File;
+use crypto::kid::Kid;
+use crypto::server_keys::KeyPair;
+use crypto::server_keys::KeyPairError;
 use crypto::trust_anchor::BorrowingTrustAnchor;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::BorrowingCertificate;
+use derive_more::From;
+use derive_more::Into;
+use hsm::keys::HsmEcdsaKey;
+use hsm::service::Pkcs11Hsm;
 use hsm::settings::Hsm;
-use http_utils::tls::server::TlsServerConfig;
+use http_utils::reqwest::ReqwestTrustAnchor;
+use http_utils::server::TlsServerConfig;
 use http_utils::urls::BaseUrl;
-use server_utils::keys::PrivateKeySettingsError;
-use server_utils::settings::KeyPair;
+use serde::Deserialize;
+use serde_with::DurationMilliSeconds;
+use serde_with::DurationSeconds;
+use serde_with::base64::Base64;
+use serde_with::hex::Hex;
+use serde_with::serde_as;
 use status_lists::config::StatusListConfig;
 use status_lists::publish::PublishDir;
+use status_lists::settings::ExpiryLessThanTtl;
 use status_lists::settings::StatusListsSettings;
+use url::Url;
+use utils::duration::DurationDays;
+use utils::duration::DurationHours;
+use utils::duration::DurationMinutes;
 use utils::path::prefix_local_path;
 use utils::vec_at_least::VecNonEmpty;
-use wallet_provider_database_settings::Settings as DatabaseSettings;
+use wallet_provider_domain::keys::KidPair;
+use wallet_provider_persistence::database::ConnectionOptions;
 
 #[serde_as]
 #[derive(Clone, Deserialize)]
 pub struct Settings {
-    pub certificate_signing_key_identifier: String,
-    pub instruction_result_signing_key_identifier: String,
-    pub attestation_wrapping_key_identifier: String,
-    pub pin_pubkey_encryption_key_identifier: String,
-    pub pin_public_disclosure_protection_key_identifier: String,
-    pub wua_signing_key_identifier: String,
-    pub wua_issuer_identifier: String,
-    pub wua_valid_days: u64,
+    pub current_certificate_kid: Kid,
+    pub previous_certificate_kids: Option<HashMap<Kid, DateTime<Utc>>>,
+    pub current_instruction_result_kid: Kid,
+    pub attestation_wrapping_kid: KidPair,
+    pub pin_pubkey_encryption_kid: KidPair,
+    pub revocation_code_key_identifier: String,
     pub recovery_code_paths: HashMap<String, VecNonEmpty<String>>,
     pub database: DatabaseSettings,
+    pub audit_log: DatabaseSettings,
     pub webserver: Webserver,
     pub tls_config: Option<TlsServerConfig>,
+    pub public_url: BaseUrl,
     pub hsm: Hsm,
     pub pin_policy: PinPolicySettings,
     pub structured_logging: bool,
     pub capture_and_redirect_logging: Option<PathBuf>,
     pub max_transfer_upload_size_in_bytes: usize,
+    pub wallet_transfer_concurrency_limit: usize,
+    #[serde(rename = "flags_refresh_delay_in_seconds")]
+    #[serde_as(as = "DurationSeconds<u64>")]
+    pub flags_refresh_delay: Duration,
+    pub revoke_solution_enabled: bool,
+    pub admin_portal: AdminPortalSettings,
 
-    pub wua_status_list: WuaStatusListsSettings,
+    #[serde(flatten)]
+    pub wia_settings: WiaSettings,
+
+    #[serde(flatten)]
+    pub key_attestation_settings: KeyAttestationSettings,
 
     #[serde(rename = "instruction_challenge_timeout_in_ms")]
     #[serde_as(as = "DurationMilliSeconds")]
     pub instruction_challenge_timeout: Duration,
 
+    /// How long a Wallet Certificate is valid
+    #[serde(rename = "wallet_certificate_validity_in_days")]
+    #[serde_as(as = "DurationDays")]
+    pub wallet_certificate_validity: Duration,
+
     /// Issuer trust anchors are used to validate the received PID SD JWT with Recovery Code disclosure
-    #[serde_as(as = "Vec<Base64>")]
-    pub pid_issuer_trust_anchors: Vec<BorrowingTrustAnchor>,
+    pub pid_issuer_trust_anchors: TrustAnchors,
 
     pub ios: Ios,
     pub android: Android,
+}
+
+#[serde_as]
+#[derive(Clone, Deserialize)]
+pub struct WiaSettings {
+    #[serde_as(as = "Base64")]
+    pub wia_certificate: BorrowingCertificate,
+    pub wia_signing_key_identifier: String,
+
+    #[serde(rename = "wia_status_tracking_validity_in_days")]
+    #[serde_as(as = "DurationDays")]
+    pub wia_status_tracking_validity: Duration,
+
+    pub wia_status_list: WiaStatusListsSettings,
+    pub wia_wallet_name: String,
+    pub wia_wallet_link: Option<Url>,
+    pub wia_wallet_version: String,
+    pub wia_wallet_solution_certification_information: String,
+}
+
+#[serde_as]
+#[derive(Clone, Deserialize)]
+pub struct KeyAttestationSettings {
+    #[serde_as(as = "Base64")]
+    pub key_attestation_certificate: BorrowingCertificate,
+    pub key_attestation_signing_key_identifier: String,
+
+    pub key_attestation_certification: Url,
+
+    pub key_storage_status_list: KeyStorageStatusListSettings,
+}
+
+#[serde_as]
+#[derive(Clone, Deserialize)]
+pub struct KeyStorageStatusListSettings {
+    // HSM key identifier used to sign the Key Storage status list.
+    pub key_identifier: String,
+    // X509 certificate containing the public key for the Key Storage status list.
+    #[serde_as(as = "Base64")]
+    pub key_certificate: BorrowingCertificate,
+
+    #[serde(rename = "expiry_in_hours")]
+    #[serde_as(as = "DurationHours")]
+    pub expiry: Duration,
+
+    #[serde(rename = "ttl_in_minutes")]
+    #[serde_as(as = "DurationMinutes")]
+    pub ttl: Duration,
+
+    #[serde(rename = "tracking_validity_in_days")]
+    #[serde_as(as = "DurationDays")]
+    pub tracking_validity: Duration,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct DatabaseSettings {
+    pub url: Url,
+    pub options: ConnectionOptions,
 }
 
 #[derive(Clone, Deserialize)]
 pub struct Webserver {
     pub ip: IpAddr,
     pub port: u16,
+}
+
+/// Configuration for the Admin Portal's OIDC login flow against Keycloak.
+#[serde_as]
+#[derive(Clone, Deserialize)]
+pub struct AdminPortalSettings {
+    pub keycloak_url: BaseUrl,
+    pub keycloak_realm: String,
+    pub keycloak_client_id: String,
+
+    /// CA certificates the Admin Portal's OIDC client pins its TLS connection to Keycloak.
+    #[serde_as(as = "Vec<Base64>")]
+    pub keycloak_trust_anchors: VecNonEmpty<ReqwestTrustAnchor>,
+
+    pub public_url: BaseUrl,
+
+    #[serde(rename = "session_ttl_in_ms")]
+    #[serde_as(as = "DurationMilliSeconds")]
+    pub session_ttl: Duration,
+    #[serde(rename = "login_attempt_ttl_in_ms")]
+    #[serde_as(as = "DurationMilliSeconds")]
+    pub login_attempt_ttl: Duration,
 }
 
 #[serde_as]
@@ -84,8 +193,9 @@ pub struct PinPolicySettings {
     pub timeouts: Vec<Duration>,
 }
 
+#[serde_as]
 #[derive(Clone, Deserialize)]
-pub struct WuaStatusListsSettings {
+pub struct WiaStatusListsSettings {
     #[serde(flatten)]
     pub list_settings: StatusListsSettings,
 
@@ -93,10 +203,12 @@ pub struct WuaStatusListsSettings {
     pub base_url: BaseUrl,
     /// Path to directory for the published status list
     pub publish_dir: PublishDir,
-    /// Key pair to sign status list
-    // TODO: PVW-4573 Replace with hsm key
-    #[serde(flatten)]
-    pub keypair: KeyPair,
+
+    // HSM key identifier used to sign
+    pub key_identifier: String,
+    // X509 certificate containing the public key
+    #[serde_as(as = "Base64")]
+    pub key_certificate: BorrowingCertificate,
 }
 
 #[serde_as]
@@ -136,36 +248,58 @@ pub struct AndroidRootPublicKey(RootPublicKey);
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         Config::builder()
-            .set_default("certificate_signing_key_identifier", "certificate_signing_key")?
+            .set_default("revocation_code_key_identifier", "revocation_code_key")?
+            .set_default("wia_status_list.list_size", 100_000)?
+            .set_default("wia_status_list.create_threshold_ratio", 0.01)?
+            .set_default("wia_status_list.expiry_in_hours", 24)?
+            .set_default("wia_status_list.ttl_in_minutes", 60)?
+            .set_default("wia_status_list.refresh_threshold_ratio", 0.25)?
+            .set_default("wia_status_list.key_identifier", "wia_tsl_key")?
+            .set_default("wia_signing_key_identifier", "wia_signing_key")?
+            .set_default("wia_status_tracking_validity_in_days", 365)?
+            .set_default("wia_wallet_name", "NL Wallet")?
+            .set_default("wia_wallet_link", "https://wallet.edi.rijksoverheid.nl")?
             .set_default(
-                "instruction_result_signing_key_identifier",
-                "instruction_result_signing_key",
+                "wia_wallet_solution_certification_information",
+                "https://wallet.edi.rijksoverheid.nl",
             )?
-            .set_default("attestation_wrapping_key_identifier", "attestation_wrapping_key")?
-            .set_default("pin_pubkey_encryption_key_identifier", "pin_pubkey_encryption_key")?
-            .set_default(
-                "pin_public_disclosure_protection_key_identifier",
-                "pin_public_disclosure_protection_key",
-            )?
-            .set_default("wua_status_list.list_size", 100_000)?
-            .set_default("wua_status_list.create_threshold", 0.01)?
-            .set_default("wua_signing_key_identifier", "wua_signing_key")?
-            .set_default("wua_issuer_identifier", "wua-issuer.example.com")?
-            .set_default("wua_valid_days", 365)?
+            .set_default("key_attestation_signing_key_identifier", "key_attestation_signing_key")?
+            .set_default("key_attestation_certification", "https://wallet.edi.rijksoverheid.nl")?
+            .set_default("key_storage_status_list.key_identifier", "key_storage_tsl_key")?
+            .set_default("key_storage_status_list.expiry_in_hours", 24)?
+            .set_default("key_storage_status_list.ttl_in_minutes", 60)?
+            .set_default("key_storage_status_list.tracking_validity_in_days", 365)?
+            .set_default("audit_log.options.acquire_timeout_in_sec", "10")?
+            .set_default("audit_log.options.connect_timeout_in_sec", "3")?
+            .set_default("audit_log.options.max_connections", "10")?
+            .set_default("database.options.acquire_timeout_in_sec", "10")?
+            .set_default("database.options.connect_timeout_in_sec", "3")?
+            .set_default("database.options.max_connections", "10")?
             .set_default("webserver.ip", "0.0.0.0")?
             .set_default("webserver.port", 8001)?
+            .set_default("public_url", "https://localhost:8001/")?
             .set_default("pin_policy.rounds", 4)?
             .set_default("pin_policy.attempts_per_round", 4)?
             .set_default("pin_policy.timeouts_in_ms", vec![60_000, 300_000, 3_600_000])?
             .set_default("structured_logging", false)?
             .set_default("instruction_challenge_timeout_in_ms", 60_000)?
+            .set_default("wallet_certificate_validity_in_days", 90)?
             .set_default("hsm.max_sessions", 10)?
             .set_default("hsm.max_session_lifetime_in_sec", 900)?
             .set_default("android.allow_sideloading", false)?
             .set_default("android.credentials_file", "google-cloud-service-account.json")?
             .set_default("android.play_store_certificate_hashes", Vec::<String>::new())?
             .set_default("max_transfer_upload_size_in_bytes", 100_000_000)?
-            .add_source(File::from(prefix_local_path("wallet_provider.toml".as_ref()).as_ref()).required(false))
+            .set_default("wallet_transfer_concurrency_limit", 2)?
+            .set_default("flags_refresh_delay_in_seconds", 300)?
+            .set_default("revoke_solution_enabled", false)?
+            .set_default("admin_portal.keycloak_url", "https://localhost:11443")?
+            .set_default("admin_portal.keycloak_realm", "nl-wallet")?
+            .set_default("admin_portal.keycloak_client_id", "wallet-backend")?
+            .set_default("admin_portal.public_url", "https://localhost:3000/")?
+            .set_default("admin_portal.session_ttl_in_ms", 15 * 60 * 1000)?
+            .set_default("admin_portal.login_attempt_ttl_in_ms", 10 * 60 * 1000)?
+            .add_source(File::from(prefix_local_path(Path::new("wallet_provider.toml")).as_ref()).required(false))
             .add_source(
                 Environment::with_prefix("wallet_provider")
                     .separator("__")
@@ -175,6 +309,7 @@ impl Settings {
                     .with_list_parse_key("android.root_public_keys")
                     .with_list_parse_key("android.play_store_certificate_hashes")
                     .with_list_parse_key("pid_issuer_trust_anchors")
+                    .with_list_parse_key("admin_portal.keycloak_trust_anchors")
                     .try_parsing(true),
             )
             .build()?
@@ -210,18 +345,51 @@ impl TryFrom<Vec<u8>> for AndroidRootPublicKey {
     }
 }
 
-impl WuaStatusListsSettings {
-    pub async fn into_config(self) -> Result<StatusListConfig, PrivateKeySettingsError> {
-        Ok(StatusListConfig {
-            list_size: self.list_settings.list_size,
-            create_threshold: self
-                .list_settings
-                .create_threshold
-                .of_nonzero_u31(self.list_settings.list_size),
-            ttl: self.list_settings.ttl,
-            base_url: self.base_url,
-            publish_dir: self.publish_dir,
-            key_pair: self.keypair.parse(None).await?,
-        })
+#[derive(Debug, thiserror::Error)]
+pub enum WiaStatusListsSettingsError {
+    #[error("base URL does not contain path element(s): {0}")]
+    BaseUrlWithoutPath(BaseUrl),
+
+    #[error("incorrectly configured WIA expiration: {0}")]
+    ExpiryLessThanTtl(#[from] ExpiryLessThanTtl),
+
+    #[error("incorrectly configured WIA status list key identifier or certificate: {0}")]
+    PrivateKey(#[from] KeyPairError),
+}
+
+impl WiaStatusListsSettings {
+    pub async fn into_config(
+        self,
+        hsm: Pkcs11Hsm,
+    ) -> Result<StatusListConfig<HsmEcdsaKey>, WiaStatusListsSettingsError> {
+        // Take the last path element from the base URL as the context_path. It is an error if the base URL does not
+        // contain a path.
+        let context_path = self
+            .base_url
+            .as_ref()
+            .path_segments()
+            .expect("a BaseUrl always has path segments")
+            .next_back()
+            .expect("Url::path_segments() returns at least one string when returning Some()")
+            .to_string();
+
+        if context_path.is_empty() {
+            return Err(WiaStatusListsSettingsError::BaseUrlWithoutPath(self.base_url));
+        }
+
+        // Modify the base URL by removing the last path element, i.e. context_path.
+        let mut url = self.base_url.into_inner();
+        url.path_segments_mut()
+            .expect("a BaseUrl always has path segments")
+            .pop();
+        let base_url = url.try_into().expect("the source URL is a BaseUrl");
+
+        let key_pair = KeyPair::new(HsmEcdsaKey::new(self.key_identifier, hsm), self.key_certificate).await?;
+
+        let config = self
+            .list_settings
+            .to_config(base_url, context_path, self.publish_dir, key_pair)?;
+
+        Ok(config)
     }
 }

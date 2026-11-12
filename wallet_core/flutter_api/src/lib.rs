@@ -1,6 +1,8 @@
+#![recursion_limit = "256"]
+
 pub mod api;
 mod errors;
-#[expect(clippy::uninlined_format_args)]
+#[expect(clippy::cast_lossless)]
 #[rustfmt::skip]
 mod frb_generated;
 mod logging;

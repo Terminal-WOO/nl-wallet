@@ -1,30 +1,19 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::DateTime;
 use chrono::Utc;
+use crypto::utils::random_string;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use derive_more::AsRef;
 use derive_more::Display;
 use derive_more::From;
 use derive_more::Into;
+use oauth::token::AuthorizationCode;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::task::JoinHandle;
-use tokio::time;
-use tokio::time::MissedTickBehavior;
-use tracing::warn;
-
-use crypto::utils::random_string;
 use utils::generator::Generator;
 use utils::generator::TimeGenerator;
-
-use crate::token::AuthorizationCode;
-
-/// The cleanup task that removes stale sessions runs every so often.
-pub const CLEANUP_INTERVAL_SECONDS: Duration = Duration::from_secs(120);
-
 pub trait SessionDataType {
     const TYPE: &'static str;
 }
@@ -71,23 +60,6 @@ where
     async fn get(&self, token: &SessionToken) -> Result<Option<SessionState<T>>, SessionStoreError>;
     async fn write(&self, session: SessionState<T>, is_new: bool) -> Result<(), SessionStoreError>;
     async fn cleanup(&self) -> Result<(), SessionStoreError>;
-
-    fn start_cleanup_task(self: Arc<Self>, interval: Duration) -> JoinHandle<()>
-    where
-        Self: Sync + 'static,
-    {
-        let mut interval = time::interval(interval);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-        tokio::spawn(async move {
-            loop {
-                interval.tick().await;
-                if let Err(e) = self.cleanup().await {
-                    warn!("error during session cleanup: {e}");
-                }
-            }
-        })
-    }
 }
 
 /// Different timeout values that should be used by the [`SessionStore::cleanup()`] implementation.
@@ -237,12 +209,21 @@ impl From<SessionToken> for AuthorizationCode {
     }
 }
 
+impl From<AuthorizationCode> for SessionToken {
+    fn from(value: AuthorizationCode) -> Self {
+        SessionToken::from(value.as_ref().to_string())
+    }
+}
+
 #[cfg(any(test, feature = "test"))]
 pub mod test {
+    use std::assert_matches;
     use std::fmt::Debug;
+    use std::sync::Arc;
 
-    use assert_matches::assert_matches;
     use parking_lot::RwLock;
+    use tokio::time;
+    use utils::generator::mock::MockTimeGenerator;
 
     use super::*;
 
@@ -456,16 +437,54 @@ pub mod test {
 
         assert!(session.is_none());
     }
+
+    pub async fn test_memory_store_with_cleanup_task<T, G>(
+        session_store: Arc<MemorySessionStore<T, G>>,
+        token: SessionToken,
+        mock_time: &RwLock<DateTime<Utc>>,
+        interval: Duration,
+    ) where
+        T: HasProgress + Expirable + Clone + Send + Sync,
+        G: Generator<DateTime<Utc>> + Send + Sync + 'static,
+    {
+        assert!(!session_store.get(&token).await.unwrap().unwrap().data.is_expired());
+
+        // Advance the clock just enough so that session expiry will have occurred.
+        let expiry_time = Utc::now() + session_store.timeouts.expiration;
+        *mock_time.write() = expiry_time;
+
+        time::pause();
+        time::advance(interval + Duration::from_millis(1)).await;
+        time::resume();
+        time::sleep(Duration::from_millis(100)).await;
+
+        assert!(session_store.get(&token).await.unwrap().unwrap().data.is_expired());
+
+        // Advance the clock again so that the expired session will be purged.
+        *mock_time.write() = expiry_time + session_store.timeouts.failed_deletion + Duration::from_millis(1);
+
+        time::pause();
+        time::advance(interval + Duration::from_millis(1)).await;
+        time::resume();
+        time::sleep(Duration::from_millis(100)).await;
+
+        assert!(session_store.get(&token).await.unwrap().is_none());
+    }
+
+    pub fn memory_session_store_with_mock_time<T>()
+    -> (MemorySessionStore<T, MockTimeGenerator>, Arc<RwLock<DateTime<Utc>>>) {
+        let time_generator = MockTimeGenerator::default();
+        let mock_time = Arc::clone(&time_generator.time);
+        let session_store = MemorySessionStore::new_with_time(Default::default(), time_generator);
+
+        (session_store, mock_time)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use parking_lot::RwLock;
-
-    use utils::generator::mock::MockTimeGenerator;
-
     use self::test::RandomData;
-
+    use self::test::memory_session_store_with_mock_time;
     use super::*;
 
     /// A mock data type that adheres to all the trait bounds necessary for testing.
@@ -520,27 +539,16 @@ mod tests {
         test::test_session_store_get_write(&session_store).await;
     }
 
-    fn memory_session_store_with_mock_time() -> (
-        MemorySessionStore<MockSessionData, MockTimeGenerator>,
-        Arc<RwLock<DateTime<Utc>>>,
-    ) {
-        let time_generator = MockTimeGenerator::default();
-        let mock_time = Arc::clone(&time_generator.time);
-        let session_store = MemorySessionStore::new_with_time(Default::default(), time_generator);
-
-        (session_store, mock_time)
-    }
-
     #[tokio::test]
     async fn test_memory_session_store_cleanup_expiration() {
-        let (session_store, mock_time) = memory_session_store_with_mock_time();
+        let (session_store, mock_time) = memory_session_store_with_mock_time::<MockSessionData>();
 
         test::test_session_store_cleanup_expiration(&session_store, &session_store.timeouts, mock_time.as_ref()).await;
     }
 
     #[tokio::test]
     async fn test_memory_session_store_cleanup_successful_deletion() {
-        let (session_store, mock_time) = memory_session_store_with_mock_time();
+        let (session_store, mock_time) = memory_session_store_with_mock_time::<MockSessionData>();
 
         test::test_session_store_cleanup_successful_deletion(
             &session_store,
@@ -552,7 +560,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_session_store_cleanup_failed_deletion() {
-        let (session_store, mock_time) = memory_session_store_with_mock_time();
+        let (session_store, mock_time) = memory_session_store_with_mock_time::<MockSessionData>();
 
         test::test_session_store_cleanup_failed_deletion(&session_store, &session_store.timeouts, mock_time.as_ref())
             .await;

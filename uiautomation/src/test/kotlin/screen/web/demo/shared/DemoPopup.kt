@@ -1,11 +1,13 @@
 package screen.web.demo.shared
 
-import org.openqa.selenium.By
 import util.MobileActions
 
 class DemoPopup : MobileActions() {
 
-    private val sameDeviceButtonLocator = By.xpath(".//*[@data-testid='same_device_button']")
+    fun clickSameDeviceButton() =
+        clickWebShadowButtonWithGesture("same_device_button", "On this device", "Op dit apparaat")
 
-    fun clickSameDeviceButton() = clickWebElement(getWebModalAnchor().findElement(sameDeviceButtonLocator))
+    fun clickCrossDeviceButton() = clickWebShadowButton("cross_device_button")
+
+    fun clickCloseButton() = clickWebShadowButton("close_button")
 }

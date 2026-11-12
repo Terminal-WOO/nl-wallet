@@ -2,10 +2,9 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
-use tokio::fs;
-
 use crypto::keys::SecureEncryptionKey;
 use error_category::ErrorCategory;
+use tokio::fs;
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(pd)]
@@ -94,8 +93,9 @@ mod tests {
     use std::env;
 
     use aes_gcm::Aes256Gcm;
+    use aes_gcm::Key;
     use aes_gcm::KeyInit;
-    use rand_core::OsRng;
+    use aes_gcm::aead::Generate;
     use tempfile::NamedTempFile;
     use tempfile::TempPath;
 
@@ -115,7 +115,7 @@ mod tests {
     async fn test_read_and_write_encrypted_file() {
         let path = create_temporary_file_path();
         let contents = "This will be encrypted in a file.";
-        let encryption_key = Aes256Gcm::new(&Aes256Gcm::generate_key(&mut OsRng));
+        let encryption_key = Aes256Gcm::new(&Key::<Aes256Gcm>::generate());
 
         // encrypt and decrypt a file, read encrypted file manually.
         write_encrypted_file(&path, contents.as_bytes(), &encryption_key)
@@ -137,7 +137,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_or_create_encrypted_file_contents() {
         let path = create_temporary_file_path();
-        let encryption_key = Aes256Gcm::new(&Aes256Gcm::generate_key(&mut OsRng));
+        let encryption_key = Aes256Gcm::new(&Key::<Aes256Gcm>::generate());
 
         let contents = "This will be encrypted in a file.";
         let default_counter = RefCell::new(0);
@@ -184,8 +184,8 @@ mod tests {
         assert!(!fs::try_exists(&path2).await.unwrap());
 
         // Create three keys, two of them with the same alias.
-        let encryption_key1 = Aes256Gcm::new(&Aes256Gcm::generate_key(&mut OsRng));
-        let encryption_key2 = Aes256Gcm::new(&Aes256Gcm::generate_key(&mut OsRng));
+        let encryption_key1 = Aes256Gcm::new(&Key::<Aes256Gcm>::generate());
+        let encryption_key2 = Aes256Gcm::new(&Key::<Aes256Gcm>::generate());
         let key1 = get_or_create_key_file(&storage_path, &alias1, &encryption_key1, byte_length)
             .await
             .expect("Could not create key file");

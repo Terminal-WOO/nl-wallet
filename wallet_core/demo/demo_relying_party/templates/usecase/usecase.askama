@@ -4,18 +4,19 @@
 {%- import "../../../demo_utils/templates/components/notification.askama" as notification -%}
 
 {% block styles %}
-<link rel="stylesheet" href="../css/demo_bar.css" />
 {% match usecase %}
 {% when "mijn_amsterdam_mdoc" | "mijn_amsterdam_sd_jwt" %}
-    <link rel="stylesheet" href="../css/mijn_amsterdam-index.css" />
+  <link rel="stylesheet" href="../static/css/mijn_amsterdam-index.css" />
 {% when "monkey_bike" %}
-    <link rel="stylesheet" href="../css/monkey_bike-index.css" />
+  <link rel="stylesheet" href="../static/css/monkey_bike-index.css" />
 {% when "online_marketplace" %}
-    <link rel="stylesheet" href="../css/online_marketplace-index.css" />
+  <link rel="stylesheet" href="../static/css/online_marketplace-index.css" />
 {% when "xyz_bank_mdoc" | "xyz_bank_sd_jwt" | "xyz_bank_sd_jwt_eu" %}
-    <link rel="stylesheet" href="../css/xyz_bank-index.css" />
+  <link rel="stylesheet" href="../static/css/xyz_bank-index.css" />
 {% when "job_finder" %}
-    <link rel="stylesheet" href="../css/job_finder-index.css" />
+  <link rel="stylesheet" href="../static/css/job_finder-index.css" />
+{% when "car_insurance" %}
+  <link rel="stylesheet" href="../static/css/car_insurance-index.css" />
 {% else %}
 {% endmatch %}
 {% endblock %}
@@ -29,26 +30,28 @@
 {% block content %}
 {% match usecase %}
 {% when "mijn_amsterdam_mdoc" | "mijn_amsterdam_sd_jwt" %}
-    {% include "mijn_amsterdam.askama" %}
+  {% include "mijn_amsterdam.askama" %}
 {% when "monkey_bike" %}
-    {% include "monkey_bike.askama" %}
+  {% include "monkey_bike.askama" %}
 {% when "online_marketplace" %}
-    {% include "online_marketplace.askama" %}
+  {% include "online_marketplace.askama" %}
 {% when "xyz_bank_mdoc" | "xyz_bank_sd_jwt" | "xyz_bank_sd_jwt_eu" %}
-    {% include "xyz_bank.askama" %}
+  {% include "xyz_bank.askama" %}
 {% when "job_finder" %}
-    {% include "job_finder.askama" %}
+  {% include "job_finder.askama" %}
+{% when "car_insurance" %}
+  {% include "car_insurance.askama" %}
 {% else %}
 <main>
-    <section class="buttons">
-        <nl-wallet-button
-            text={{ base.trans.continue_with_nl_wallet }}
-            usecase="{{ usecase }}"
-            start-url="{{ start_url }}"
-            help-base-url="{{ help_base_url }}"
-            lang="{{ base.selected_lang }}">
-        </nl-wallet-button>
-    </section>
+  <section class="buttons">
+    <nl-wallet-button
+      text={{ base.trans.continue_with_nl_wallet }}
+      usecase="{{ usecase }}"
+      start-url="{{ start_url }}"
+      help-base-url="{{ help_base_url }}"
+      lang="{{ base.selected_lang }}">
+    </nl-wallet-button>
+  </section>
 </main>
 {% endmatch %}
 

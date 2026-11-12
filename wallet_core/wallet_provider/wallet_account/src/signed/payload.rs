@@ -50,14 +50,10 @@ pub struct HwSignedChallengeResponse<T>(SignedSubjectMessage<ChallengeResponsePa
 
 #[cfg(feature = "client")]
 pub mod client {
-    use serde::Serialize;
-
     use crypto::keys::EphemeralEcdsaKey;
     use crypto::keys::SecureEcdsaKey;
     use platform_support::attested_key::AppleAttestedKey;
-
-    use crate::error::EncodeError;
-    use crate::signed::payload::HwSignedChallengeResponse;
+    use serde::Serialize;
 
     use super::super::EcdsaSignatureType;
     use super::super::SignedMessage;
@@ -66,6 +62,8 @@ pub mod client {
     use super::ChallengeResponse;
     use super::ChallengeResponsePayload;
     use super::SignedSubjectMessage;
+    use crate::error::EncodeError;
+    use crate::signed::payload::HwSignedChallengeResponse;
 
     impl ChallengeRequest {
         pub async fn sign_apple<K>(
@@ -219,14 +217,10 @@ pub mod client {
 
 #[cfg(feature = "server")]
 pub mod server {
-    use p256::ecdsa::VerifyingKey;
-    use serde::de::DeserializeOwned;
-
     use apple_app_attest::AppIdentifier;
     use apple_app_attest::AssertionCounter;
-
-    use crate::error::DecodeError;
-    use crate::signed::HwSignedChallengeResponse;
+    use p256::ecdsa::VerifyingKey;
+    use serde::de::DeserializeOwned;
 
     use super::super::ContainsChallenge;
     use super::super::EcdsaSignatureType;
@@ -235,6 +229,8 @@ pub mod server {
     use super::ChallengeResponse;
     use super::ChallengeResponsePayload;
     use super::SignedSubjectMessage;
+    use crate::error::DecodeError;
+    use crate::signed::HwSignedChallengeResponse;
 
     #[derive(Debug, Clone, Copy)]
     pub enum SequenceNumberComparison {
@@ -468,7 +464,7 @@ pub mod server {
     }
 }
 
-#[cfg(feature = "mock")]
+#[cfg(all(feature = "mock", feature = "server"))]
 pub mod mock {
     use serde::de::DeserializeOwned;
 
@@ -488,23 +484,22 @@ pub mod mock {
 
 #[cfg(all(test, feature = "client", feature = "server"))]
 mod tests {
-    use assert_matches::assert_matches;
-    use futures::FutureExt;
-    use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
-    use serde::Deserialize;
-    use serde::Serialize;
+    use std::assert_matches;
 
     use apple_app_attest::AppIdentifier;
     use apple_app_attest::AssertionCounter;
+    use futures::FutureExt;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
     use platform_support::attested_key::mock::MockAppleAttestedKey;
-
-    use crate::error::DecodeError;
-    use crate::signed::HwSignedChallengeResponse;
+    use serde::Deserialize;
+    use serde::Serialize;
 
     use super::ChallengeRequest;
     use super::ChallengeResponse;
     use super::server::SequenceNumberComparison;
+    use crate::error::DecodeError;
+    use crate::signed::HwSignedChallengeResponse;
 
     #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
     struct ToyMessage {
@@ -592,7 +587,7 @@ mod tests {
         let wallet_id = crypto::utils::random_string(32);
         let sequence_number = 42;
         let instruction_name = "jump";
-        let hw_privkey = SigningKey::random(&mut OsRng);
+        let hw_privkey = SigningKey::generate();
 
         let signed = ChallengeRequest::sign_google(
             wallet_id.clone(),
@@ -644,7 +639,7 @@ mod tests {
         let sequence_number = 1337;
         let challenge = b"challenge";
         let attested_key = create_mock_apple_attested_key();
-        let pin_privkey = SigningKey::random(&mut OsRng);
+        let pin_privkey = SigningKey::generate();
 
         let signed = ChallengeResponse::sign_apple(
             ToyMessage::default(),
@@ -707,8 +702,8 @@ mod tests {
     fn test_google_challenge_response() {
         let sequence_number = 1337;
         let challenge = b"challenge";
-        let hw_privkey = SigningKey::random(&mut OsRng);
-        let pin_privkey = SigningKey::random(&mut OsRng);
+        let hw_privkey = SigningKey::generate();
+        let pin_privkey = SigningKey::generate();
 
         let signed = ChallengeResponse::sign_google(
             ToyMessage::default(),
@@ -821,7 +816,7 @@ mod tests {
     fn test_google_hw_signed_challenge_response() {
         let sequence_number = 1337;
         let challenge = b"challenge";
-        let hw_privkey = SigningKey::random(&mut OsRng);
+        let hw_privkey = SigningKey::generate();
 
         let signed = HwSignedChallengeResponse::sign_google(
             ToyMessage::default(),

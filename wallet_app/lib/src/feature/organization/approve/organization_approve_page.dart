@@ -1,8 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
-import '../../../domain/model/attribute/attribute.dart';
-import '../../../domain/model/disclosure/disclosure_session_type.dart';
 import '../../../domain/model/organization.dart';
 import '../../../util/extension/build_context_extension.dart';
 import '../../../util/extension/string_extension.dart';
@@ -10,7 +8,6 @@ import '../../common/widget/button/confirm/confirm_buttons.dart';
 import '../../common/widget/button/list_button.dart';
 import '../../common/widget/button/primary_button.dart';
 import '../../common/widget/button/secondary_button.dart';
-import '../../common/widget/organization/organization_logo.dart';
 import '../../common/widget/spacer/sliver_sized_box.dart';
 import '../../common/widget/text/body_text.dart';
 import '../../common/widget/text/title_text.dart';
@@ -26,28 +23,16 @@ class OrganizationApprovePage extends StatelessWidget {
   /// Callback that is triggered when the user declines the request
   final VoidCallback onDeclinePressed;
 
-  /// Callback that is triggered when the user wants to report an issue
-  final VoidCallback? onReportIssuePressed;
-
   /// Callback that is triggered when the user presses the button to view the organization details
   final VoidCallback onShowDetailsPressed;
 
   /// The organization that user is interacting with
   final Organization organization;
 
-  /// The url from which the user should have opened the flow. Prominently displayed for the user to check
-  final String originUrl;
-
   /// Tells the Page in which flow it's currently used, used to select the correct string/icon resources
   final ApprovalPurpose purpose;
 
-  /// If true, the 'first interaction' banner will be shown
-  final bool sharedDataWithOrganizationBefore;
-
-  /// If `crossDevice`, the 'fraud warning' (including `originUrl`) will be shown
-  final DisclosureSessionType? sessionType;
-
-  /// Optional description, rendered between the title and (optional) fraud text.
+  /// Optional description, rendered below the title
   final String? description;
 
   const OrganizationApprovePage({
@@ -55,12 +40,8 @@ class OrganizationApprovePage extends StatelessWidget {
     required this.onAcceptPressed,
     required this.onShowDetailsPressed,
     required this.organization,
-    required this.originUrl,
     required this.purpose,
     this.description,
-    this.onReportIssuePressed,
-    this.sharedDataWithOrganizationBefore = false,
-    this.sessionType,
     super.key,
   });
 
@@ -115,7 +96,6 @@ class OrganizationApprovePage extends StatelessWidget {
   IconData _primaryIcon() {
     return switch (purpose) {
       ApprovalPurpose.issuance => CupertinoIcons.arrow_turn_up_right,
-      ApprovalPurpose.disclosure => Icons.arrow_forward,
       ApprovalPurpose.sign => Icons.arrow_forward,
       ApprovalPurpose.login => Icons.key_outlined,
     };
@@ -128,8 +108,6 @@ class OrganizationApprovePage extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          OrganizationLogo(image: organization.logo, size: 64, fixedRadius: 12),
-          const SizedBox(height: 24),
           TitleText(resolveTitle(context, purpose, organization)),
           _buildHeaderDescriptionSection(context),
         ],
@@ -140,16 +118,13 @@ class OrganizationApprovePage extends StatelessWidget {
   static String resolveTitle(BuildContext context, ApprovalPurpose purpose, Organization organization) {
     return switch (purpose) {
       ApprovalPurpose.issuance => context.l10n.organizationApprovePageIssuanceTitle(
-        organization.displayName.l10nValue(context),
-      ),
-      ApprovalPurpose.disclosure => context.l10n.organizationApprovePageGenericTitle(
-        organization.displayName.l10nValue(context),
+        organization.displayName,
       ),
       ApprovalPurpose.sign => context.l10n.organizationApprovePageGenericTitle(
-        organization.displayName.l10nValue(context),
+        organization.displayName,
       ),
       ApprovalPurpose.login => context.l10n.organizationApprovePageLoginTitle(
-        organization.displayName.l10nValue(context),
+        organization.displayName,
       ),
     };
   }
@@ -170,7 +145,7 @@ class OrganizationApprovePage extends StatelessWidget {
         return context.l10n.organizationApprovePageMoreInfoIssuanceCta;
       case ApprovalPurpose.login:
         return context.l10n.organizationApprovePageMoreInfoLoginCta;
-      default:
+      case ApprovalPurpose.sign:
         return context.l10n.organizationApprovePageMoreInfoCta;
     }
   }
@@ -179,8 +154,6 @@ class OrganizationApprovePage extends StatelessWidget {
     switch (purpose) {
       case ApprovalPurpose.issuance:
         return context.l10n.organizationApprovePageApproveCta;
-      case ApprovalPurpose.disclosure:
-        return context.l10n.organizationApprovePageShareWithApproveCta;
       case ApprovalPurpose.sign:
         return context.l10n.organizationApprovePageApproveCta;
       case ApprovalPurpose.login:
@@ -192,8 +165,6 @@ class OrganizationApprovePage extends StatelessWidget {
     switch (purpose) {
       case ApprovalPurpose.issuance:
         return context.l10n.organizationApprovePageDenyCta;
-      case ApprovalPurpose.disclosure:
-        return context.l10n.organizationApprovePageShareWithDenyCta;
       case ApprovalPurpose.sign:
         return context.l10n.organizationApprovePageDenyCta;
       case ApprovalPurpose.login:
@@ -202,4 +173,4 @@ class OrganizationApprovePage extends StatelessWidget {
   }
 }
 
-enum ApprovalPurpose { issuance, disclosure, sign, login }
+enum ApprovalPurpose { issuance, sign, login }

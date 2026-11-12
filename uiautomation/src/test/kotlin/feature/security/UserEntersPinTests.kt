@@ -1,13 +1,14 @@
 package feature.security
 
+import data.TestConfigRepository.Companion.testConfig
+import domain.Platform
 import helper.TestBase
 import navigator.MenuNavigator
 import navigator.screen.MenuNavigatorScreen
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Tag
-import org.junit.jupiter.api.Tags
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.api.TestMethodOrder
 import org.junit.jupiter.api.assertAll
@@ -46,11 +47,12 @@ class UserEntersPinTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC47 Unlock app with correct PIN")
+    @DisplayName("LTC37 Unlock app with correct PIN")
     fun verifyPinScreenVisible(testInfo: TestInfo) {
         setUp(testInfo)
         assertTrue(pinScreen.pinScreenVisible(), "pin screen is not visible")
         assertTrue(pinScreen.pinKeyboardVisible(), "pin keyboard is not visible")
+        pinScreen.captureA11ySnapshot("PinUnlock")
         val pin = "12222"
         pinScreen.enterPin(pin)
         assertTrue(pinScreen.enteredPinAbsent(pin), "entered pin is not absent")
@@ -59,9 +61,11 @@ class UserEntersPinTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("Upon PIN entry, when the app cannot connect to the server it displays an appropriate error.")
-    @Tags(Tag("a11yBatch2"))
+    @DisplayName("LTC37 Upon PIN entry, when the app cannot connect to the server it displays an appropriate error.")
     fun verifyNotConnectedErrorMessage(testInfo: TestInfo) {
+        // Network toggling is only implemented for Android (via adb). On real iOS
+        // devices it requires the RemoteXPC tunnel / condition inducer.
+        assumeTrue(testConfig.platform == Platform.ANDROID, "Skipping on iOS: network toggling not supported")
         setUp(testInfo)
         try {
             pinScreen.disableInternetConnection()
@@ -72,22 +76,23 @@ class UserEntersPinTests : TestBase() {
                 { assertTrue(noInternetErrorScreen.tryAgainButtonVisible(), "Try again button is not visible") }
             )
 
-            noInternetErrorScreen.seeDetails()
+            noInternetErrorScreen.errorDetails.seeDetails()
             assertAll(
-                { assertTrue(noInternetErrorScreen.appVersionLabelVisible(), "App version is not visible") },
-                { assertTrue(noInternetErrorScreen.osVersionLabelVisible(), "Os version is not visible") },
-                { assertTrue(noInternetErrorScreen.appConfigLabelVisible(), "appConfig is not visible") },
-                { assertTrue(noInternetErrorScreen.appVersionVisible(), "App version is not visible") },
-                { assertTrue(noInternetErrorScreen.osVersionVisible(), "Os version is not visible") },
-                { assertTrue(noInternetErrorScreen.appConfigVisible(), "appConfig is not visible") }
+                { assertTrue(noInternetErrorScreen.errorDetails.appVersionLabelVisible(), "App version is not visible") },
+                { assertTrue(noInternetErrorScreen.errorDetails.osVersionLabelVisible(), "Os version is not visible") },
+                { assertTrue(noInternetErrorScreen.errorDetails.appConfigLabelVisible(), "appConfig is not visible") },
+                { assertTrue(noInternetErrorScreen.errorDetails.appVersionVisible(), "App version is not visible") },
+                { assertTrue(noInternetErrorScreen.errorDetails.osVersionVisible(), "Os version is not visible") },
+                { assertTrue(noInternetErrorScreen.errorDetails.appConfigVisible(), "appConfig is not visible") }
             )
+            noInternetErrorScreen.captureA11ySnapshot("ErrorDetails")
         } finally {
             noInternetErrorScreen.enableInternetConnection();
         }
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC50 Unlock app with invalid PIN")
+    @DisplayName("LTC40 LTC46 Unlock app with invalid PIN")
     fun verifyRetriesAndTimeout(testInfo: TestInfo) {
         setUp(testInfo)
         pinScreen.enterPin("123456")
@@ -104,8 +109,9 @@ class UserEntersPinTests : TestBase() {
         assertAll(
             { assertTrue(temporarilyBlockedScreen.deleteWalletButtonVisible(), "Delete wallet button is not visible") },
             { assertTrue(temporarilyBlockedScreen.forgotPinButtonVisible(), "Forgot pin button is not visible") },
-            { assertTrue(temporarilyBlockedScreen.timeoutDurationLeftVisible("57"), "Timeout duration is not visible") }
+            { assertTrue(temporarilyBlockedScreen.timeoutMessageVisible(), "Timeout message is not visible") }
         )
+        temporarilyBlockedScreen.captureA11ySnapshot("TemporarilyBlocked")
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
@@ -121,7 +127,7 @@ class UserEntersPinTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC47 The PIN entry screen offers an entrance to the App Info page.")
+    @DisplayName("LTC28 The PIN entry screen offers an entrance to the App Info page.")
     fun verifyAppInfoButton(testInfo: TestInfo) {
         setUp(testInfo)
         pinScreen.clickAppInfoButton()

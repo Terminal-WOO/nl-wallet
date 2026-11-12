@@ -8,7 +8,6 @@ import 'package:wallet/src/domain/model/attribute/attribute.dart';
 import 'package:wallet/src/domain/model/disclosure/disclose_card_request.dart';
 import 'package:wallet/src/domain/model/disclosure/disclosure_session_type.dart';
 import 'package:wallet/src/domain/model/flow_progress.dart';
-import 'package:wallet/src/domain/model/policy/organization_policy.dart';
 import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/domain/usecase/app/check_is_app_initialized_usecase.dart';
 import 'package:wallet/src/domain/usecase/biometrics/is_biometric_login_enabled_usecase.dart';
@@ -30,9 +29,6 @@ import 'package:wallet/src/feature/pin/bloc/pin_bloc.dart';
 import 'package:wallet/src/feature/pin/widget/pin_keyboard.dart';
 import 'package:wallet/src/util/extension/string_extension.dart';
 import 'package:wallet/src/util/manager/biometric_unlock_manager.dart';
-import 'package:wallet/src/util/mapper/context_mapper.dart';
-import 'package:wallet/src/util/mapper/policy/policy_body_text_mapper.dart';
-import 'package:wallet/src/wallet_core/error/core_error.dart';
 
 import '../../../wallet_app_test_widget.dart';
 import '../../mocks/wallet_mock_data.dart';
@@ -43,14 +39,23 @@ import '../pin/pin_page_test.dart';
 
 class MockDisclosureBloc extends MockBloc<DisclosureEvent, DisclosureState> implements DisclosureBloc {
   @override
-  final bool isLoginFlow;
+  StartDisclosureResult? startDisclosureResult;
 
-  MockDisclosureBloc({this.isLoginFlow = false});
+  MockDisclosureBloc({this.startDisclosureResult});
 }
+
+final kSampleReadyToDiscloseResult = StartDisclosureReadyToDisclose(
+  relyingParty: WalletMockData.organization,
+  requestPurpose: ''.untranslated,
+  sessionType: .sameDevice,
+  type: .login,
+  cardRequests: [],
+  sharedDataWithOrganizationBefore: false,
+);
 
 void main() {
   group('goldens', () {
-    testGoldens('DisclosureInitial Light', (tester) async {
+    testGoldens('ltc15 DisclosureInitial Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -60,7 +65,7 @@ void main() {
       await screenMatchesGolden('initial.light');
     });
 
-    testGoldens('DisclosureLoadInProgress Light', (tester) async {
+    testGoldens('ltc15 DisclosureLoadInProgress Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -70,26 +75,24 @@ void main() {
       await screenMatchesGolden('load_in_progress.light');
     });
 
-    testGoldens('DisclosureCheckUrl Light', (tester) async {
+    testGoldens('ltc15 DisclosureCheckUrl Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          const DisclosureCheckUrl(originUrl: 'https://origin.org'),
+          const DisclosureCheckUrl(),
         ),
       );
       await screenMatchesGolden('check_url.light');
     });
 
-    testGoldens('Stop Sheet Dark (on top of check organization for login)', (tester) async {
+    testGoldens('ltc15 Stop Sheet Dark (on top of check organization for login)', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
-          MockDisclosureBloc(),
+          MockDisclosureBloc(startDisclosureResult: kSampleReadyToDiscloseResult),
           DisclosureCheckOrganizationForLogin(
             relyingParty: WalletMockData.organization,
-            originUrl: 'https://origin.org',
             sharedDataWithOrganizationBefore: true,
             sessionType: DisclosureSessionType.crossDevice,
-            policy: WalletMockData.policy,
             cardRequests: [],
           ),
         ),
@@ -102,21 +105,17 @@ void main() {
       await screenMatchesGolden('stop_sheet.login.dark');
     });
 
-    testGoldens('Stop Sheet Dark (on top of check attributes)', (tester) async {
+    testGoldens('ltc15 Stop Sheet Dark (on top of check attributes)', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
-          MockDisclosureBloc(),
+          MockDisclosureBloc(startDisclosureResult: kSampleReadyToDiscloseResult),
           DisclosureConfirmDataAttributes(
             relyingParty: WalletMockData.organization,
             requestPurpose: 'requestPurpose'.untranslated,
             cardRequests: [DiscloseCardRequest.fromCard(WalletMockData.card)],
-            policy: WalletMockData.policy,
             sessionType: DisclosureSessionType.sameDevice,
           ),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(create: (c) => PolicyBodyTextMapper()),
-        ],
       );
       final l10n = await TestUtils.englishLocalizations;
       await tester.scrollUntilVisible(find.text(l10n.disclosureConfirmDataAttributesPageDenyCta), 1000);
@@ -126,17 +125,15 @@ void main() {
       await screenMatchesGolden('stop_sheet.confirm_attributes.light');
     });
 
-    testGoldens('DisclosureCheckOrganizationForLogin Dark - single attribute', (tester) async {
+    testGoldens('ltc15 DisclosureCheckOrganizationForLogin Dark - single attribute', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
           DisclosureCheckOrganizationForLogin(
             relyingParty: WalletMockData.organization,
-            originUrl: 'https://origin.org',
             sharedDataWithOrganizationBefore: true,
             sessionType: DisclosureSessionType.crossDevice,
             cardRequests: [DiscloseCardRequest.fromCard(WalletMockData.card)],
-            policy: WalletMockData.policy,
           ),
         ),
         brightness: Brightness.dark,
@@ -144,20 +141,18 @@ void main() {
       await screenMatchesGolden('check_organization_single_attribute.dark');
     });
 
-    testGoldens('DisclosureCheckOrganizationForLogin Dark - multiple attributes', (tester) async {
+    testGoldens('ltc15 DisclosureCheckOrganizationForLogin Dark - multiple attributes', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
           DisclosureCheckOrganizationForLogin(
             relyingParty: WalletMockData.organization,
-            originUrl: 'https://origin.org',
             sharedDataWithOrganizationBefore: true,
             sessionType: DisclosureSessionType.crossDevice,
             cardRequests: [
               DiscloseCardRequest.fromCard(WalletMockData.card),
               DiscloseCardRequest.fromCard(WalletMockData.altCard),
             ],
-            policy: WalletMockData.policy,
           ),
         ),
         brightness: Brightness.dark,
@@ -165,28 +160,28 @@ void main() {
       await screenMatchesGolden('check_organization_multiple_attributes.dark');
     });
 
-    testGoldens('DisclosureCheckUrl Light - landscape', (tester) async {
+    testGoldens('ltc15 DisclosureCheckUrl Light - landscape', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          const DisclosureCheckUrl(originUrl: 'https://origin.org'),
+          const DisclosureCheckUrl(),
         ),
         surfaceSize: iphoneXSizeLandscape,
       );
       await screenMatchesGolden('check_url.light.landscape');
     });
 
-    testGoldens('DisclosureGenericError Light', (tester) async {
+    testGoldens('ltc15 DisclosureGenericError Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          const DisclosureGenericError(error: GenericError('generic', sourceError: 'test')),
+          const DisclosureError(error: GenericError('generic', sourceError: 'test')),
         ),
       );
       await screenMatchesGolden('generic_error.light');
     });
 
-    testGoldens('DisclosureConfirmPin Light', (tester) async {
+    testGoldens('ltc15 DisclosureConfirmPin Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         RepositoryProvider<AcceptDisclosureUseCase>.value(
           value: MockAcceptDisclosureUseCase(),
@@ -209,7 +204,7 @@ void main() {
       await screenMatchesGolden('confirm_pin.light');
     });
 
-    testGoldens('DisclosureConfirmPin Light - Dutch - Small Device - 2x TextScaling (a11y)', (tester) async {
+    testGoldens('ltc15 DisclosureConfirmPin Light - Dutch - Small Device - 2x TextScaling (a11y)', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         RepositoryProvider<AcceptDisclosureUseCase>.value(
           value: MockAcceptDisclosureUseCase(),
@@ -234,7 +229,9 @@ void main() {
       );
       await screenMatchesGolden('confirm_pin.light.a11y.nl');
     });
-    testGoldens('DisclosureConfirmPin Dark - Dutch - Small Device - Landscape - 2x TextScaling (a11y)', (tester) async {
+    testGoldens('ltc15 DisclosureConfirmPin Dark - Dutch - Small Device - Landscape - 2x TextScaling (a11y)', (
+      tester,
+    ) async {
       await tester.pumpWidgetWithAppWrapper(
         RepositoryProvider<AcceptDisclosureUseCase>.value(
           value: MockAcceptDisclosureUseCase(),
@@ -261,7 +258,7 @@ void main() {
       await screenMatchesGolden('confirm_pin.dark.landscape.a11y.nl');
     });
 
-    testGoldens('DisclosureConfirmPin Light - landscape', (tester) async {
+    testGoldens('ltc15 DisclosureConfirmPin Light - landscape', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         RepositoryProvider<AcceptDisclosureUseCase>.value(
           value: MockAcceptDisclosureUseCase(),
@@ -285,7 +282,7 @@ void main() {
       await screenMatchesGolden('confirm_pin.light.landscape');
     });
 
-    testGoldens('DisclosureMissingAttributes Light', (tester) async {
+    testGoldens('ltc15 DisclosureMissingAttributes Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -299,7 +296,7 @@ void main() {
       await screenMatchesGolden('missing_attributes.light');
     });
 
-    testGoldens('DisclosureConfirmDataAttributes Dark', (tester) async {
+    testGoldens('ltc15 DisclosureConfirmDataAttributes Dark', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -307,19 +304,15 @@ void main() {
             relyingParty: WalletMockData.organization,
             cardRequests: [DiscloseCardRequest.fromCard(WalletMockData.card)],
             requestPurpose: 'Sample reason'.untranslated,
-            policy: WalletMockData.policy,
             sessionType: DisclosureSessionType.crossDevice,
           ),
         ),
         brightness: Brightness.dark,
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(create: (c) => PolicyBodyTextMapper()),
-        ],
       );
       await screenMatchesGolden('confirm_data_attributes.dark');
     });
 
-    testGoldens('DisclosureConfirmDataAttributes - full page', (tester) async {
+    testGoldens('ltc15 DisclosureConfirmDataAttributes - full page', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         surfaceSize: const Size(375, 1100 /* tall to fit all content */),
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
@@ -328,17 +321,16 @@ void main() {
             relyingParty: WalletMockData.organization,
             cardRequests: [DiscloseCardRequest.fromCard(WalletMockData.card)],
             requestPurpose: 'Sample reason'.untranslated,
-            policy: WalletMockData.policy,
             sessionType: DisclosureSessionType.crossDevice,
           ),
         ),
         brightness: Brightness.light,
         providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(create: (c) => PolicyBodyTextMapper()),
           RepositoryProvider<BannerCubit>(
             create: (c) => BannerCubit(
               MockObserveShowTourBannerUseCase(),
               MockObserveVersionStateUsecase(),
+              MockObserveDashboardNotificationsUseCase(),
             ),
           ),
         ],
@@ -346,7 +338,7 @@ void main() {
       await screenMatchesGolden('confirm_data_attributes');
     });
 
-    testGoldens('DisclosureSuccess Light', (tester) async {
+    testGoldens('ltc15 DisclosureSuccess Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -360,7 +352,52 @@ void main() {
       await screenMatchesGolden('success.light');
     });
 
-    testGoldens('DisclosureSuccess Light - with returnUrl', (tester) async {
+    testGoldens('ltc15 DisclosureSuccess Light (Login)', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
+          MockDisclosureBloc(),
+          DisclosureSuccess(
+            relyingParty: WalletMockData.organization,
+            event: WalletMockData.disclosureEvent,
+            isCrossDevice: false,
+            style: .login,
+          ),
+        ),
+      );
+      await screenMatchesGolden('success.login.light');
+    });
+
+    testGoldens('ltc15 DisclosureSuccess Light (Close Proximity)', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
+          MockDisclosureBloc(),
+          DisclosureSuccess(
+            relyingParty: WalletMockData.organization,
+            event: WalletMockData.disclosureEvent,
+            isCrossDevice: false,
+            style: .closeProximity,
+          ),
+        ),
+      );
+      await screenMatchesGolden('success.close_proximity.light');
+    });
+
+    testGoldens('ltc15 DisclosureSuccess Light (Same Device - No return url)', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
+          MockDisclosureBloc(),
+          DisclosureSuccess(
+            relyingParty: WalletMockData.organization,
+            event: WalletMockData.disclosureEvent,
+            isCrossDevice: false,
+            style: .sameDeviceNoReturnUrl,
+          ),
+        ),
+      );
+      await screenMatchesGolden('success.same_device.no_return_url.light');
+    });
+
+    testGoldens('ltc15 DisclosureSuccess Light - with returnUrl', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -375,7 +412,7 @@ void main() {
       await screenMatchesGolden('success.return_url.light');
     });
 
-    testGoldens('DisclosureStopped Light', (tester) async {
+    testGoldens('ltc15 DisclosureStopped Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -385,7 +422,7 @@ void main() {
       await screenMatchesGolden('stopped.light');
     });
 
-    testGoldens('DisclosureStopped Dark - with return url', (tester) async {
+    testGoldens('ltc15 DisclosureStopped Dark - with return url', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -399,7 +436,7 @@ void main() {
       await screenMatchesGolden('stopped.return_url.dark');
     });
 
-    testGoldens('DisclosureLeftFeedback Light', (tester) async {
+    testGoldens('ltc15 DisclosureLeftFeedback Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -409,30 +446,24 @@ void main() {
       await screenMatchesGolden('left_feedback.light');
     });
 
-    testGoldens('DisclosureCancelledSessionError Light', (tester) async {
+    testGoldens('ltc15 DisclosureCancelledSessionError Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
-          MockDisclosureBloc(),
-          DisclosureSessionCancelled(
-            relyingParty: WalletMockData.organization,
-            returnUrl: 'https://example.com',
-            error: const SessionError(
-              state: SessionState.cancelled,
-              returnUrl: 'https://example.com',
-              sourceError: CoreCancelledSessionError('test'),
-            ),
+          MockDisclosureBloc(startDisclosureResult: kSampleReadyToDiscloseResult),
+          const DisclosureError(
+            error: SessionError(state: .cancelled, sourceError: 'test'),
           ),
         ),
       );
       await screenMatchesGolden('cancelled_session_error.light');
     });
 
-    testGoldens('Disclosure Stop Sheet Light', (tester) async {
+    testGoldens('ltc15 Disclosure Stop Sheet Light', (tester) async {
       // Inflate a state with showStopConfirmation = true.
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
-          MockDisclosureBloc(),
-          const DisclosureCheckUrl(originUrl: 'https://origin.org'),
+          MockDisclosureBloc(startDisclosureResult: kSampleReadyToDiscloseResult),
+          const DisclosureCheckUrl(),
         ),
       );
       // Find and press the close button
@@ -443,7 +474,7 @@ void main() {
       await screenMatchesGolden('stop_sheet.light');
     });
 
-    testGoldens('DisclosureSessionExpired Error Light', (tester) async {
+    testGoldens('ltc15 DisclosureSessionExpired Error Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -462,7 +493,7 @@ void main() {
       await screenMatchesGolden('session_expired_error.light');
     });
 
-    testGoldens('DisclosureExternalScannerError Error Light', (tester) async {
+    testGoldens('ltc15 DisclosureExternalScannerError Error Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -474,22 +505,31 @@ void main() {
       await screenMatchesGolden('external_scanner_error.light');
     });
 
-    testGoldens('DisclosureRelyingPartyError Error Light', (tester) async {
+    testGoldens('ltc15 DisclosureRelyingPartyError Error Light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          DisclosureRelyingPartyError(
-            error: const GenericError('relying_party', sourceError: 'rp'),
-            organizationName: WalletMockData.organization.displayName,
+          DisclosureError(
+            error: RelyingPartyError(sourceError: 'test', organizationName: WalletMockData.organization.displayName),
           ),
         ),
       );
       await screenMatchesGolden('relying_party_error.light');
     });
+
+    testGoldens('DisclosureCloseProximityDisconnected Error Light', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
+          MockDisclosureBloc(),
+          const DisclosureCloseProximityDisconnected(isLoginFlow: false),
+        ),
+      );
+      await screenMatchesGolden('close_proximity_disconnect_error.light');
+    });
   });
 
   group('widgets', () {
-    testWidgets('history button is shown on the success page', (tester) async {
+    testWidgets('ltc15 history button is shown on the success page', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -504,15 +544,14 @@ void main() {
       expect(find.text(l10n.disclosureSuccessPageShowHistoryCta), findsOneWidget);
     });
 
-    testWidgets('DisclosureScreen shows the no internet error for DisclosureNetworkError(hasInternet=false)', (
+    testWidgets('ltc15 DisclosureScreen shows the no internet error for DisclosureNetworkError(hasInternet=false)', (
       tester,
     ) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          const DisclosureNetworkError(
+          const DisclosureError(
             error: NetworkError(hasInternet: false, sourceError: 'no internet'),
-            hasInternet: false,
           ),
         ),
       );
@@ -537,13 +576,14 @@ void main() {
       expect(showDetailsCtaFinder, findsOneWidget);
     });
 
-    testWidgets('DisclosureScreen shows the server error for DisclosureNetworkError(hasInternet=true)', (tester) async {
+    testWidgets('ltc15 DisclosureScreen shows the server error for DisclosureNetworkError(hasInternet=true)', (
+      tester,
+    ) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          const DisclosureNetworkError(
+          const DisclosureError(
             error: NetworkError(hasInternet: true, sourceError: 'server'),
-            hasInternet: true,
           ),
         ),
       );
@@ -568,11 +608,11 @@ void main() {
       expect(showDetailsCtaFinder, findsOneWidget);
     });
 
-    testWidgets('DisclosureScreen shows the generic error for CoreGenericError', (tester) async {
+    testWidgets('ltc15 DisclosureScreen shows the generic error for CoreGenericError', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
-          const DisclosureGenericError(error: GenericError('generic', sourceError: 'test')),
+          const DisclosureError(error: GenericError('generic', sourceError: 'test')),
         ),
       );
 
@@ -597,7 +637,7 @@ void main() {
       expect(showDetailsCtaFinder, findsOneWidget);
     });
 
-    testWidgets('DisclosureScreen shows session expired for DisclosureSessionExpired', (tester) async {
+    testWidgets('ltc15 DisclosureScreen shows session expired for DisclosureSessionExpired', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -635,7 +675,7 @@ void main() {
       expect(showDetailsCtaFinder, findsOneWidget);
     });
 
-    testWidgets('DisclosureScreen shows loading text for DisclosureInitial', (tester) async {
+    testWidgets('ltc15 DisclosureScreen shows loading text for DisclosureInitial', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -648,7 +688,7 @@ void main() {
       expect(find.text(l10n.disclosureLoadingSubtitle), findsOneWidget);
     });
 
-    testWidgets('DisclosureScreen shows loader for DisclosureLoadInProgress', (tester) async {
+    testWidgets('ltc15 DisclosureScreen shows loader for DisclosureLoadInProgress', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
           MockDisclosureBloc(),
@@ -668,48 +708,26 @@ void main() {
             DisclosureCheckOrganizationForLogin(
               relyingParty: WalletMockData.organization,
               sharedDataWithOrganizationBefore: false,
-              originUrl: '',
               sessionType: DisclosureSessionType.sameDevice,
-              policy: WalletMockData.policy,
               cardRequests: [],
             ),
           ),
           providers: [
             RepositoryProvider<WalletRepository>(
               create: (_) {
-                // Make sure the 'locked' overlay is not shown after navigating to OrgDetailsScreen.
+                // Make sure the 'locked' overlay is not shown after navigating to LoginDetailScreen.
                 final mockRepo = MockWalletRepository();
                 when(mockRepo.isLockedStream).thenAnswer((_) => Stream.value(false));
                 return mockRepo;
               },
             ),
             RepositoryProvider<PinBloc>(create: (_) => MockPinBloc()),
-            RepositoryProvider<UnlockWalletWithPinUseCase>(create: (_) => MockUnlockWalletWithPinUseCase()),
             RepositoryProvider<IsWalletInitializedUseCase>(create: (_) => MockIsWalletInitializedUseCase()),
-            RepositoryProvider<IsBiometricLoginEnabledUseCase>(create: (_) => MockIsBiometricLoginEnabledUseCase()),
+            RepositoryProvider<UnlockWalletWithPinUseCase>(create: (_) => MockUnlockWalletWithPinUseCase()),
+            RepositoryProvider<IsBiometricLoginEnabledUseCase>(create: (c) => MockIsBiometricLoginEnabledUseCase()),
             RepositoryProvider<BiometricUnlockManager>(create: (c) => MockBiometricUnlockManager()),
-            RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(create: (c) => PolicyBodyTextMapper()),
           ],
         );
-
-        final l10n = await TestUtils.englishLocalizations;
-        final checkOrgForLoginTitle = l10n.organizationApprovePageLoginTitle(
-          WalletMockData.organization.displayName.testValue,
-        );
-        expect(find.textContaining(checkOrgForLoginTitle), findsAtLeast(1));
-
-        // Navigate away
-        expect(find.text(l10n.organizationApprovePageMoreInfoLoginCta), findsOneWidget);
-        await tester.tap(find.text(l10n.organizationApprovePageMoreInfoLoginCta));
-        await tester.pumpAndSettle();
-
-        // DisclosureScreen checkOrgForLoginTitle should no longer be visible
-        expect(find.text(checkOrgForLoginTitle), findsNothing);
-        // Login detail screen checkOrgForLoginTitle should be visible
-        final organizationDetailScreenTitle = l10n.loginDetailScreenTitle(
-          WalletMockData.organization.displayName.testValue,
-        );
-        expect(find.text(organizationDetailScreenTitle), findsAtLeast(1));
       },
     );
 
@@ -718,12 +736,10 @@ void main() {
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
           const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
-            MockDisclosureBloc(isLoginFlow: true),
+            MockDisclosureBloc(),
             DisclosureCheckOrganizationForLogin(
               relyingParty: WalletMockData.organization,
-              originUrl: 'originUrl',
               sessionType: DisclosureSessionType.crossDevice,
-              policy: WalletMockData.policy,
               cardRequests: [],
               sharedDataWithOrganizationBefore: false,
             ),
@@ -732,7 +748,7 @@ void main() {
 
         final l10n = await TestUtils.englishLocalizations;
         expect(find.byType(OrganizationApprovePage), findsOneWidget);
-        final loginTitle = l10n.organizationApprovePageLoginTitle(WalletMockData.organization.displayName.testValue);
+        final loginTitle = l10n.organizationApprovePageLoginTitle(WalletMockData.organization.displayName);
         expect(find.text(loginTitle), findsOneWidget);
       },
     );
@@ -742,12 +758,10 @@ void main() {
       (tester) async {
         await tester.pumpWidgetWithAppWrapper(
           const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
-            MockDisclosureBloc(isLoginFlow: true),
+            MockDisclosureBloc(),
             DisclosureCheckOrganizationForLogin(
               relyingParty: WalletMockData.organization,
-              originUrl: 'originUrl',
               sessionType: DisclosureSessionType.crossDevice,
-              policy: WalletMockData.policy,
               cardRequests: [],
               sharedDataWithOrganizationBefore: false,
             ),
@@ -764,7 +778,6 @@ void main() {
             RepositoryProvider<PinBloc>(create: (_) => MockPinBloc()),
             RepositoryProvider<IsWalletInitializedUseCase>(create: (_) => MockIsWalletInitializedUseCase()),
             RepositoryProvider<UnlockWalletWithPinUseCase>(create: (_) => MockUnlockWalletWithPinUseCase()),
-            RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(create: (c) => PolicyBodyTextMapper()),
             RepositoryProvider<IsBiometricLoginEnabledUseCase>(create: (c) => MockIsBiometricLoginEnabledUseCase()),
             RepositoryProvider<BiometricUnlockManager>(create: (c) => MockBiometricUnlockManager()),
           ],
@@ -774,17 +787,9 @@ void main() {
         await tester.tap(find.text(l10n.organizationApprovePageMoreInfoLoginCta));
         await tester.pumpAndSettle();
         expect(find.byType(LoginDetailScreen), findsOneWidget);
-        expect(find.text(WalletMockData.organization.displayName.testValue), findsOneWidget);
-        expect(
-          find.text(
-            l10n.disclosureConfirmDataAttributesPageNotSharedButStoredSubtitle(
-              3,
-              WalletMockData.organization.displayName.testValue,
-            ),
-          ),
-          findsOneWidget,
-        );
-        expect(find.text(l10n.loginDetailScreenAgreementCta), findsOneWidget);
+        expect(find.textContaining(WalletMockData.organization.displayName), findsWidgets);
+        expect(find.text(l10n.privacySectionTitle), findsOneWidget);
+        expect(find.text(l10n.privacySectionCta), findsOneWidget);
       },
     );
 
@@ -825,13 +830,9 @@ void main() {
               relyingParty: WalletMockData.organization,
               requestPurpose: 'test purpose'.untranslated,
               cardRequests: [DiscloseCardRequest.fromCard(WalletMockData.card)],
-              policy: WalletMockData.policy,
               sessionType: DisclosureSessionType.crossDevice,
             ),
           ),
-          providers: [
-            RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(create: (c) => PolicyBodyTextMapper()),
-          ],
         );
 
         expect(find.byType(DisclosureConfirmDataAttributesPage), findsOneWidget);
@@ -879,7 +880,7 @@ void main() {
     testWidgets(
       'DisclosureScreen shows DisclosureStopSheet when stop is pressed',
       (tester) async {
-        final mockDisclosureBloc = MockDisclosureBloc();
+        final mockDisclosureBloc = MockDisclosureBloc(startDisclosureResult: kSampleReadyToDiscloseResult);
         await tester.pumpWidgetWithAppWrapper(
           const DisclosureScreen().withState<DisclosureBloc, DisclosureState>(
             mockDisclosureBloc,

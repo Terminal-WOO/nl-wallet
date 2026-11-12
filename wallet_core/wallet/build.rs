@@ -1,10 +1,10 @@
 use std::env;
 use std::fs;
 use std::os;
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::de::DeserializeOwned;
-
 use utils::path::prefix_local_path;
 use wallet_configuration::EnvironmentSpecific;
 use wallet_configuration::config_server_config::ConfigServerConfiguration;
@@ -74,13 +74,13 @@ fn android_x86_64_workaround() {
 
         // Inform rustc that we need to link "libclang_rt.builtins-x86_64-android.a"
         // and add the path derived above to the linker search paths.
-        println!("cargo:rustc-link-search={}", linux_x86_64_lib_dir.to_str().unwrap());
-        println!("cargo:rustc-link-lib=static=clang_rt.builtins-x86_64-android");
+        println!("cargo::rustc-link-search={}", linux_x86_64_lib_dir.to_str().unwrap());
+        println!("cargo::rustc-link-lib=static=clang_rt.builtins-x86_64-android");
     }
 }
 
 fn parse_and_verify_json<T: DeserializeOwned + EnvironmentSpecific>(file: &str, fallback: &str) {
-    let file_path = prefix_local_path(file.as_ref());
+    let file_path = prefix_local_path(Path::new(file));
     // If the config file doesn't exist, copy the fallback to the config file and use that
     if !file_path.exists() {
         #[cfg(windows)]
@@ -94,7 +94,7 @@ fn parse_and_verify_json<T: DeserializeOwned + EnvironmentSpecific>(file: &str, 
 
     verify_environment(config.environment(), file);
 
-    println!("cargo:rerun-if-changed={file}");
+    println!("cargo::rerun-if-changed={file}");
 }
 
 fn current_env() -> String {

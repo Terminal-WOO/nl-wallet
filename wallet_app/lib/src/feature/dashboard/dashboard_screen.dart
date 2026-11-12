@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+import 'package:rxdart/rxdart.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../data/service/announcement_service.dart';
 import '../../data/service/event/app_event_coordinator.dart';
 import '../../domain/model/card/wallet_card.dart';
+import '../../domain/usecase/wallet/observe_wallet_locked_usecase.dart';
 import '../../navigation/secured_page_route.dart';
 import '../../navigation/wallet_routes.dart';
 import '../../util/extension/build_context_extension.dart';
@@ -17,11 +20,12 @@ import '../../wallet_constants.dart';
 import '../banner/banner_list.dart';
 import '../card/detail/argument/card_detail_screen_argument.dart';
 import '../card/detail/card_detail_screen.dart';
+import '../common/sheet/qr_action_sheet.dart';
 import '../common/widget/activity_summary.dart';
 import '../common/widget/button/icon/help_icon_button.dart';
 import '../common/widget/button/icon/menu_icon_text_button.dart';
 import '../common/widget/button/icon/qr_icon_button.dart';
-import '../common/widget/button/scan_qr_button.dart';
+import '../common/widget/button/qr_action_button.dart';
 import '../common/widget/card/wallet_card_item.dart';
 import '../common/widget/centered_loading_indicator.dart';
 import '../common/widget/fade_in_at_offset.dart';
@@ -34,7 +38,7 @@ import 'bloc/dashboard_bloc.dart';
 
 const _kMaxCrossAxisCount = 2;
 
-class DashboardScreen extends StatelessWidget {
+class DashboardScreen extends StatefulWidget {
   static DashboardScreenArgument? getArgument(RouteSettings settings) {
     final args = settings.arguments;
     if (args == null) return null;
@@ -49,18 +53,67 @@ class DashboardScreen extends StatelessWidget {
   const DashboardScreen({super.key});
 
   @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+
+  /// Show the [DashboardScreen], placing it at the root of the navigation stack. When [cards] are provided
+  /// the [DashboardBloc] is initialized with these cards, so that they are instantly
+  /// available, e.g. useful when triggering Hero animations.
+  static void show(BuildContext context, {List<WalletCard>? cards}) {
+    if (cards != null) SecuredPageRoute.overridePendingAnimation(const Duration(milliseconds: 1200));
+    Navigator.restorablePushNamedAndRemoveUntil(
+      context,
+      WalletRoutes.dashboardRoute,
+      ModalRoute.withName(WalletRoutes.splashRoute),
+      arguments: cards == null ? null : DashboardScreenArgument(cards: cards).toJson(),
+    );
+  }
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  final PublishSubject<VisibilityInfo> _visibilitySubject = PublishSubject<VisibilityInfo>();
+  late final AppEventCoordinator _appEventCoordinator;
+  late StreamSubscription _visibilitySubscription;
+  bool _reportedVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _appEventCoordinator = context.read<AppEventCoordinator>();
+    _visibilitySubscription =
+        Rx.combineLatest2<bool, VisibilityInfo, bool>(
+          context.read<ObserveWalletLockedUseCase>().invoke(),
+          _visibilitySubject.stream,
+          (locked, visibilityInfo) => !locked && visibilityInfo.visibleFraction >= 1,
+        ).distinct().listen((visible) {
+          final context = this.context;
+          if (!context.mounted) return;
+          _reportedVisible = visible;
+          if (visible) {
+            _appEventCoordinator.onDashboardShown();
+            context.read<AnnouncementService>().announce(context.l10n.dashboardScreenOverviewAnnouncement);
+          } else {
+            _appEventCoordinator.onDashboardHidden();
+          }
+        });
+  }
+
+  @override
+  void dispose() {
+    _visibilitySubscription.cancel();
+    // The visibility stream is no longer observed, so it can't report the dashboard being removed. Only report
+    // it when this instance was the one that reported visible: a replacing dashboard can already be visible.
+    if (_reportedVisible) _appEventCoordinator.onDashboardHidden();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       key: const Key('dashboardScreen'),
       appBar: _buildAppBar(context),
       body: VisibilityDetector(
         key: const Key('dashboardVisibilityDetector'),
-        onVisibilityChanged: (visibilityInfo) {
-          if (visibilityInfo.visibleFraction >= 1) {
-            context.read<AppEventCoordinator>().onDashboardShown();
-            context.read<AnnouncementService>().announce(context.l10n.dashboardScreenOverviewAnnouncement);
-          }
-        },
+        onVisibilityChanged: _visibilitySubject.add,
         child: _buildBody(context),
       ),
     );
@@ -72,13 +125,15 @@ class DashboardScreen extends StatelessWidget {
       leading: _buildLeadingMenuButton(context),
       fadeInTitleOnScroll: false,
       leadingWidth: double.infinity,
-      actions: const [
-        FadeInAtOffset(
+      actions: [
+        const FadeInAtOffset(
           visibleOffset: 150,
           appearOffset: 100,
           child: QrIconButton(),
         ),
-        HelpIconButton(),
+        HelpIconButton(
+          onPressed: () => Navigator.restorablePushNamed(context, WalletRoutes.helpOverviewRoute),
+        ),
       ],
     );
   }
@@ -125,8 +180,8 @@ class DashboardScreen extends StatelessWidget {
           const BannerList(),
           const SizedBox(height: 16),
           Center(
-            child: ScanQrButton(
-              onPressed: () => Navigator.pushNamed(context, WalletRoutes.qrRoute),
+            child: QrActionButton(
+              onPressed: () => QrActionSheet.show(context),
             ),
           ),
           const SizedBox(height: 16),
@@ -195,11 +250,11 @@ class DashboardScreen extends StatelessWidget {
   }
 
   void _onCardPressed(BuildContext context, WalletCard walletCard) {
-    SecuredPageRoute.overrideDurationOfNextTransition(kPreferredCardDetailEntryTransitionDuration);
+    SecuredPageRoute.overridePendingAnimation(kPreferredCardDetailEntryTransitionDuration);
     Navigator.restorablePushNamed(
       context,
       WalletRoutes.cardDetailRoute,
-      arguments: CardDetailScreenArgument.forCard(walletCard).toJson(),
+      arguments: CardDetailScreenArgument.fromCard(walletCard).toJson(),
     );
   }
 
@@ -222,19 +277,6 @@ class DashboardScreen extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-
-  /// Show the [DashboardScreen], placing it at the root of the navigation stack. When [cards] are provided
-  /// the [DashboardBloc] is initialized with these cards, so that they are instantly
-  /// available, e.g. useful when triggering Hero animations.
-  static void show(BuildContext context, {List<WalletCard>? cards}) {
-    if (cards != null) SecuredPageRoute.overrideDurationOfNextTransition(const Duration(milliseconds: 1200));
-    Navigator.restorablePushNamedAndRemoveUntil(
-      context,
-      WalletRoutes.dashboardRoute,
-      ModalRoute.withName(WalletRoutes.splashRoute),
-      arguments: cards == null ? null : DashboardScreenArgument(cards: cards).toJson(),
     );
   }
 }

@@ -1,10 +1,11 @@
+import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
 
+import '../../domain/model/result/application_error.dart';
 import '../../util/extension/build_context_extension.dart';
-import '../../util/extension/string_extension.dart';
+import '../../util/extension/navigator_state_extension.dart';
 import '../../wallet_assets.dart';
 import '../../wallet_constants.dart';
-import '../common/sheet/error_details_sheet.dart';
 import '../common/widget/button/confirm/confirm_buttons.dart';
 import '../common/widget/button/tertiary_button.dart';
 import '../common/widget/page_illustration.dart';
@@ -16,14 +17,23 @@ import 'error_button_builder.dart';
 export 'error_cta_style.dart';
 
 class ErrorPage extends StatelessWidget {
-  final String? illustration;
-  final String headline;
+  /// The title shown at the top of the page.
+  final String title;
+
+  /// The description text providing more details about the error.
   final String description;
+
+  /// The main action button shown at the bottom of the page.
   final FitsWidthWidget primaryButton;
+
+  /// An optional secondary action button shown below the [primaryButton].
   final FitsWidthWidget? secondaryButton;
 
+  /// An optional SVG illustration asset path to display in the center of the page.
+  final String? illustration;
+
   const ErrorPage({
-    required this.headline,
+    required this.title,
     required this.description,
     required this.primaryButton,
     this.secondaryButton,
@@ -31,13 +41,89 @@ class ErrorPage extends StatelessWidget {
     super.key,
   });
 
-  factory ErrorPage.generic(
-    BuildContext context, {
+  /// Creates an [ErrorPage] mapped from a specific [ApplicationError].
+  ///
+  /// This factory acts as a central dispatcher that returns the most appropriate
+  /// [ErrorPage] variant for the given [error]. Note that not all errors are handled
+  /// uniquely.
+  ///
+  /// Use [onPrimaryActionPressed] to handle the primary button action.
+  /// Use [style] to determine the CTA button behavior (retry or close).
+  /// Use [organizationName] to provide an (optional) organization name, used
+  ///     in some UIs when it can't be resolved from the error type itself.
+  factory ErrorPage.fromError(
+    BuildContext context,
+    ApplicationError error, {
     required VoidCallback onPrimaryActionPressed,
     required ErrorCtaStyle style,
+    String? organizationName,
+  }) {
+    switch (error) {
+      case GenericError():
+        return ErrorPage.generic(context, onPrimaryActionPressed: onPrimaryActionPressed, style: style, error: error);
+      case NetworkError(hasInternet: true):
+        return ErrorPage.server(context, onPrimaryActionPressed: onPrimaryActionPressed, style: style, error: error);
+      case NetworkError(hasInternet: false):
+        return ErrorPage.noInternet(
+          context,
+          onPrimaryActionPressed: onPrimaryActionPressed,
+          style: style,
+          error: error,
+        );
+      case PreAuthorizedCodeExpiredError():
+        return ErrorPage.preAuthorizedCodeExpired(
+          context,
+          style: style,
+          onPrimaryActionPressed: onPrimaryActionPressed,
+        );
+      case SessionError(state: .expired):
+        return ErrorPage.sessionExpired(
+          context,
+          onPrimaryActionPressed: onPrimaryActionPressed,
+          style: style,
+          error: error,
+        );
+      case SessionError(state: .cancelled):
+        return ErrorPage.cancelledSession(
+          context,
+          onPrimaryActionPressed: onPrimaryActionPressed,
+          style: style,
+          organizationName: organizationName,
+          error: error,
+        );
+      case RelyingPartyError():
+        return ErrorPage.relyingParty(
+          context,
+          onPrimaryActionPressed: onPrimaryActionPressed,
+          style: style,
+          organizationName: error.organizationName,
+          error: error,
+        );
+      case HardwareUnsupportedError():
+        Fimber.i('Hardware unsupported, primary action always defaults to resetToSplash');
+        return ErrorPage.deviceIncompatible(context, error: error);
+      case AttestationFailedError():
+        return ErrorPage.attestationFailed(context);
+      default:
+        Fimber.i('No specific handling defined for $error, defaulting to generic error page.');
+        return ErrorPage.generic(context, onPrimaryActionPressed: onPrimaryActionPressed, style: style, error: error);
+    }
+  }
+
+  static String titleFromError(BuildContext context, ApplicationError error) =>
+      ErrorPage.fromError(context, error, onPrimaryActionPressed: () {}, style: .retry).title;
+
+  /// Creates an [ErrorPage] for generic, unspecified errors.
+  ///
+  /// Use [style] to determine the CTA button behavior (retry or close).
+  factory ErrorPage.generic(
+    BuildContext context, {
+    VoidCallback? onPrimaryActionPressed,
+    required ErrorCtaStyle style,
+    ApplicationError? error,
   }) {
     return ErrorPage(
-      headline: context.l10n.errorScreenGenericHeadline,
+      title: context.l10n.errorScreenGenericHeadline,
       description: style == ErrorCtaStyle.close
           ? context.l10n.errorScreenGenericDescriptionCloseVariant
           : context.l10n.errorScreenGenericDescription,
@@ -47,43 +133,45 @@ class ErrorPage extends StatelessWidget {
         style,
         onPressed: onPrimaryActionPressed,
       ),
-      secondaryButton: TertiaryButton(
-        text: Text.rich(context.l10n.generalShowDetailsCta.toTextSpan(context)),
-        icon: const Icon(Icons.help_outline_rounded),
-        onPressed: () => ErrorDetailsSheet.show(context),
-      ),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
     );
   }
 
-  factory ErrorPage.network(
+  /// Creates an [ErrorPage] for server-side errors or outages.
+  ///
+  /// Use [style] to determine the CTA button behavior (retry or close).
+  factory ErrorPage.server(
     BuildContext context, {
-    required VoidCallback onPrimaryActionPressed,
+    VoidCallback? onPrimaryActionPressed,
     required ErrorCtaStyle style,
+    ApplicationError? error,
   }) {
     return ErrorPage(
-      headline: context.l10n.errorScreenServerHeadline,
-      description: context.l10n.errorScreenServerDescription,
+      title: context.l10n.errorScreenServerHeadline,
+      description: style == ErrorCtaStyle.close
+          ? context.l10n.errorScreenServerDescriptionCloseVariant
+          : context.l10n.errorScreenServerDescription,
       illustration: WalletAssets.svg_error_server_outage,
       primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(
         context,
         style,
         onPressed: onPrimaryActionPressed,
       ),
-      secondaryButton: TertiaryButton(
-        text: Text.rich(context.l10n.generalShowDetailsCta.toTextSpan(context)),
-        icon: const Icon(Icons.help_outline_rounded),
-        onPressed: () => ErrorDetailsSheet.show(context),
-      ),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
     );
   }
 
+  /// Creates an [ErrorPage] for when the device has no internet connection.
+  ///
+  /// Use [style] to determine the CTA button behavior (retry or close).
   factory ErrorPage.noInternet(
     BuildContext context, {
-    required VoidCallback onPrimaryActionPressed,
+    VoidCallback? onPrimaryActionPressed,
     required ErrorCtaStyle style,
+    ApplicationError? error,
   }) {
     return ErrorPage(
-      headline: context.l10n.errorScreenNoInternetHeadline,
+      title: context.l10n.errorScreenNoInternetHeadline,
       description: style == ErrorCtaStyle.close
           ? context.l10n.errorScreenNoInternetDescriptionCloseVariant
           : context.l10n.errorScreenNoInternetDescription,
@@ -93,18 +181,48 @@ class ErrorPage extends StatelessWidget {
         style,
         onPressed: onPrimaryActionPressed,
       ),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
     );
   }
 
+  /// Creates an [ErrorPage] for when the device does not meet application requirements.
+  factory ErrorPage.deviceIncompatible(BuildContext context, {ApplicationError? error}) {
+    return ErrorPage(
+      title: context.l10n.errorScreenDeviceIncompatibleHeadline,
+      description: context.l10n.errorScreenDeviceIncompatibleDescription,
+      illustration: WalletAssets.svg_error_config_update,
+      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(
+        context,
+        ErrorCtaStyle.close,
+        onPressed: () => Navigator.of(context).resetToSplash(),
+      ),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
+    );
+  }
+
+  /// Creates an [ErrorPage] for when key and/or app attestation fails during registration.
+  factory ErrorPage.attestationFailed(BuildContext context) {
+    return ErrorPage(
+      title: context.l10n.errorScreenAttestationFailedHeadline,
+      description: context.l10n.errorScreenAttestationFailedDescription,
+      illustration: WalletAssets.svg_error_config_update,
+      primaryButton: ErrorButtonBuilder.buildHelpdeskButton(context),
+    );
+  }
+
+  /// Creates an [ErrorPage] for session expiration scenarios.
+  ///
+  /// Use [style] to determine the CTA button behavior (retry or close).
+  /// [cta] can be used to override the default button text.
   factory ErrorPage.sessionExpired(
     BuildContext context, {
     VoidCallback? onPrimaryActionPressed,
     required ErrorCtaStyle style,
     String? cta,
+    ApplicationError? error,
   }) {
     return ErrorPage(
-      headline: context.l10n.errorScreenSessionExpiredHeadline,
+      title: context.l10n.errorScreenSessionExpiredHeadline,
       description: style == ErrorCtaStyle.close
           ? context.l10n.errorScreenSessionExpiredDescriptionCloseVariant
           : context.l10n.errorScreenSessionExpiredDescription,
@@ -115,47 +233,109 @@ class ErrorPage extends StatelessWidget {
         onPressed: onPrimaryActionPressed,
         cta: cta,
       ),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
     );
   }
 
-  factory ErrorPage.cancelledSession(
+  /// Creates an [ErrorPage] for when a pre-authorized code has expired.
+  ///
+  /// Use [style] to determine the CTA button behavior (retry or close).
+  /// [cta] can be used to override the default button text.
+  factory ErrorPage.preAuthorizedCodeExpired(
     BuildContext context, {
-    required String organizationName,
     VoidCallback? onPrimaryActionPressed,
+    required ErrorCtaStyle style,
+    String? cta,
   }) {
     return ErrorPage(
-      headline: context.l10n.errorScreenCancelledSessionHeadline,
-      description: context.l10n.errorScreenCancelledSessionDescription(organizationName),
-      illustration: WalletAssets.svg_stopped,
+      title: context.l10n.errorScreenPreAuthorizedCodeExpiredTitle,
+      description: context.l10n.errorScreenPreAuthorizedCodeExpiredDescription,
+      illustration: WalletAssets.svg_error_qr_invalid,
       primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(
         context,
-        ErrorCtaStyle.close,
+        style,
         onPressed: onPrimaryActionPressed,
+        cta: cta,
       ),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
     );
   }
 
+  /// Creates an [ErrorPage] for when a session was cancelled externally.
+  ///
+  /// [organizationName] is the name of the organization with whom the session was cancelled.
+  factory ErrorPage.cancelledSession(
+    BuildContext context, {
+    String? organizationName,
+    VoidCallback? onPrimaryActionPressed,
+    ErrorCtaStyle style = ErrorCtaStyle.close,
+    ApplicationError? error,
+  }) {
+    final description = organizationName == null
+        ? context.l10n.errorScreenCancelledSessionDescriptionUnknownOrganization
+        : context.l10n.errorScreenCancelledSessionDescription(organizationName);
+    return ErrorPage(
+      title: context.l10n.errorScreenCancelledSessionHeadline,
+      description: description,
+      illustration: WalletAssets.svg_stopped,
+      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style, onPressed: onPrimaryActionPressed),
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
+    );
+  }
+
+  /// Creates an [ErrorPage] for errors related to a relying party (service provider).
+  ///
+  /// [organizationName] is the optional name of the organization where the error occurred.
+  /// [useIssuanceStyle] can be set to true to use issuance related copy/illustration.
   factory ErrorPage.relyingParty(
     BuildContext context, {
     String? organizationName,
     VoidCallback? onPrimaryActionPressed,
     ErrorCtaStyle style = ErrorCtaStyle.retry,
+    bool useIssuanceStyle = false,
+    ApplicationError? error,
   }) {
-    final description = organizationName == null
-        ? context.l10n.genericRelyingPartyErrorDescription
-        : context.l10n.genericRelyingPartyErrorDescriptionWithOrganizationName(organizationName);
+    if (useIssuanceStyle) {
+      final description = organizationName == null
+          ? context.l10n.issuanceRelyingPartyErrorDescription
+          : context.l10n.issuanceRelyingPartyErrorDescriptionWithOrganizationName(organizationName);
+      return ErrorPage(
+        title: context.l10n.issuanceRelyingPartyErrorTitle,
+        description: description,
+        illustration: WalletAssets.svg_error_card_blocked,
+        primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style, onPressed: onPrimaryActionPressed),
+        secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
+      );
+    } else {
+      final description = organizationName == null
+          ? context.l10n.genericRelyingPartyErrorDescription
+          : context.l10n.genericRelyingPartyErrorDescriptionWithOrganizationName(organizationName);
+      return ErrorPage(
+        title: context.l10n.genericRelyingPartyErrorTitle,
+        description: description,
+        illustration: WalletAssets.svg_error_general,
+        primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style, onPressed: onPrimaryActionPressed),
+        secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
+      );
+    }
+  }
+
+  /// Creates an [ErrorPage] for when a close proximity connection (e.g. Bluetooth) is lost.
+  ///
+  /// [actionText] is a description of the action that was interrupted (e.g. login or sharing).
+  /// Use [style] to determine the CTA button behavior (defaults to [ErrorCtaStyle.close]).
+  factory ErrorPage.closeProximityDisconnected(
+    BuildContext context, {
+    required String actionText,
+    VoidCallback? onPrimaryActionPressed,
+    ErrorCtaStyle style = ErrorCtaStyle.close,
+    ApplicationError? error,
+  }) {
     return ErrorPage(
-      headline: context.l10n.genericRelyingPartyErrorTitle,
-      description: description,
-      illustration: WalletAssets.svg_error_card_blocked,
-      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(
-        context,
-        style,
-        onPressed: onPrimaryActionPressed,
-      ),
-      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context),
+      title: context.l10n.disclosureDisconnectedPageTitle,
+      description: context.l10n.disclosureDisconnectedPageDescription(actionText),
+      primaryButton: ErrorButtonBuilder.buildPrimaryButtonFor(context, style, onPressed: onPrimaryActionPressed),
+      illustration: WalletAssets.svg_error_bluetooth,
+      secondaryButton: ErrorButtonBuilder.buildShowDetailsButton(context, error: error),
     );
   }
 
@@ -171,7 +351,7 @@ class ErrorPage extends StatelessWidget {
                   SliverToBoxAdapter(
                     child: Padding(
                       padding: kDefaultTitlePadding,
-                      child: TitleText(headline),
+                      child: TitleText(title),
                     ),
                   ),
                   SliverToBoxAdapter(

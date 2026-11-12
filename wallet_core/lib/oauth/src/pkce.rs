@@ -1,0 +1,87 @@
+use base64::prelude::*;
+use crypto::utils::random_string;
+use crypto::utils::sha256;
+use serde::Deserialize;
+use serde::Serialize;
+
+/// The maximum length for a PKCE verifier is 128 characters.
+const CODE_VERIFIER_LENGTH: usize = 128;
+
+/// This represents a code verifier and code challenge pair for
+/// a PKCE exchange.
+#[cfg_attr(any(test, feature = "mock"), mockall::automock)]
+pub trait PkcePair {
+    /// The code challenge method implemented by this pair.
+    const CODE_CHALLENGE_METHOD: &'static str = "INVALID";
+
+    /// Randomly generate a PKCE code verifier and its accompanying challenge.
+    fn generate() -> Self
+    where
+        Self: Sized;
+
+    /// The code verifier of this pair, which is a random string of characters.
+    fn into_code_verifier(self) -> String;
+
+    /// The code challenge of this pair, which is base64 encoded.
+    fn code_challenge(&self) -> &str;
+}
+
+// The tuple contains the code verifier and code challenge, in order.
+#[derive(Debug)]
+pub struct S256PkcePair(String, String);
+
+impl PkcePair for S256PkcePair {
+    const CODE_CHALLENGE_METHOD: &'static str = "S256";
+
+    fn generate() -> Self
+    where
+        Self: Sized,
+    {
+        // This randomly generated string only uses alphanumeric
+        // characters and does not use 4 of the characters allowed
+        // by the standard.
+        let code_verifier = random_string(CODE_VERIFIER_LENGTH);
+
+        let code_challenge = Self::challenge_for(&code_verifier);
+
+        Self(code_verifier, code_challenge)
+    }
+
+    fn into_code_verifier(self) -> String {
+        self.0
+    }
+
+    fn code_challenge(&self) -> &str {
+        &self.1
+    }
+}
+
+impl S256PkcePair {
+    pub fn from_code_verifier(code_verifier: String) -> Self {
+        let code_challenge = Self::challenge_for(&code_verifier);
+
+        Self(code_verifier, code_challenge)
+    }
+
+    pub fn code_verifier(&self) -> &str {
+        &self.0
+    }
+
+    pub fn challenge_for(verifier: &str) -> String {
+        BASE64_URL_SAFE_NO_PAD.encode(sha256(verifier.as_bytes()))
+    }
+}
+
+/// The PKCE code challenge as defined by [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636.html), sent by the client
+/// in the Authorization Request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "code_challenge_method")]
+pub enum PkceCodeChallenge {
+    S256 {
+        code_challenge: String,
+    },
+    #[serde(rename = "plain")]
+    Plain {
+        code_challenge: String,
+    },
+}

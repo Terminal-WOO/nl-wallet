@@ -1,16 +1,10 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wallet/src/domain/model/policy/organization_policy.dart';
 import 'package:wallet/src/feature/common/builder/request_detail_common_builders.dart';
-import 'package:wallet/src/feature/common/widget/app_image.dart';
 import 'package:wallet/src/feature/common/widget/card/shared_attributes_card.dart';
 import 'package:wallet/src/feature/common/widget/divider_side.dart';
 import 'package:wallet/src/feature/history/detail/widget/wallet_event_status_header.dart';
 import 'package:wallet/src/util/extension/localized_text_extension.dart';
-import 'package:wallet/src/util/extension/wallet_event_extension.dart';
-import 'package:wallet/src/util/mapper/context_mapper.dart';
-import 'package:wallet/src/util/mapper/policy/policy_body_text_mapper.dart';
 
 import '../../../../../wallet_app_test_widget.dart';
 import '../../../../mocks/wallet_mock_data.dart';
@@ -91,15 +85,30 @@ void main() {
         widgetBuilder: (context) => RequestDetailCommonBuilders.buildPolicy(
           context,
           organization: WalletMockData.disclosureEvent.relyingParty,
-          policy: WalletMockData.disclosureEvent.policy,
           side: DividerSide.bottom,
         ),
-      ).withDependency<ContextMapper<OrganizationPolicy, String>>((context) => PolicyBodyTextMapper()),
+      ),
     );
 
     final l10n = await TestUtils.englishLocalizations;
-    expect(find.text(l10n.historyDetailScreenTermsTitle), findsOneWidget);
-    expect(find.text(l10n.historyDetailScreenTermsCta), findsOneWidget);
+    expect(find.text(l10n.privacySectionTitle), findsOneWidget);
+    expect(find.text(l10n.privacySectionCta), findsOneWidget);
+  });
+
+  testWidgets('buildPolicy hides the section without a privacy policy url', (WidgetTester tester) async {
+    await tester.pumpWidgetWithAppWrapper(
+      _WidgetTestWrapper(
+        widgetBuilder: (context) => RequestDetailCommonBuilders.buildPolicy(
+          context,
+          organization: WalletMockData.disclosureEvent.relyingParty.copyWith(privacyPolicyUri: null),
+          side: DividerSide.bottom,
+        ),
+      ),
+    );
+
+    final l10n = await TestUtils.englishLocalizations;
+    expect(find.text(l10n.privacySectionTitle), findsNothing);
+    expect(find.byType(Divider), findsNothing);
   });
 
   testWidgets('buildAboutOrganization', (WidgetTester tester) async {
@@ -107,15 +116,13 @@ void main() {
       _WidgetTestWrapper(
         widgetBuilder: (context) => RequestDetailCommonBuilders.buildAboutOrganization(
           context,
-          organization: WalletMockData.disclosureEvent.relyingPartyOrIssuer,
+          organization: WalletMockData.disclosureEvent.relyingParty,
           side: DividerSide.bottom,
         ),
       ),
     );
 
-    // Make sure this CTA also renders an image (i.e. the organization logo)
-    expect(find.byType(AppImage), findsOneWidget);
-    final orgDisplayName = WalletMockData.disclosureEvent.relyingPartyOrIssuer.displayName.testValue;
+    final orgDisplayName = WalletMockData.disclosureEvent.relyingParty.displayName;
     expect(find.textContaining(orgDisplayName), findsOneWidget);
   });
 

@@ -1,10 +1,3 @@
-use futures::FutureExt;
-use p256::ecdsa::SigningKey;
-use p256::ecdsa::VerifyingKey;
-use p256::pkcs8::DecodePublicKey;
-use rand_core::OsRng;
-use rustls_pki_types::CertificateDer;
-
 use android_attest::android_crl::RevocationStatusList;
 use android_attest::attestation_extension::key_description::KeyDescription;
 use android_attest::certificate_chain::verify_google_key_attestation;
@@ -15,8 +8,13 @@ use apple_app_attest::AssertionCounter;
 use apple_app_attest::AttestationEnvironment;
 use apple_app_attest::MockAttestationCa;
 use apple_app_attest::VerifiedAttestation;
+use futures::FutureExt;
+use p256::ecdsa::SigningKey;
+use p256::ecdsa::VerifyingKey;
+use p256::elliptic_curve::Generate;
+use p256::pkcs8::DecodePublicKey;
 use platform_support::attested_key::mock::MockAppleAttestedKey;
-
+use rustls_pki_types::CertificateDer;
 use wallet_account::messages::registration::Registration;
 use wallet_account::messages::registration::RegistrationAttestation;
 use wallet_account::signed::ChallengeResponse;
@@ -33,7 +31,7 @@ fn test_apple_registration() {
     let mock_ca = MockAttestationCa::generate();
     let (attested_key, attestation) =
         MockAppleAttestedKey::new_with_attestation(&mock_ca, challenge, environment, app_identifier.clone());
-    let pin_signing_key = SigningKey::random(&mut OsRng);
+    let pin_signing_key = SigningKey::generate();
 
     // The Wallet generates a registration message.
     let msg =
@@ -80,7 +78,7 @@ fn test_google_registration() {
     let (attested_certificate_chain, attested_private_key) =
         attested_ca_chain.generate_attested_leaf_certificate(&KeyDescription::new_valid_mock(challenge.to_vec()));
     let integrity_token = crypto::utils::random_string(32);
-    let pin_signing_key = SigningKey::random(&mut OsRng);
+    let pin_signing_key = SigningKey::generate();
 
     // The Wallet generates a registration message.
     let msg = ChallengeResponse::<Registration>::new_google(
@@ -109,7 +107,7 @@ fn test_google_registration() {
         .collect::<Vec<_>>();
     let root_public_keys = vec![RootPublicKey::Rsa(attested_ca_chain.root_public_key.clone())];
 
-    let certificate = verify_google_key_attestation(
+    let (leaf_certificate, _key_attestation) = verify_google_key_attestation(
         &der_certificate_chain,
         &root_public_keys,
         &RevocationStatusList::default(),
@@ -117,7 +115,7 @@ fn test_google_registration() {
     )
     .unwrap();
 
-    let attested_public_key = VerifyingKey::from_public_key_der(certificate.public_key().raw).unwrap();
+    let attested_public_key = VerifyingKey::from_public_key_der(leaf_certificate.public_key().raw).unwrap();
 
     // The Wallet Provider takes the public keys from the message and verifies the signatures.
     msg.parse_and_verify_google(

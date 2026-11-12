@@ -1,0 +1,47 @@
+use std::net::IpAddr;
+use std::path::Path;
+use std::path::PathBuf;
+
+use config::Config;
+use config::ConfigError;
+use config::Environment;
+use config::File;
+use http_utils::server::TlsServerConfig;
+use jwt::VerifiedJwt;
+use jwt::headers::HeaderWithKid;
+use serde::Deserialize;
+use status_lists::publish::PublishDir;
+use utils::path::prefix_local_path;
+use wallet_configuration::wallet_config::WalletConfiguration;
+
+#[derive(Clone, Deserialize)]
+pub struct Settings {
+    pub ip: IpAddr,
+    pub port: u16,
+    pub crl_port: u16,
+    pub crl_file: PathBuf,
+    pub tls_config: TlsServerConfig,
+
+    #[serde(deserialize_with = "VerifiedJwt::dangerous_deserialize")] // we trust our own config file
+    pub wallet_config_jwt: VerifiedJwt<WalletConfiguration, HeaderWithKid>,
+    pub wua_publish_dir: PublishDir,
+    pub wrprc_publish_dir: PublishDir,
+    pub videos_dir: Option<PathBuf>,
+}
+
+impl Settings {
+    pub fn new() -> Result<Self, ConfigError> {
+        Config::builder()
+            .set_default("ip", "0.0.0.0")?
+            .set_default("port", 8001)?
+            .add_source(File::from(prefix_local_path(Path::new("static_server.toml")).as_ref()).required(false))
+            .add_source(
+                Environment::with_prefix("static_server")
+                    .separator("__")
+                    .prefix_separator("__")
+                    .list_separator(","),
+            )
+            .build()?
+            .try_deserialize()
+    }
+}

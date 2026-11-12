@@ -1,49 +1,82 @@
+use std::collections::HashMap;
+use std::path::Path;
+
 use config::Config;
 use config::ConfigError;
 use config::Environment;
 use config::File;
+use derive_more::Debug;
+use http_utils::reqwest::ReqwestTrustAnchor;
+use http_utils::urls::BaseUrl;
+use issuer_common::settings::AuthorizingIssuerSettings;
+use issuer_common::settings::IssuerSettingsValidationError;
+use jwk_simple::Key;
+use oauth::issuer_identifier::IssuerIdentifier;
+use openid4vc::server_state::SessionStoreTimeouts;
 use serde::Deserialize;
 use serde_with::base64::Base64;
+use serde_with::json::JsonString;
 use serde_with::serde_as;
-
-use crypto::p256_der::DerVerifyingKey;
-use http_utils::tls::pinning::TlsPinningConfig;
-use http_utils::urls::BaseUrl;
-use issuer_settings::settings::IssuerSettings;
-use issuer_settings::settings::IssuerSettingsError;
-use openid4vc::server_state::SessionStoreTimeouts;
 use server_utils::settings::NL_WALLET_CLIENT_ID;
 use server_utils::settings::SecretKey;
 use server_utils::settings::ServerSettings;
 use server_utils::settings::Settings;
-use status_lists::settings::StatusListsSettings;
 use utils::path::prefix_local_path;
+use utils::vec_at_least::VecNonEmpty;
+
+use crate::pid::rulebook::country_code::IsoCountryCode;
 
 #[serde_as]
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PidIssuerSettings {
+    #[debug(skip)]
     pub digid: Digid,
     pub brp_server: BaseUrl,
 
-    #[serde_as(as = "Base64")]
-    pub wua_issuer_pubkey: DerVerifyingKey,
-
+    #[debug(skip)]
     pub recovery_code: SecretKey,
 
-    #[serde(flatten)]
-    pub issuer_settings: IssuerSettings,
+    /// PID rulebook mandatory issuer metadata
+    pub issuing_country: IsoCountryCode,
+    pub issuing_authority: String,
 
-    pub status_lists: StatusListsSettings,
+    #[serde(flatten)]
+    pub authorizing_issuer_settings: AuthorizingIssuerSettings,
 }
 
+#[serde_as]
 #[derive(Clone, Deserialize)]
 pub struct Digid {
-    pub bsn_privkey: String,
-    pub http_config: TlsPinningConfig,
+    #[serde_as(as = "JsonString")]
+    pub bsn_privkey: Key,
+    pub client_id: String,
+    pub client_settings: DigidClientSettings,
+
+    /// When non-empty, the pid_issuer serves its own mock DigiD login page (a grid of these identities) instead of
+    /// redirecting to nl-rdo-max's. Maps each BSN to a display name; each BSN must resolve in the BRP proxy's dataset.
+    /// Leave empty for the real DigiD flow.
+    ///
+    /// This is a HashMap because it is configured via environment variables which do not have a fixed order.
+    #[serde(default)]
+    pub mock_subjects: HashMap<String, String>,
+
+    /// Whether a custom BSN input field is shown for the mock DigiD login page.
+    #[serde(default)]
+    pub mock_custom_bsn: bool,
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Deserialize)]
+pub struct DigidClientSettings {
+    pub oidc_identifier: IssuerIdentifier,
+
+    #[debug(skip)]
+    #[serde_as(as = "Vec<Base64>")]
+    pub trust_anchors: VecNonEmpty<ReqwestTrustAnchor>,
 }
 
 impl ServerSettings for PidIssuerSettings {
-    type ValidationError = IssuerSettingsError;
+    type ValidationError = IssuerSettingsValidationError;
 
     fn new(config_file: &str, env_prefix: &str) -> Result<Self, ConfigError> {
         let default_store_timeouts = SessionStoreTimeouts::default();
@@ -51,11 +84,15 @@ impl ServerSettings for PidIssuerSettings {
         let config_builder = Config::builder()
             .set_default("wallet_server.ip", "0.0.0.0")?
             .set_default("wallet_server.port", 8001)?
+            .set_default("internal_server.ip", "0.0.0.0")?
+            .set_default("internal_server.port", 8002)?
             .set_default("public_url", "http://localhost:8001/")?
             .set_default("log_requests", false)?
             .set_default("structured_logging", false)?
             .set_default("status_lists.list_size", 100_000)?
-            .set_default("status_lists.create_threshold", 0.1)?
+            .set_default("status_lists.create_threshold_ratio", 0.1)?
+            .set_default("status_lists.expiry_in_hours", 24)?
+            .set_default("status_lists.refresh_threshold_ratio", 0.25)?
             .set_default("storage.url", "memory://")?
             .set_default(
                 "storage.expiration_minutes",
@@ -70,19 +107,23 @@ impl ServerSettings for PidIssuerSettings {
                 default_store_timeouts.failed_deletion.as_secs() / 60,
             )?
             .set_default("wallet_client_ids", vec![NL_WALLET_CLIENT_ID.to_string()])?
-            .set_default("brp_server", "http://localhost:3011/")?;
+            .set_default("issuing_country", "NL")?;
 
         // Look for a config file that is in the same directory as Cargo.toml if run through cargo,
         // otherwise look in the current working directory.
-        let config_source = prefix_local_path(config_file.as_ref());
+        let config_source = prefix_local_path(Path::new(config_file));
 
         let environment_parser = Environment::with_prefix(env_prefix)
             .separator("__")
             .prefix_separator("__")
             .list_separator(",")
             .with_list_parse_key("issuer_trust_anchors")
-            .with_list_parse_key("digid.http_config.trust_anchors")
-            .with_list_parse_key("metadata")
+            .with_list_parse_key("wptl_trust_anchors")
+            .with_list_parse_key("wrpac_trust_anchors")
+            .with_list_parse_key("wrprc_trust_anchors")
+            .with_list_parse_key("digid.client_settings.trust_anchors")
+            .with_list_parse_key("type_metadata")
+            .with_list_parse_key("wallet_redirect_uris")
             .try_parsing(true);
 
         let config = config_builder
@@ -95,11 +136,64 @@ impl ServerSettings for PidIssuerSettings {
         Ok(config)
     }
 
-    fn validate(&self) -> Result<(), IssuerSettingsError> {
-        self.issuer_settings.validate()
+    fn validate(&self) -> Result<(), IssuerSettingsValidationError> {
+        self.authorizing_issuer_settings.issuer_settings.validate()
     }
 
     fn server_settings(&self) -> &Settings {
-        &self.issuer_settings.server_settings
+        &self.authorizing_issuer_settings.issuer_settings.server_settings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use config::Config;
+    use config::Environment;
+    use indexmap::IndexMap;
+
+    use crate::pid::digid_mock::MockSubjects;
+
+    /// Guards the reason `mock_subjects` is a map: the `config` crate builds the nested map from
+    /// `__`-separated environment keys (`PID_ISSUER__DIGID__MOCK_SUBJECTS__<bsn>=<name>`) natively, so
+    /// the identities can be configured without a config file.
+    #[test]
+    fn mock_subjects_deserialize_from_environment() {
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            mock_subjects: MockSubjects,
+        }
+
+        let source = IndexMap::from([
+            (
+                "PID_ISSUER__MOCK_SUBJECTS__999991772".to_string(),
+                "Frouke Jansen".to_string(),
+            ),
+            (
+                "PID_ISSUER__MOCK_SUBJECTS__999991905".to_string(),
+                "Linda Strijps".to_string(),
+            ),
+        ]);
+
+        let environment = Environment::with_prefix("pid_issuer")
+            .separator("__")
+            .prefix_separator("__")
+            .source(Some(source));
+
+        let wrapper: Wrapper = Config::builder()
+            .add_source(environment)
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap();
+
+        assert_eq!(wrapper.mock_subjects.len(), 2);
+        assert_eq!(
+            wrapper.mock_subjects.get("999991772").map(String::as_str),
+            Some("Frouke Jansen")
+        );
+        assert_eq!(
+            wrapper.mock_subjects.get("999991905").map(String::as_str),
+            Some("Linda Strijps")
+        );
     }
 }

@@ -1,22 +1,40 @@
 use std::sync::Arc;
 
-use tracing::instrument;
-
 use error_category::ErrorCategory;
+use error_category::sentry_capture_error;
+use http_utils::client::TlsPinningConfig;
 use openid4vc::disclosure_session::DisclosureClient;
-use openid4vc::issuance_session::IssuanceSession;
+use openid4vc::wallet_issuance::IssuanceDiscovery;
+use platform_support::attested_key::AttestedKey;
 use platform_support::attested_key::AttestedKeyHolder;
+use platform_support::close_proximity_disclosure::CloseProximityDisclosureClient;
+use tracing::info;
+use tracing::instrument;
 use update_policy_model::update_policy::VersionState;
+use url::Url;
+use wallet_account::messages::errors::AccountRevokedData;
+use wallet_account::messages::errors::RevocationReason;
 use wallet_configuration::wallet_config::WalletConfiguration;
 
 use crate::Wallet;
 use crate::account_provider::AccountProviderClient;
-use crate::digid::DigidClient;
+use crate::errors::ChangePinError;
 use crate::errors::StorageError;
+use crate::errors::UpdatePolicyError;
+use crate::instruction::InstructionClient;
+use crate::instruction::InstructionClientParameters;
+use crate::pin::change::ChangePinStorage;
+use crate::pin::key::Pin;
 use crate::repository::Repository;
+use crate::repository::UpdateableRepository;
+use crate::storage::PinRecoveryData;
+use crate::storage::RegistrationData;
 use crate::storage::Storage;
 use crate::storage::TransferData;
 use crate::storage::TransferKeyData;
+use crate::wallet::DisclosureError;
+use crate::wallet::IssuanceError;
+use crate::wallet::Session;
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]
@@ -25,43 +43,824 @@ pub enum WalletStateError {
     Storage(#[from] StorageError),
 }
 
-pub enum WalletState {
-    Ready,
-    TransferPossible,
-    Transferring { role: WalletTransferRole },
+#[derive(Debug, thiserror::Error, ErrorCategory)]
+#[category(defer)]
+pub enum CheckPreconditionsError {
+    #[category(expected)]
+    #[error("app version is blocked")]
+    VersionBlocked,
+
+    #[error("wallet configuration is expired")]
+    #[category(expected)]
+    ConfigExpired,
+
+    #[error("wallet is not registered")]
+    #[category(expected)]
+    NotRegistered,
+
+    #[error("wallet is locked")]
+    #[category(expected)]
+    Locked,
+
+    #[error("error fetching update policy: {0}")]
+    UpdatePolicy(#[from] UpdatePolicyError),
 }
 
-pub enum WalletTransferRole {
+#[derive(Debug, thiserror::Error, ErrorCategory)]
+#[category(defer)]
+pub enum CancelSessionError {
+    #[error("preconditions error: {0}")]
+    Preconditions(#[from] CheckPreconditionsError),
+
+    #[error("issuance error: {0}")]
+    Issuance(#[from] IssuanceError),
+
+    #[error("disclosure error: {0}")]
+    #[category(defer)]
+    Disclosure(#[from] DisclosureError),
+
+    #[error("session is not in the correct state")]
+    #[category(expected)]
+    SessionState,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum WalletState {
+    Blocked {
+        reason: BlockedReason,
+        can_register_new_account: bool,
+    },
+    Unregistered,
+    Locked {
+        sub_state: Box<WalletState>,
+    },
+    // The following variants may appear in `Locked { sub_state }`
+    Empty,
+    TransferPossible,
+    Transferring {
+        role: TransferRole,
+    },
+    InDisclosureFlow,
+    InIssuanceFlow,
+    InPinChangeFlow,
+    InPinRecoveryFlow,
+    Ready,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum BlockedReason {
+    RequiresAppUpdate,
+    BlockedByWalletProvider,
+    WalletSolutionRevoked,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransferRole {
     Source,
     Destination,
 }
 
-impl<CR, UR, S, AKH, APC, DC, IS, DCC> Wallet<CR, UR, S, AKH, APC, DC, IS, DCC>
+#[expect(type_alias_bounds, reason = "without this bound it doesn't compile")]
+pub(crate) type AttestedKeyRegistrationDataAndConfig<AKH: AttestedKeyHolder> = (
+    Arc<AttestedKey<AKH::AppleKey, AKH::GoogleKey>>,
+    RegistrationData,
+    Arc<WalletConfiguration>,
+);
+
+impl<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC> Wallet<CR, UR, S, AKH, APC, CID, DCC, CPC, SLC>
 where
-    CR: Repository<Arc<WalletConfiguration>>,
     UR: Repository<VersionState>,
     S: Storage,
     AKH: AttestedKeyHolder,
-    DC: DigidClient,
-    IS: IssuanceSession,
+    CID: IssuanceDiscovery,
     DCC: DisclosureClient,
-    APC: AccountProviderClient,
 {
     #[instrument(skip_all)]
     pub async fn get_state(&self) -> Result<WalletState, WalletStateError> {
-        if let Some(transfer_data) = self.storage.read().await.fetch_data::<TransferData>().await? {
+        if self.is_blocked() {
+            return Ok(WalletState::Blocked {
+                reason: BlockedReason::RequiresAppUpdate,
+                can_register_new_account: true,
+            });
+        }
+
+        if !self.has_registration() {
+            return Ok(WalletState::Unregistered);
+        }
+
+        if let Some(revocation_data) = self.storage.read().await.fetch_data::<AccountRevokedData>().await? {
+            let reason = match revocation_data.revocation_reason {
+                RevocationReason::AdminRequest => BlockedReason::BlockedByWalletProvider,
+                RevocationReason::WalletSolutionCompromised => BlockedReason::WalletSolutionRevoked,
+                RevocationReason::UserRequest => unreachable!(), // in this case the wallet would have wiped itself
+            };
+            return Ok(WalletState::Blocked {
+                reason,
+                // In case of `AdminRequest`, the `can_register_new_account` flag whether or not the user
+                // can register a new account. For the other two variants of `RevocationReason`,
+                // reregistering would not make sense so we return false in those cases.
+                can_register_new_account: revocation_data.can_register_new_account
+                    && revocation_data.revocation_reason == RevocationReason::AdminRequest,
+            });
+        }
+
+        let flow_state = self.get_flow_state().await?;
+
+        if self.is_locked() {
+            Ok(WalletState::Locked {
+                sub_state: Box::new(flow_state),
+            })
+        } else {
+            Ok(flow_state)
+        }
+    }
+
+    async fn get_flow_state(&self) -> Result<WalletState, WalletStateError> {
+        let read_storage = self.storage.read().await;
+
+        if let Some(transfer_data) = read_storage.fetch_data::<TransferData>().await? {
             return Ok(transfer_data
                 .key_data
                 .map(|key_data| {
                     let role = match key_data {
-                        TransferKeyData::Source { .. } => WalletTransferRole::Source,
-                        TransferKeyData::Destination { .. } => WalletTransferRole::Destination,
+                        TransferKeyData::Source { .. } => TransferRole::Source,
+                        TransferKeyData::Destination { .. } => TransferRole::Destination,
                     };
                     WalletState::Transferring { role }
                 })
                 .unwrap_or(WalletState::TransferPossible));
         }
 
+        if let Some(session) = &self.session {
+            return match session {
+                Session::Issuance(_) => Ok(WalletState::InIssuanceFlow),
+                Session::Disclosure(_) | Session::CloseProximityDisclosure(_) => Ok(WalletState::InDisclosureFlow),
+                Session::PinRecovery { .. } => Ok(WalletState::InPinRecoveryFlow),
+            };
+        }
+
+        if read_storage.fetch_data::<PinRecoveryData>().await?.is_some() {
+            return Ok(WalletState::InPinRecoveryFlow);
+        }
+
+        if self.storage.get_change_pin_state().await?.is_some() {
+            return Ok(WalletState::InPinChangeFlow);
+        }
+
+        if !read_storage.has_any_attestations().await? {
+            return Ok(WalletState::Empty);
+        }
+
         Ok(WalletState::Ready)
+    }
+
+    /// Checks the preconditions that apply to every operation relying on the wallet configuration: the app version
+    /// is not blocked and the configuration has not expired.
+    pub(super) fn check_config_preconditions(&self) -> Result<(), CheckPreconditionsError>
+    where
+        CR: Repository<Arc<WalletConfiguration>>,
+    {
+        info!("Checking if blocked");
+        if self.is_blocked() {
+            return Err(CheckPreconditionsError::VersionBlocked);
+        }
+
+        info!("Checking if the configuration is expired");
+        if self.is_config_expired() {
+            return Err(CheckPreconditionsError::ConfigExpired);
+        }
+
+        Ok(())
+    }
+
+    /// Checks the common preconditions for session (issuance/disclosure)-related operations: version not blocked,
+    /// configuration not expired, wallet registered, and wallet not locked.
+    pub(super) fn check_session_preconditions(&self) -> Result<(), CheckPreconditionsError>
+    where
+        CR: Repository<Arc<WalletConfiguration>>,
+    {
+        self.check_config_preconditions()?;
+
+        info!("Checking if registered");
+        if !self.registration.is_registered() {
+            return Err(CheckPreconditionsError::NotRegistered);
+        }
+
+        info!("Checking if locked");
+        if self.lock.is_locked() {
+            return Err(CheckPreconditionsError::Locked);
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn check_accept_session_preconditions(
+        &mut self,
+    ) -> Result<AttestedKeyRegistrationDataAndConfig<AKH>, CheckPreconditionsError>
+    where
+        CR: Repository<Arc<WalletConfiguration>>,
+        UR: UpdateableRepository<VersionState, TlsPinningConfig, Error = UpdatePolicyError>,
+    {
+        let config = self.config_repository.get();
+
+        info!("Fetching update policy");
+        self.update_policy_repository
+            .fetch(&config.update_policy_server.http_config)
+            .await?;
+
+        self.check_config_preconditions()?;
+
+        info!("Checking if registered");
+        let (attested_key, registration_data) = self
+            .registration
+            .as_key_and_registration_data()
+            .ok_or_else(|| CheckPreconditionsError::NotRegistered)?;
+
+        info!("Checking if locked");
+        if self.lock.is_locked() {
+            return Err(CheckPreconditionsError::Locked);
+        }
+
+        Ok((Arc::clone(attested_key), registration_data.to_owned(), config))
+    }
+
+    pub(super) async fn prepare_remote_instruction_client(
+        &mut self,
+        pin: Pin,
+        (attested_key, registration_data, config): AttestedKeyRegistrationDataAndConfig<AKH>,
+    ) -> Result<InstructionClient<S, AKH::AppleKey, AKH::GoogleKey, APC>, ChangePinError>
+    where
+        CR: Repository<Arc<WalletConfiguration>>,
+        APC: AccountProviderClient,
+    {
+        self.new_instruction_client(
+            pin,
+            attested_key,
+            InstructionClientParameters::new(
+                registration_data.wallet_id,
+                registration_data.pin_salt,
+                registration_data.wallet_certificate,
+                config.account_server.http_config.clone(),
+                config.account_server.instruction_result_public_keys.clone(),
+            ),
+        )
+        .await
+    }
+
+    #[instrument(skip_all)]
+    #[sentry_capture_error]
+    pub async fn cancel_session(&mut self) -> Result<Option<Url>, CancelSessionError>
+    where
+        CR: Repository<Arc<WalletConfiguration>>,
+        APC: AccountProviderClient,
+        CPC: CloseProximityDisclosureClient,
+    {
+        info!("Cancelling session");
+
+        self.check_session_preconditions()?;
+
+        info!("Checking if a session is present");
+
+        if matches!(self.session, Some(Session::Issuance(..))) {
+            self.cancel_issuance().await?;
+            return Ok(None);
+        }
+
+        match self.session.take() {
+            Some(Session::Disclosure(session)) => Ok(self.terminate_disclosure_session(session).await?),
+            Some(Session::CloseProximityDisclosure(session)) => {
+                self.terminate_close_proximity_disclosure_session(session).await?;
+                Ok(None)
+            }
+            other => {
+                self.session = other;
+                Err(CancelSessionError::SessionState)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::too_many_arguments)] // Doesn't work at `fn` level in combination with `rstest`
+mod tests {
+
+    use std::assert_matches;
+
+    use attestation_data::disclosure_type::DisclosureType;
+    use chrono::TimeDelta;
+    use chrono::Utc;
+    use jwe::algorithm::EcdhAlgorithm;
+    use jwe::decryption::JweEcdhSecretKey;
+    use openid4vc::disclosure_session::mock::MockDisclosureSession;
+    use openid4vc::wallet_issuance::credential::IssuedCredentialMetadata;
+    use openid4vc::wallet_issuance::mock::MockAuthorizationSession;
+    use openid4vc::wallet_issuance::mock::MockIssuanceSession;
+    use rstest::rstest;
+    use uuid::Uuid;
+    use wallet_account::messages::errors::AccountRevokedData;
+    use wallet_account::messages::errors::RevocationReason;
+    use wallet_configuration::wallet_config::WalletConfiguration;
+
+    use crate::BlockedReason;
+    use crate::PidIssuancePurpose;
+    use crate::TransferRole;
+    use crate::WalletState;
+    use crate::pin::change::State;
+    use crate::storage::ChangePinData;
+    use crate::storage::PinRecoveryData;
+    use crate::storage::StoredAttestation;
+    use crate::storage::TransferData;
+    use crate::storage::TransferKeyData;
+    use crate::storage::WithKeyIdentifier;
+    use crate::wallet::Session;
+    use crate::wallet::WalletDisclosureSession;
+    use crate::wallet::disclosure::RedirectUriPurpose;
+    use crate::wallet::issuance::SessionState;
+    use crate::wallet::issuance::WalletIssuanceSession;
+    use crate::wallet::pin_recovery::PinRecoverySession;
+    use crate::wallet::state::CancelSessionError;
+    use crate::wallet::state::CheckPreconditionsError;
+    use crate::wallet::test::TestWalletMockStorage;
+    use crate::wallet::test::WalletDeviceVendor;
+    use crate::wallet::test::create_example_pid_sd_jwt;
+    use crate::wallet::test::create_wallet_configuration;
+    use crate::wallet::test::mock_issuance_session;
+
+    impl WalletState {
+        fn lock(self) -> Self {
+            Self::Locked {
+                sub_state: Box::new(self),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unregistered_wallet() {
+        let wallet = TestWalletMockStorage::new_unregistered(WalletDeviceVendor::Apple).await;
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, WalletState::Unregistered);
+    }
+
+    #[tokio::test]
+    async fn test_init_registation_wallet() {
+        let wallet = TestWalletMockStorage::new_init_registration(WalletDeviceVendor::Apple)
+            .await
+            .unwrap();
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, WalletState::Unregistered);
+    }
+
+    #[rstest]
+    #[case::empty(false, false, WalletState::Empty)]
+    #[case::registered_and_unlocked(false, true, WalletState::Ready)]
+    #[case::registered_and_locked(true, true, WalletState::Ready.lock())]
+    #[tokio::test]
+    async fn test_empty_and_registered_wallet(
+        #[case] is_locked: bool,
+        #[case] has_attestations: bool,
+        #[case] expected_state: WalletState,
+    ) {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+        if is_locked {
+            wallet.lock();
+        }
+
+        let storage = wallet.mut_storage();
+        storage
+            .expect_has_any_attestations()
+            .return_once(move || Ok(has_attestations));
+        storage.expect_fetch_data::<ChangePinData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<TransferData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<PinRecoveryData>().return_once(|| Ok(None));
+        storage
+            .expect_fetch_data::<AccountRevokedData>()
+            .return_once(|| Ok(None));
+
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, expected_state);
+    }
+
+    #[rstest]
+    #[case::pin_state_begin(false, State::Begin, WalletState::InPinChangeFlow)]
+    #[case::pin_state_commit(false, State::Commit, WalletState::InPinChangeFlow)]
+    #[case::pin_state_rollback(false, State::Rollback, WalletState::InPinChangeFlow)]
+    #[case::locked_pin_state(true, ChangePinData {state: State::Begin}, WalletState::InPinChangeFlow.lock())]
+    #[tokio::test]
+    async fn test_change_pin_data(
+        #[case] is_locked: bool,
+        #[case] change_pin_data: impl Into<ChangePinData>,
+        #[case] expected_state: WalletState,
+    ) {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+        if is_locked {
+            wallet.lock();
+        }
+
+        let storage = wallet.mut_storage();
+        storage.expect_has_any_attestations().return_once(|| Ok(true));
+        let change_pin_data = change_pin_data.into();
+        storage
+            .expect_fetch_data::<ChangePinData>()
+            .return_once(move || Ok(Some(change_pin_data)));
+        storage.expect_fetch_data::<PinRecoveryData>().return_once(|| Ok(None));
+
+        storage.expect_fetch_data::<TransferData>().return_once(|| Ok(None));
+        storage
+            .expect_fetch_data::<AccountRevokedData>()
+            .return_once(|| Ok(None));
+
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, expected_state);
+    }
+
+    #[rstest]
+    #[case::transfer_possible(false, empty_transfer_data(), WalletState::TransferPossible)]
+    #[case::transferring_source(false, source_transfer_data(), WalletState::Transferring { role: TransferRole::Source })]
+    #[case::transferring_destination(false, destination_transfer_data(), WalletState::Transferring { role: TransferRole::Destination })]
+    #[case::locked_transfer_possible(true, empty_transfer_data(), WalletState::TransferPossible.lock())]
+    #[tokio::test]
+    async fn test_wallet_transfer(
+        #[case] is_locked: bool,
+        #[case] transfer_data: TransferData,
+        #[case] expected_state: WalletState,
+    ) {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+        if is_locked {
+            wallet.lock();
+        }
+
+        let storage = wallet.mut_storage();
+        storage.expect_has_any_attestations().return_once(|| Ok(true));
+        storage.expect_fetch_data::<ChangePinData>().return_once(|| Ok(None));
+        storage
+            .expect_fetch_data::<TransferData>()
+            .return_once(move || Ok(Some(transfer_data)));
+        storage.expect_fetch_data::<PinRecoveryData>().return_once(|| Ok(None));
+        storage
+            .expect_fetch_data::<AccountRevokedData>()
+            .return_once(|| Ok(None));
+
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, expected_state);
+    }
+
+    #[rstest]
+    #[case::unlocked(false, WalletState::InPinRecoveryFlow)]
+    #[case::locked(true, WalletState::InPinRecoveryFlow.lock())]
+    #[tokio::test]
+    async fn test_pin_recovery_data(#[case] is_locked: bool, #[case] expected_state: WalletState) {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+        if is_locked {
+            wallet.lock();
+        }
+
+        let storage = wallet.mut_storage();
+        storage.expect_has_any_attestations().return_once(|| Ok(true));
+        storage.expect_fetch_data::<ChangePinData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<TransferData>().return_once(|| Ok(None));
+        storage
+            .expect_fetch_data::<PinRecoveryData>()
+            .return_once(|| Ok(Some(PinRecoveryData)));
+        storage
+            .expect_fetch_data::<AccountRevokedData>()
+            .return_once(|| Ok(None));
+
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, expected_state);
+    }
+
+    #[rstest]
+    #[case::digid(false, auth_session(), WalletState::InIssuanceFlow)]
+    #[case::issuance(false, issuance_session(), WalletState::InIssuanceFlow)]
+    #[case::disclosure(false, disclosure_session(), WalletState::InDisclosureFlow)]
+    #[case::pin_recovery(false, pin_recovery_session(), WalletState::InPinRecoveryFlow)]
+    #[case::locked_digid(true, auth_session(), WalletState::InIssuanceFlow.lock())]
+    #[tokio::test]
+    async fn test_wallet_session(
+        #[case] is_locked: bool,
+        #[case] session: Session<MockAuthorizationSession, MockIssuanceSession, MockDisclosureSession>,
+        #[case] expected_state: WalletState,
+    ) {
+        // Prepare a registered and unlocked wallet.
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+        if is_locked {
+            wallet.lock();
+        }
+
+        wallet.session = Some(session);
+
+        let storage = wallet.mut_storage();
+        storage.expect_has_any_attestations().return_once(|| Ok(true));
+        storage.expect_fetch_data::<ChangePinData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<TransferData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<PinRecoveryData>().return_once(|| Ok(None));
+        storage
+            .expect_fetch_data::<AccountRevokedData>()
+            .return_once(|| Ok(None));
+
+        let wallet_state = wallet.get_state().await.unwrap();
+
+        assert_eq!(wallet_state, expected_state);
+    }
+
+    #[rstest]
+    #[case::check_locked(
+        true,
+        true,
+        Some(State::Begin),
+        Some(empty_transfer_data()),
+        Some(PinRecoveryData),
+        Some(auth_session()),
+        WalletState::TransferPossible.lock(),
+    )]
+    #[case::check_transfer_first(
+        false,
+        true,
+        Some(State::Begin),
+        Some(empty_transfer_data()),
+        Some(PinRecoveryData),
+        Some(auth_session()),
+        WalletState::TransferPossible
+    )]
+    #[case::check_transfer_first_empty(
+        false,
+        false,
+        Some(State::Begin),
+        Some(empty_transfer_data()),
+        Some(PinRecoveryData),
+        Some(auth_session()),
+        WalletState::TransferPossible
+    )]
+    #[case::check_session_second(
+        false,
+        true,
+        Some(State::Begin),
+        None,
+        Some(PinRecoveryData),
+        Some(auth_session()),
+        WalletState::InIssuanceFlow
+    )]
+    #[case::check_session_second_empty(
+        false,
+        false,
+        Some(State::Begin),
+        None,
+        Some(PinRecoveryData),
+        Some(auth_session()),
+        WalletState::InIssuanceFlow
+    )]
+    #[case::check_pin_recovery_third(
+        false,
+        true,
+        Some(State::Begin),
+        None,
+        Some(PinRecoveryData),
+        None,
+        WalletState::InPinRecoveryFlow
+    )]
+    #[case::check_pin_recovery_third_empty(
+        false,
+        false,
+        Some(State::Begin),
+        None,
+        Some(PinRecoveryData),
+        None,
+        WalletState::InPinRecoveryFlow
+    )]
+    #[case::check_pin_state_fourth(false, true, Some(State::Begin), None, None, None, WalletState::InPinChangeFlow)]
+    #[case::check_pin_state_fourth_empty(
+        false,
+        false,
+        Some(State::Begin),
+        None,
+        None,
+        None,
+        WalletState::InPinChangeFlow
+    )]
+    #[case::check_attestations_five(false, true, None::<State>, None, None, None, WalletState::Ready)]
+    #[case::otherwise_empty(false, false, None::<State>, None, None, None, WalletState::Empty)]
+    #[tokio::test]
+    async fn test_precedence_of_checks(
+        #[case] is_locked: bool,
+        #[case] has_attestations: bool,
+        #[case] change_pin_data: Option<impl Into<ChangePinData>>,
+        #[case] transfer_data: Option<TransferData>,
+        #[case] pin_recovery_data: Option<PinRecoveryData>,
+        #[case] session: Option<Session<MockAuthorizationSession, MockIssuanceSession, MockDisclosureSession>>,
+        #[case] expected_state: WalletState,
+    ) {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+        if is_locked {
+            wallet.lock();
+        }
+
+        wallet.session = session;
+
+        let storage = wallet.mut_storage();
+        storage
+            .expect_has_any_attestations()
+            .return_once(move || Ok(has_attestations));
+        let change_pin_data = change_pin_data.map(Into::into);
+        storage
+            .expect_fetch_data::<ChangePinData>()
+            .return_once(move || Ok(change_pin_data));
+        storage
+            .expect_fetch_data::<TransferData>()
+            .return_once(move || Ok(transfer_data));
+        storage
+            .expect_fetch_data::<PinRecoveryData>()
+            .return_once(|| Ok(pin_recovery_data));
+        storage
+            .expect_fetch_data::<AccountRevokedData>()
+            .return_once(|| Ok(None));
+
+        let wallet_state = wallet.get_state().await.unwrap();
+        assert_eq!(wallet_state, expected_state);
+    }
+
+    #[rstest]
+    #[case(RevocationReason::AdminRequest, true, true)]
+    #[case(RevocationReason::AdminRequest, false, false)]
+    #[case(RevocationReason::WalletSolutionCompromised, true, false)]
+    #[case(RevocationReason::WalletSolutionCompromised, false, false)]
+    #[tokio::test]
+    async fn test_wallet_revocation_state(
+        #[case] revocation_reason: RevocationReason,
+        #[case] blocked_at_wp: bool,
+        #[case] can_register_new_account: bool,
+    ) {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+
+        let storage = wallet.mut_storage();
+        storage.expect_has_any_attestations().return_once(|| Ok(true));
+        storage.expect_fetch_data::<ChangePinData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<TransferData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<PinRecoveryData>().return_once(|| Ok(None));
+        storage.expect_fetch_data::<AccountRevokedData>().return_once(move || {
+            Ok(Some(AccountRevokedData {
+                revocation_reason,
+                can_register_new_account: blocked_at_wp,
+            }))
+        });
+
+        assert_eq!(
+            wallet.get_state().await.unwrap(),
+            WalletState::Blocked {
+                reason: match revocation_reason {
+                    RevocationReason::UserRequest => panic!(),
+                    RevocationReason::AdminRequest => BlockedReason::BlockedByWalletProvider,
+                    RevocationReason::WalletSolutionCompromised => BlockedReason::WalletSolutionRevoked,
+                },
+                can_register_new_account
+            }
+        );
+    }
+
+    fn source_transfer_data() -> TransferData {
+        TransferData {
+            transfer_session_id: Uuid::new_v4().into(),
+            key_data: Some(TransferKeyData::Source {
+                public_key: JweEcdhSecretKey::new_random(None, EcdhAlgorithm::EcdhEsA256kw).to_jwe_public_key(),
+            }),
+        }
+    }
+
+    fn destination_transfer_data() -> TransferData {
+        TransferData {
+            transfer_session_id: Uuid::new_v4().into(),
+            key_data: Some(TransferKeyData::Destination {
+                secret_key: JweEcdhSecretKey::new_random(None, EcdhAlgorithm::EcdhEsA256kw),
+            }),
+        }
+    }
+
+    fn empty_transfer_data() -> TransferData {
+        TransferData {
+            transfer_session_id: Uuid::new_v4().into(),
+            key_data: None,
+        }
+    }
+
+    fn auth_session() -> Session<MockAuthorizationSession, MockIssuanceSession, MockDisclosureSession> {
+        Session::Issuance(WalletIssuanceSession::Pid {
+            purpose: PidIssuancePurpose::Enrollment,
+            session_state: SessionState::Authorization {
+                authorization_session: MockAuthorizationSession::new(),
+            },
+        })
+    }
+
+    fn issuance_session() -> Session<MockAuthorizationSession, MockIssuanceSession, MockDisclosureSession> {
+        // Create a mock OpenID4VCI session that accepts the PID with a single
+        // instance of `MdocCopies`, which contains a single valid `Mdoc`.
+        let (sd_jwt, _metadata) = create_example_pid_sd_jwt();
+        let (pid_issuer, attestations) = mock_issuance_session(
+            [(
+                WithKeyIdentifier {
+                    key_identifier: "key_id".to_string(),
+                    data: StoredAttestation::SdJwt(sd_jwt.clone()),
+                },
+                IssuedCredentialMetadata::nl_pid_example(),
+            )],
+            None,
+        );
+        Session::Issuance(WalletIssuanceSession::Pid {
+            purpose: PidIssuancePurpose::Enrollment,
+            session_state: SessionState::Issuance {
+                preview_attestations: Some(attestations),
+                protocol_state: pid_issuer,
+            },
+        })
+    }
+
+    fn disclosure_session() -> Session<MockAuthorizationSession, MockIssuanceSession, MockDisclosureSession> {
+        Session::Disclosure(WalletDisclosureSession::new_missing_attributes(
+            RedirectUriPurpose::Browser,
+            DisclosureType::Regular,
+            MockDisclosureSession::new(),
+        ))
+    }
+
+    fn pin_recovery_session() -> Session<MockAuthorizationSession, MockIssuanceSession, MockDisclosureSession> {
+        Session::PinRecovery(PinRecoverySession::OAuth {
+            authorization_session: MockAuthorizationSession::new(),
+        })
+    }
+
+    // cancel_session with active issuance or disclosure sessions is tested in their respective modules, these also
+    // already include tests for locked/unregistered wallets and blocked versions
+
+    #[tokio::test]
+    async fn test_cancel_session_pin_recovery() {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+
+        wallet.session = Some(pin_recovery_session());
+
+        let error = wallet
+            .cancel_session()
+            .await
+            .expect_err("cancel_session should fail for PinRecovery session");
+
+        assert_matches!(error, CancelSessionError::SessionState);
+        assert!(wallet.session.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_session_no_session() {
+        let mut wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+
+        let error = wallet
+            .cancel_session()
+            .await
+            .expect_err("cancel_session should fail when there is no session");
+
+        assert_matches!(error, CancelSessionError::SessionState);
+        assert!(wallet.session.is_none());
+    }
+
+    /// Creates a wallet holding a configuration that expired an hour ago.
+    async fn wallet_with_expired_config() -> TestWalletMockStorage {
+        let config = WalletConfiguration {
+            expires: (Utc::now() - TimeDelta::hours(1)).into(),
+            ..create_wallet_configuration()
+        };
+
+        TestWalletMockStorage::new_unregistered_with_config(WalletDeviceVendor::Apple, config).await
+    }
+
+    #[tokio::test]
+    async fn test_check_session_preconditions_config_expired() {
+        let wallet = wallet_with_expired_config().await;
+
+        let error = wallet
+            .check_session_preconditions()
+            .expect_err("checking session preconditions should fail when the configuration is expired");
+
+        assert_matches!(
+            error,
+            CheckPreconditionsError::ConfigExpired,
+            "An expired config should take precedence over the wallet state being unregistered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_check_accept_session_preconditions_config_expired() {
+        let mut wallet = wallet_with_expired_config().await;
+
+        let error = wallet
+            .check_accept_session_preconditions()
+            .await
+            .expect_err("checking accept session preconditions should fail when the configuration is expired");
+
+        assert_matches!(error, CheckPreconditionsError::ConfigExpired);
+    }
+
+    #[tokio::test]
+    async fn test_check_session_preconditions_config_not_expired() {
+        let wallet = TestWalletMockStorage::new_registered_and_unlocked(WalletDeviceVendor::Apple).await;
+
+        wallet
+            .check_session_preconditions()
+            .expect("checking session preconditions should succeed when the configuration is not expired");
     }
 }

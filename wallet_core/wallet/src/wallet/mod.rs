@@ -1,80 +1,110 @@
 mod attestations;
 mod change_pin;
+mod close_proximity_disclosure;
 mod config;
+mod delete_attestation;
 mod disclosure;
 mod disclosure_based_issuance;
+#[cfg(feature = "hardware_integration_test")]
+pub mod hardware_test;
 mod history;
 mod init;
 mod instruction_client;
 mod issuance;
 mod lock;
+mod notifications;
 mod pin_recovery;
+mod recovery_code;
+mod refresh_certificate;
 mod registration;
 mod reset;
+mod revocation;
+mod revocation_code;
 mod state;
 mod transfer;
 mod uri;
 
 #[cfg(test)]
-mod test;
+pub(crate) mod test;
 
+use std::marker::PhantomData;
 use std::sync::Arc;
-
-use cfg_if::cfg_if;
-use tokio::sync::RwLock;
 
 use openid4vc::disclosure_session::DisclosureClient;
 use openid4vc::disclosure_session::VpDisclosureClient;
-use openid4vc::issuance_session::HttpIssuanceSession;
+use openid4vc::wallet_issuance::IssuanceDiscovery;
+use openid4vc::wallet_issuance::discovery::HttpIssuanceDiscovery;
+use parking_lot::Mutex;
 use platform_support::attested_key::AttestedKey;
 use platform_support::attested_key::AttestedKeyHolder;
+use platform_support::close_proximity_disclosure::hardware::HardwareCloseProximityDisclosureClient;
 use platform_support::hw_keystore::hardware::HardwareEncryptionKey;
-use wallet_configuration::wallet_config::PidAttributesConfiguration;
-
-use crate::account_provider::HttpAccountProviderClient;
-use crate::config::WalletConfigurationRepository;
-use crate::digid::DigidClient;
-use crate::digid::HttpDigidClient;
-use crate::lock::WalletLock;
-use crate::storage::DatabaseStorage;
-use crate::storage::RegistrationData;
-use crate::update_policy::UpdatePolicyRepository;
-use crate::wallet::pin_recovery::PinRecoverySession;
+use serde::Deserialize;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use token_status_list::verification::reqwest::HttpStatusListClient;
+use tokio::sync::RwLock;
+use tokio::task::AbortHandle;
 
 use self::attestations::AttestationsCallback;
-use self::disclosure::WalletDisclosureSession;
-use self::issuance::WalletIssuanceSession;
-
+pub use self::close_proximity_disclosure::CloseProximityDisclosureError;
+pub use self::close_proximity_disclosure::CloseProximityDisclosureUpdate;
+pub use self::delete_attestation::DeleteAttestationError;
+pub use self::disclosure::AttributesNotAvailable;
 pub use self::disclosure::DisclosureAttestationOptions;
 pub use self::disclosure::DisclosureError;
 pub use self::disclosure::DisclosureProposalPresentation;
 pub use self::disclosure::DisclosureUriSource;
+use self::disclosure::WalletDisclosureSession;
 pub use self::disclosure_based_issuance::DisclosureBasedIssuanceError;
+pub use self::disclosure_based_issuance::DisclosureBasedIssuanceResult;
 pub use self::history::HistoryError;
+pub use self::history::Pagination;
 pub use self::history::RecentHistoryCallback;
+use self::init::WalletCertificateCrlVerifier;
 pub use self::init::WalletClients;
 pub use self::init::WalletInitError;
+pub use self::init::WalletRepositories;
+pub use self::issuance::IssuanceContinueResult;
 pub use self::issuance::IssuanceError;
 pub use self::issuance::IssuanceResult;
+pub use self::issuance::IssuanceStartResult;
+pub use self::issuance::PidIssuancePurpose;
+use self::issuance::WalletIssuanceSession;
 pub use self::lock::LockCallback;
 pub use self::lock::UnlockMethod;
 pub use self::lock::WalletUnlockError;
+pub use self::notifications::ScheduledNotificationsCallback;
 pub use self::pin_recovery::PinRecoveryError;
+pub use self::recovery_code::RecoveryCodeError;
 pub use self::registration::WalletRegistrationError;
 pub use self::reset::ResetError;
+pub use self::revocation_code::RevocationCodeError;
+pub use self::state::BlockedReason;
+pub use self::state::CancelSessionError;
+pub use self::state::CheckPreconditionsError;
+pub use self::state::TransferRole;
 pub use self::state::WalletState;
-pub use self::state::WalletTransferRole;
 pub use self::transfer::TransferError;
+pub use self::uri::InvocationUri;
+pub use self::uri::RedirectUri;
 pub use self::uri::UriIdentificationError;
 pub use self::uri::UriType;
+use crate::account_provider::HttpAccountProviderClient;
+use crate::config::WalletConfigurationRepository;
+use crate::lock::WalletLock;
+use crate::storage::DatabaseStorage;
+use crate::storage::KeyedData;
+use crate::storage::RegistrationData;
+use crate::update_policy::UpdatePolicyRepository;
+use crate::wallet::close_proximity_disclosure::CloseProximityDisclosureSession;
+use crate::wallet::notifications::DirectNotificationsCallback;
+use crate::wallet::pin_recovery::PinRecoverySession;
 
-cfg_if! {
-    if #[cfg(feature = "fake_attestation")] {
-        type KeyHolderType = platform_support::attested_key::mock::PersistentMockAttestedKeyHolder;
-    } else {
-        type KeyHolderType = platform_support::attested_key::hardware::HardwareAttestedKeyHolder;
-    }
-}
+type KeyHolderType = cfg_select! {
+    feature = "fake_attestation" => platform_support::attested_key::mock::PersistentMockAttestedKeyHolder,
+    _ => platform_support::attested_key::hardware::HardwareAttestedKeyHolder,
+};
 
 #[derive(Debug, Default)]
 enum WalletRegistration<A, G> {
@@ -104,40 +134,69 @@ impl<A, G> WalletRegistration<A, G> {
 }
 
 #[derive(Debug)]
-enum Session<DS, IS, DCS> {
-    Digid(DS),
-    Issuance(WalletIssuanceSession<IS>),
+enum Session<AS, IS, DCS> {
+    Issuance(WalletIssuanceSession<AS, IS>),
     Disclosure(WalletDisclosureSession<DCS>),
-    PinRecovery {
-        pid_config: PidAttributesConfiguration,
-        session: PinRecoverySession<DS, IS>,
-    },
+    CloseProximityDisclosure(CloseProximityDisclosureSession),
+    PinRecovery(PinRecoverySession<AS, IS>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PersistedIssuanceSessionData<AD> {
+    purpose: Option<PidIssuancePurpose>,
+    authorization_session: AD,
+}
+
+impl<AD> KeyedData for PersistedIssuanceSessionData<AD>
+where
+    AD: Serialize + DeserializeOwned,
+{
+    const KEY: &'static str = "issuance_oauth_session";
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PersistedPinRecoverySessionData<AD> {
+    authorization_session: AD,
+}
+
+impl<AD> KeyedData for PersistedPinRecoverySessionData<AD>
+where
+    AD: Serialize + DeserializeOwned,
+{
+    const KEY: &'static str = "pin_recovery_oauth_session";
 }
 
 pub struct Wallet<
-    CR = WalletConfigurationRepository,         // Repository<WalletConfiguration>
-    UR = UpdatePolicyRepository,                // Repository<VersionState>
-    S = DatabaseStorage<HardwareEncryptionKey>, // Storage
-    AKH = KeyHolderType,                        // AttestedKeyHolder
-    APC = HttpAccountProviderClient,            // AccountProviderClient
-    DC = HttpDigidClient,                       // DigidClient
-    IS = HttpIssuanceSession,                   // IssuanceSession
-    DCC = VpDisclosureClient,                   // DisclosureClient
+    CR = WalletConfigurationRepository,           // Repository<WalletConfiguration>
+    UR = UpdatePolicyRepository,                  // Repository<VersionState>
+    S = DatabaseStorage<HardwareEncryptionKey>,   // Storage
+    AKH = KeyHolderType,                          // AttestedKeyHolder
+    APC = HttpAccountProviderClient,              // AccountProviderClient
+    CID = HttpIssuanceDiscovery,                  // IssuanceDiscovery
+    DCC = VpDisclosureClient,                     // DisclosureClient
+    CPC = HardwareCloseProximityDisclosureClient, // CloseProximityDisclosureClient
+    SLC = HttpStatusListClient,                   // StatusListClient,
 > where
     AKH: AttestedKeyHolder,
-    DC: DigidClient,
+    CID: IssuanceDiscovery,
     DCC: DisclosureClient,
 {
-    config_repository: CR,
+    config_repository: Arc<CR>,
     update_policy_repository: UR,
     storage: Arc<RwLock<S>>,
     key_holder: AKH,
     registration: WalletRegistration<AKH::AppleKey, AKH::GoogleKey>,
     account_provider_client: Arc<APC>,
-    digid_client: DC,
+    issuance_discovery: CID,
     disclosure_client: DCC,
-    session: Option<Session<DC::Session, IS, DCC::Session>>,
+    close_proximity_disclosure: PhantomData<CPC>,
+    crl_verifier: WalletCertificateCrlVerifier,
+    status_list_client: Arc<SLC>,
+    session: Option<Session<CID::Authorization, CID::Issuance, DCC::Session>>,
     lock: WalletLock,
-    attestations_callback: Option<AttestationsCallback>,
+    attestations_callback: Arc<Mutex<Option<AttestationsCallback>>>,
     recent_history_callback: Option<RecentHistoryCallback>,
+    scheduled_notifications_callback: Arc<Mutex<Option<ScheduledNotificationsCallback>>>,
+    direct_notifications_callback: Arc<Mutex<Option<DirectNotificationsCallback>>>,
+    revocation_status_job_handle: Option<AbortHandle>,
 }

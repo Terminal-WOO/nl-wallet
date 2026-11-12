@@ -1,41 +1,25 @@
-import 'package:flutter/foundation.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
 
-@immutable
-class DisclosureScreenArgument {
-  static const _kUriKey = 'uri';
-  static const _kIsQrCodeKey = 'isQrCode';
+part 'disclosure_screen_argument.freezed.dart';
+part 'disclosure_screen_argument.g.dart';
 
-  final String uri;
-  final bool isQrCode;
+@freezed
+abstract class DisclosureScreenArgument with _$DisclosureScreenArgument {
+  const factory DisclosureScreenArgument({
+    required DisclosureConnectionType type,
+  }) = _DisclosureScreenArgument;
 
-  const DisclosureScreenArgument({required this.uri, required this.isQrCode});
+  factory DisclosureScreenArgument.fromJson(Map<String, dynamic> json) => _$DisclosureScreenArgumentFromJson(json);
+}
 
-  Map<String, dynamic> toMap() {
-    return {
-      _kIsQrCodeKey: isQrCode,
-      _kUriKey: uri,
-    };
-  }
+@freezed
+sealed class DisclosureConnectionType with _$DisclosureConnectionType {
+  const factory DisclosureConnectionType.remote(
+    String uri, {
+    required bool isQrCode,
+  }) = RemoteDisclosure;
 
-  DisclosureScreenArgument.fromMap(Map<String, dynamic> map) : isQrCode = map[_kIsQrCodeKey], uri = map[_kUriKey];
+  const factory DisclosureConnectionType.closeProximity() = CloseProximityDisclosure;
 
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is DisclosureScreenArgument &&
-          runtimeType == other.runtimeType &&
-          isQrCode == other.isQrCode &&
-          uri == other.uri;
-
-  @override
-  int get hashCode => Object.hash(
-    runtimeType,
-    isQrCode,
-    uri,
-  );
-
-  @override
-  String toString() {
-    return 'DisclosureScreenArgument{uri: $uri, isQrCode: $isQrCode}';
-  }
+  factory DisclosureConnectionType.fromJson(Map<String, dynamic> json) => _$DisclosureConnectionTypeFromJson(json);
 }

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/deploy/gitlab/renovate\\.yml/"],
+      "matchStrings": ["docker-hub-proxy/renovate/renovate:(?<currentValue>[^@]+)@(?<currentDigest>sha256:[a-f0-9]+)"],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "renovate/renovate",
+      "registryUrlTemplate": "https://index.docker.io"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "1. Defer all standard updates indefinitely (security fixes bypass the schedule)",
+      "matchPackageNames": ["*"],
+      "schedule": ["on the 1st day of February in 2200"]
+    },
+    {
+      "description": "2. Keep Renovate image up to date",
+      "matchPackageNames": ["renovate/renovate"],
+      "matchUpdateTypes": ["digest"],
+      "schedule": ["at any time"],
+      "enabled": true
+    }
+  ]
+}

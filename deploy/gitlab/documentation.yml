@@ -1,5 +1,8 @@
 build-documentation:
-  rules: !reference [.default-or-release-or-merge-request, rules]
+  stage: build
+  allow_failure: true
+  rules: !reference [.default-or-merge-request, rules]
+  needs: []
   script:
     - cd wallet_docs
     - python3 -m venv .venv
@@ -12,12 +15,12 @@ build-documentation:
         echo "Building on main, using sphinx-multiversion to build documentation"
         git fetch origin main
         git checkout -b main
-        make linkcheck
-        sphinx-multiversion . _build/html -W
+        SPHINXOPTS="-Wq" make linkcheck
+        sphinx-multiversion . _build/html -q
       else
         echo "Building on branch, using sphinx-build to build documentation"
-        make linkcheck
-        sphinx-build . _build/html -W
+        SPHINXOPTS="-Wq" make linkcheck
+        sphinx-build . _build/html -Wq
       fi
     #GitHub pages needs an index.html at the root of the html folder
     - |
@@ -43,43 +46,11 @@ build-documentation:
     when: always
     paths:
       - wallet_docs/_build/html
-  allow_failure: true
-
-generate-c4-puml:
-  rules: !reference [.default-or-release-or-merge-request-manual, rules]
-  image:
-    name: "${HARBOR_REGISTRY}/docker-hub-proxy/structurizr/cli:latest"
-    entrypoint: [""]
-  script:
-    - mkdir -p c4diagrams
-    - /usr/local/structurizr-cli/structurizr.sh export --workspace wallet_docs/_structurizr/workspace.dsl --output c4diagrams --format plantuml
-    - echo "Generated .puml files:"
-    - ls -l c4diagrams
-  artifacts:
-    paths:
-      - c4diagrams/
-    expire_in: 1 week
-
-generate-c4-png:
-  rules: !reference [.default-or-release-or-merge-request-manual, rules]
-  image:
-    name: "${HARBOR_REGISTRY}/docker-hub-proxy/plantuml/plantuml:latest"
-    entrypoint: [""]
-  needs:
-    - job: generate-c4-puml
-      artifacts: true
-  script:
-    - echo "Rendering PNGs from .puml files using java -jar..."
-    - find c4diagrams -name '*.puml' -exec java -jar /opt/plantuml.jar -tpng {} +
-    - echo "Generated PNG files:"
-    - ls -l c4diagrams
-  artifacts:
-    paths:
-      - c4diagrams/
-    expire_in: 1 week
 
 publish-documentation:
+  stage: publish
   rules: !reference [.default-branch, rules]
+  resource_group: publish-documentation
   needs:
     - job: build-documentation
       artifacts: true

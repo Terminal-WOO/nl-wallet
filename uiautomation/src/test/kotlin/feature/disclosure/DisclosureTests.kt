@@ -5,11 +5,11 @@ import helper.GbaDataHelper.Field.FIRST_NAME
 import helper.GbaDataHelper.Field.NAME
 import helper.IssuanceDataHelper
 import helper.LocalizationHelper
-import helper.OrganizationAuthMetadataHelper
-import helper.OrganizationAuthMetadataHelper.Organization.AMSTERDAM
-import helper.OrganizationAuthMetadataHelper.Organization.JOBFINDER
-import helper.OrganizationAuthMetadataHelper.Organization.MARKETPLACE
-import helper.OrganizationAuthMetadataHelper.Organization.XYZ
+import helper.OrganizationMetadataHelper
+import helper.OrganizationMetadataHelper.Organization.MIJN_AMSTERDAM
+import helper.OrganizationMetadataHelper.Organization.ONLINE_MARKETPLACE
+import helper.OrganizationMetadataHelper.Organization.XYZ_BANK
+import helper.RegistrationCertificateHelper
 import helper.TasDataHelper
 import helper.TestBase
 import navigator.MenuNavigator
@@ -23,6 +23,8 @@ import org.junit.jupiter.api.assertAll
 import org.junitpioneer.jupiter.RetryingTest
 import screen.dashboard.DashboardScreen
 import screen.disclosure.DisclosureApproveOrganizationScreen
+import screen.disclosure.SharingStoppedScreen
+import screen.error.AttributesMissingErrorScreen
 import screen.issuance.CardIssuanceScreen
 import screen.issuance.DisclosureIssuanceScreen
 import screen.menu.MenuScreen
@@ -47,7 +49,7 @@ class DisclosureTests : TestBase() {
     private lateinit var pinScreen: PinScreen
     private lateinit var l10n: LocalizationHelper
     private lateinit var tasData: TasDataHelper
-    private lateinit var organizationAuthMetadata: OrganizationAuthMetadataHelper
+    private lateinit var organizationAuthMetadata: OrganizationMetadataHelper
     private lateinit var gbaData: GbaDataHelper
     private lateinit var organizationDetailScreen: OrganizationDetailScreen
     private lateinit var issuerWebPage: IssuerWebPage
@@ -56,6 +58,9 @@ class DisclosureTests : TestBase() {
     private lateinit var dashboardScreen: DashboardScreen
     private lateinit var issuanceData : IssuanceDataHelper
     private lateinit var jobFinderWebPage : RelyingPartyJobFinderWebPage
+    private lateinit var sharingStoppedScreen: SharingStoppedScreen
+    private lateinit var attributesMissingErrorScreen: AttributesMissingErrorScreen
+    private lateinit var xyzBankRegistrationCertificate: RegistrationCertificateHelper
 
     fun setUp(testInfo: TestInfo) {
         startDriver(testInfo)
@@ -72,31 +77,61 @@ class DisclosureTests : TestBase() {
         dashboardScreen = DashboardScreen()
         jobFinderWebPage = RelyingPartyJobFinderWebPage()
         cardIssuanceScreen = CardIssuanceScreen()
+        sharingStoppedScreen = SharingStoppedScreen()
+        attributesMissingErrorScreen = AttributesMissingErrorScreen()
 
         l10n = LocalizationHelper()
         tasData = TasDataHelper()
-        organizationAuthMetadata = OrganizationAuthMetadataHelper()
+        organizationAuthMetadata = OrganizationMetadataHelper()
         gbaData = GbaDataHelper()
         issuanceData = IssuanceDataHelper()
+        xyzBankRegistrationCertificate = RegistrationCertificateHelper()
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC17 LTC21 Share data flow, Opening a bank account. MDOC")
-    @Tags(Tag("a11yBatch1"))
+    @DisplayName("LTC15 Share data flow, Opening a bank account. MDOC")
     fun verifyDisclosureCreateAccountXyzBankMdoc(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickXyzBankMdocButton()
         xyzBankWebPage.openSameDeviceWalletFlow()
         xyzBankWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", XYZ)))
+        val sharingReason = xyzBankRegistrationCertificate.purpose()
+        assertAll(
+            { assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getDisplayNameOfOrganization(XYZ_BANK))) },
+            { assertTrue(sharingReason != null && disclosureScreen.sharingReasonVisible(sharingReason), "Sharing reason not visible") }
+        )
 
-        disclosureScreen.viewDisclosureOrganizationDetails()
-        assertTrue(disclosureScreen.organizationDescriptionOnDetailsVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.description", XYZ)))
+        disclosureScreen.viewDisclosureOrganizationDetails(organizationAuthMetadata.getDisplayNameOfOrganization(XYZ_BANK))
 
-        disclosureScreen.goBack();
+        // The organization details are rendered from the relying party's registration certificate, so they are
+        // verified against the certificate of the deployed verifier, see RegistrationCertificateHelper.
+        val publicBody = xyzBankRegistrationCertificate.publicBody()
+        val description = xyzBankRegistrationCertificate.description()
+        val webUri = xyzBankRegistrationCertificate.websiteUri()
+        val supportUri = xyzBankRegistrationCertificate.supportUri()
+        val privacyPolicyUri = xyzBankRegistrationCertificate.privacyPolicyUri()
+        assertAll(
+            { assertTrue(organizationDetailScreen.organizationInHeaderVisible(xyzBankRegistrationCertificate.displayName()), "Organization name not visible") },
+            { assertTrue(description != null && organizationDetailScreen.descriptionVisible(description), "Description '$description' not visible") },
+            { assertTrue(organizationDetailScreen.legalNameVisible(xyzBankRegistrationCertificate.legalName()), "Legal name not visible") },
+            {
+                if (publicBody == null) {
+                    assertTrue(organizationDetailScreen.organizationTypeNotVisible(), "Organization type visible")
+                } else {
+                    assertTrue(organizationDetailScreen.organizationTypeVisible(publicBody), "Organization type not visible")
+                }
+            },
+            { assertTrue(organizationDetailScreen.locationVisible(xyzBankRegistrationCertificate.countryName()), "Location not visible") },
+            { assertTrue(webUri != null && organizationDetailScreen.websiteVisible(webUri), "Website '$webUri' not visible") },
+            { assertTrue(supportUri != null && organizationDetailScreen.supportVisible(supportUri), "Support '$supportUri' not visible") },
+            { assertTrue(privacyPolicyUri != null && organizationDetailScreen.privacyStatementVisible(privacyPolicyUri), "Privacy statement '$privacyPolicyUri' not visible") },
+            { assertTrue(organizationDetailScreen.organizationIdVisible(xyzBankRegistrationCertificate.organizationId()), "Organization id not visible") }
+        )
+
+        disclosureScreen.goBack()
         disclosureScreen.cancel()
         disclosureScreen.reportProblem()
         assertTrue(disclosureScreen.reportOptionSuspiciousVisible(), "Reporting option not visible")
@@ -109,19 +144,16 @@ class DisclosureTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC17 LTC21 Share data flow, Opening a bank account. SD-JWT")
+    @DisplayName("LTC15 Share data flow, Opening a bank account. SD-JWT")
     fun verifyDisclosureCreateAccountXyzBankSdJwt(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickXyzBankSdJwtButton()
         xyzBankWebPage.openSameDeviceWalletFlow()
         xyzBankWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", XYZ)))
-        disclosureScreen.viewDisclosureOrganizationDetails()
-        assertTrue(disclosureScreen.organizationDescriptionOnDetailsVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.description", XYZ)))
-        disclosureScreen.goBack();
+        assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getDisplayNameOfOrganization(XYZ_BANK)))
         disclosureScreen.cancel()
         disclosureScreen.reportProblem()
         assertTrue(disclosureScreen.reportOptionSuspiciousVisible(), "Reporting option not visible")
@@ -133,39 +165,38 @@ class DisclosureTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC23 LTC25 RP Login flow, MDOC")
-    @Tags(Tag("smoke"), Tag("a11yBatch1"))
+    @DisplayName("LTC18 LTC25 RP Login flow, MDOC")
+    @Tags(Tag("smoke"))
     fun verifyDisclosureLoginMdoc(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        amsterdamWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         amsterdamWebPage = RelyingPartyAmsterdamWebPage()
         indexWebPage.clickAmsterdamMdocButton()
         amsterdamWebPage.openSameDeviceWalletFlow()
         amsterdamWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.organizationNameForLoginFlowVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", AMSTERDAM)))
+        assertTrue(disclosureScreen.organizationNameForLoginFlowVisible(organizationAuthMetadata.getDisplayNameOfOrganization(MIJN_AMSTERDAM)))
+        disclosureScreen.captureA11ySnapshot("DisclosureLoginApprove")
 
         disclosureScreen.viewLoginDisclosureDetails()
-        disclosureScreen.viewOrganization(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", AMSTERDAM)
-            .plus("\n" + organizationAuthMetadata.getAttributeValueForOrganization("organization.category", AMSTERDAM)))
+        disclosureScreen.viewDisclosureOrganizationDetails(organizationAuthMetadata.getDisplayNameOfOrganization(MIJN_AMSTERDAM))
 
         organizationDetailScreen.clickBackButton()
         disclosureScreen.viewSharedData("1", tasData.getPidDisplayName())
         assertTrue(disclosureScreen.bsnVisible(DEFAULT_BSN.toCharArray().joinToString(" ")), "BSN not visible")
+        disclosureScreen.captureA11ySnapshot("DisclosureSharedDataDetails")
 
         disclosureScreen.goBack()
+        assertTrue(disclosureScreen.loginDetailsVisible(), "Login details screen not visible")
         disclosureScreen.goBack()
         disclosureScreen.cancel()
         disclosureScreen.reportProblem()
         assertTrue(disclosureScreen.reportOptionSuspiciousVisible(), "Reporting option not visible")
+        disclosureScreen.captureA11ySnapshot("DisclosureReportProblem")
 
         disclosureScreen.goBack()
         disclosureScreen.viewLoginDisclosureDetails()
-        disclosureScreen.readTerms()
-        assertTrue(disclosureScreen.termsVisible(), "Terms not visible")
-
-        disclosureScreen.goBack()
         disclosureScreen.goBack()
         disclosureScreen.login()
         pinScreen.enterPin(DEFAULT_PIN)
@@ -174,33 +205,35 @@ class DisclosureTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC23 LTC25 RP Login flow, SD-JWT")
+    @DisplayName("LTC18 LTC25 RP Login flow, SD-JWT")
     @Tags(Tag("smoke"))
     fun verifyDisclosureLoginSdJwt(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        amsterdamWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         amsterdamWebPage = RelyingPartyAmsterdamWebPage()
         indexWebPage.clickAmsterdamSdJwtButton()
         amsterdamWebPage.openSameDeviceWalletFlow()
         amsterdamWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.organizationNameForLoginFlowVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", AMSTERDAM)))
+        assertTrue(disclosureScreen.organizationNameForLoginFlowVisible(organizationAuthMetadata.getDisplayNameOfOrganization(MIJN_AMSTERDAM)))
+
         disclosureScreen.viewLoginDisclosureDetails()
-        disclosureScreen.viewOrganization(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", AMSTERDAM).plus("\nGemeente"))
+        disclosureScreen.viewDisclosureOrganizationDetails(organizationAuthMetadata.getDisplayNameOfOrganization(MIJN_AMSTERDAM))
+
         organizationDetailScreen.clickBackButton()
         disclosureScreen.viewSharedData("1", tasData.getPidDisplayName())
         assertTrue(disclosureScreen.bsnVisible(DEFAULT_BSN.toCharArray().joinToString(" ")), "BSN not visible")
+
         disclosureScreen.goBack()
+        assertTrue(disclosureScreen.loginDetailsVisible(), "Login details screen not visible")
         disclosureScreen.goBack()
         disclosureScreen.cancel()
         disclosureScreen.reportProblem()
         assertTrue(disclosureScreen.reportOptionSuspiciousVisible(), "Reporting option not visible")
+
         disclosureScreen.goBack()
         disclosureScreen.viewLoginDisclosureDetails()
-        disclosureScreen.readTerms()
-        assertTrue(disclosureScreen.termsVisible(), "Terms not visible")
-        disclosureScreen.goBack()
         disclosureScreen.goBack()
         disclosureScreen.login()
         pinScreen.enterPin(DEFAULT_PIN)
@@ -209,34 +242,27 @@ class DisclosureTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC17 LTC21 Share data flow")
+    @DisplayName("LTC15 Share data flow")
     fun verifyDisclosureCreateAccountMarketplace(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickMarketplaceButton()
         marketPlaceWebPage.openSameDeviceWalletFlow()
         marketPlaceWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", MARKETPLACE)))
-        disclosureScreen.viewDisclosureOrganizationDetails()
-        assertTrue(disclosureScreen.organizationDescriptionOnDetailsVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.description", MARKETPLACE)))
-        disclosureScreen.goBack();
         assertAll(
-            { assertTrue(disclosureScreen.organizationInPresentationRequestHeaderVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", MARKETPLACE)), "Header is not visible") },
+            { assertTrue(disclosureScreen.organizationInPresentationRequestHeaderVisible(organizationAuthMetadata.getDisplayNameOfOrganization(ONLINE_MARKETPLACE)), "Header is not visible") },
             { assertTrue(disclosureScreen.labelVisible(tasData.getPidClaimLabel("family_name")), "Label is not visible") },
             { assertTrue(disclosureScreen.labelVisible(tasData.getPidClaimLabel("given_name")), "Label is not visible") },
             { assertTrue(disclosureScreen.dataNotVisible(gbaData.getValueByField(NAME, DEFAULT_BSN)), "data is visible") },
             { assertTrue(disclosureScreen.dataNotVisible(gbaData.getValueByField(FIRST_NAME, DEFAULT_BSN)), "data is visible") },
-            { assertTrue(disclosureScreen.sharingReasonVisible(organizationAuthMetadata.getAttributeValueForOrganization("purposeStatement", MARKETPLACE)), "reason is not visible") },
-            { assertTrue(disclosureScreen.conditionsHeaderVisible(), "Description is not visible") },
-            { assertTrue(disclosureScreen.conditionsButtonVisible(), "Try again button is not visible") }
+            { assertTrue(disclosureScreen.privacyHeaderVisible(), "Description is not visible") },
+            { assertTrue(disclosureScreen.privacyButtonVisible(), "Try again button is not visible") }
         )
-        disclosureScreen.viewSharedData("4", tasData.getPidDisplayName())
+        disclosureScreen.captureA11ySnapshot("DisclosureShareRequest")
+        disclosureScreen.viewSharedData("6", tasData.getPidDisplayName())
         assertTrue(disclosureScreen.dataVisible(gbaData.getValueByField(NAME, DEFAULT_BSN)), "Name not visible")
-        disclosureScreen.goBack()
-        disclosureScreen.readTerms()
-        assertTrue(disclosureScreen.termsVisible(), "Terms not visible")
         disclosureScreen.goBack()
         disclosureScreen.cancel()
         disclosureScreen.reportProblem()
@@ -249,30 +275,29 @@ class DisclosureTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC27 Wallet does not contain requested attributes")
-    @Tags(Tag("a11yBatch1"))
+    @DisplayName("LTC10 Wallet does not contain requested attributes")
     fun verifyDisclosureCreateAccountMonkeyBike(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickMonkeyBikeButton()
         monkeyBikeWebPage.openSameDeviceWalletFlow()
         monkeyBikeWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.attributesMissingMessageVisible(), "Attributes missing message not visible")
+        assertTrue(attributesMissingErrorScreen.attributesMissingMessageVisible(), "Attributes missing message not visible")
 
         disclosureScreen.stopRequestAfterMissingAttributeFailure()
         assertTrue(dashboardScreen.visible(), "App dashboard not visible")
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC79 User selects another card to be disclosed MDOC")
+    @DisplayName("LTC65 User selects another card to be disclosed MDOC")
     fun verifyUserSelectCardToDisclose(testInfo: TestInfo) {
         setUp(testInfo)
 
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickHollandUniversityMdocButton()
         issuerWebPage.openSameDeviceWalletFlow()
 
@@ -285,14 +310,12 @@ class DisclosureTests : TestBase() {
 
         dashboardScreen.clickMenuButton()
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickJobFinderButton()
         jobFinderWebPage.openSameDeviceWalletFlow()
         jobFinderWebPage.switchToNativeContext()
-        disclosureScreen.viewDisclosureOrganizationDetails()
-        assertTrue(disclosureScreen.organizationDescriptionOnDetailsVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.description", JOBFINDER)))
-        disclosureScreen.goBack();
         disclosureScreen.clickSwapCardButton()
+        disclosureScreen.captureA11ySnapshot("DisclosureSwapCard")
         disclosureScreen.swapCardTo(issuanceData.getAttributeValues("university", DEFAULT_BSN, "education").last())
         disclosureScreen.share()
         pinScreen.enterPin(DEFAULT_PIN)
@@ -301,19 +324,36 @@ class DisclosureTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC17 Share data flow, Opening a bank account. SD-JWT, extended VCT")
+    @DisplayName("LTC15 Share data flow, Opening a bank account. SD-JWT, extended VCT")
     fun verifyDisclosureCreateAccountXyzBankSdJwtExtendingVct(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
         MenuScreen().clickBrowserTestButton()
-        indexWebPage.switchToWebViewContext()
+        indexWebPage.switchToIndexPage()
         indexWebPage.clickXyzBankSdJwtEuPidButton()
         xyzBankWebPage.openSameDeviceWalletFlow()
         xyzBankWebPage.switchToNativeContext()
-        assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getAttributeValueForOrganization("organization.displayName", XYZ)))
+        assertTrue(disclosureScreen.organizationNameForSharingFlowVisible(organizationAuthMetadata.getDisplayNameOfOrganization(XYZ_BANK)))
         disclosureScreen.share()
         pinScreen.enterPin(DEFAULT_PIN)
         disclosureScreen.goToWebsite()
         assertTrue(xyzBankWebPage.sharedAttributeVisible(gbaData.getValueByField(FIRST_NAME, DEFAULT_BSN)), "User not identified correctly")
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC17 Decline consent to share data")
+    fun verifyDeclineConsent(testInfo: TestInfo) {
+        setUp(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        MenuScreen().clickBrowserTestButton()
+        indexWebPage.switchToIndexPage()
+        indexWebPage.clickAmsterdamSdJwtButton()
+        amsterdamWebPage.openSameDeviceWalletFlow()
+        amsterdamWebPage.switchToNativeContext()
+        disclosureScreen.stop()
+        disclosureScreen.bottomSheetConfirmStop()
+        sharingStoppedScreen.captureA11ySnapshot("SharingStopped")
+        sharingStoppedScreen.close()
+        assertTrue(dashboardScreen.visible(), "Dashboard not visible")
     }
 }

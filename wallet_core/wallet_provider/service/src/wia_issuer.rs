@@ -1,0 +1,183 @@
+use attestation_types::status_claim::StatusClaim;
+use chrono::DateTime;
+use chrono::Duration;
+use chrono::Utc;
+use crypto::keys::PublicKeyRef;
+use crypto::keys::SecureEcdsaKey;
+use crypto::server_keys::KeyPair;
+use crypto::x509::CertificateNameError;
+use derive_more::Constructor;
+use hsm::keys::HsmEcdsaKey;
+use jwt::SignedJwt;
+use jwt::error::JwkConversionError;
+use jwt::error::JwtSignError;
+use p256::ecdsa::SigningKey;
+use p256::elliptic_curve::Generate;
+use utils::date_time_seconds::DateTimeSeconds;
+use utils::generator::Generator;
+use wscd::payload::status_claim::TimeBoundedStatusClaim;
+use wscd::payload::wia::WiaClaims;
+use wscd::payload::wia::WiaDisclosure;
+use wscd::payload::wia::WiaPopClaims;
+use wscd::payload::wia::WiaWalletInfo;
+
+// used as the identifier for a WIA specific token status list
+pub const WIA_ATTESTATION_TYPE_IDENTIFIER: &str = "wia";
+
+/// How long issued WIAs will be valid (the token itself, not the wallet it represents).
+const WIA_VALIDITY: Duration = Duration::hours(10);
+
+#[derive(Constructor)]
+pub struct WiaIssuer<K = HsmEcdsaKey> {
+    keypair: KeyPair<K>,
+    sub: String,
+    wallet_info: WiaWalletInfo,
+}
+
+#[derive(Debug, thiserror::Error, strum::IntoStaticStr)]
+pub enum WiaIssuerError {
+    #[error("JWK conversion error: {0}")]
+    KeyConversion(#[source] JwkConversionError),
+
+    #[error("sign error: {0}")]
+    SignError(#[source] JwtSignError),
+
+    #[error("missing Common Name in WIA issuance certificate")]
+    MissingCommonName,
+
+    #[error("certificate name error: {0}")]
+    CertificateNameError(#[source] CertificateNameError),
+
+    #[error("signing PoP failed: {0}")]
+    PopSignError(#[source] JwtSignError),
+}
+
+impl<K> WiaIssuer<K>
+where
+    K: SecureEcdsaKey,
+{
+    pub async fn issue_wia(
+        &self,
+        wallet_exp: DateTimeSeconds,
+        status_claim: StatusClaim,
+        pop_claims: &WiaPopClaims,
+        time: &impl Generator<DateTime<Utc>>,
+    ) -> Result<WiaDisclosure, WiaIssuerError> {
+        let wia_exp = (time.generate() + WIA_VALIDITY).into();
+        let iss = self
+            .keypair
+            .certificate()
+            .common_name()
+            .map_err(WiaIssuerError::CertificateNameError)?
+            .ok_or(WiaIssuerError::MissingCommonName)?
+            .to_string();
+
+        // The WIA private key is not persisted in the WP database: it is generated here, used here, and forgotten
+        // immediately afterwards. There is therefore no need to protect it by generating it in the HSM, so
+        // we use an ordinary in-memory private key here.
+        let wia_privkey = SigningKey::generate();
+
+        let wia = SignedJwt::sign_with_iat(
+            &WiaClaims::new(
+                &PublicKeyRef::from(wia_privkey.verifying_key()),
+                iss,
+                self.sub.clone(),
+                wia_exp,
+                self.wallet_info.clone(),
+                TimeBoundedStatusClaim::new(status_claim, wallet_exp),
+                time,
+            )
+            .map_err(WiaIssuerError::KeyConversion)?,
+            &self.keypair,
+            time,
+        )
+        .await
+        .map_err(WiaIssuerError::SignError)?
+        .into();
+
+        let wia_pop = SignedJwt::sign(pop_claims, &wia_privkey)
+            .await
+            .map_err(WiaIssuerError::PopSignError)?
+            .into();
+
+        Ok(WiaDisclosure::new(wia, wia_pop))
+    }
+}
+
+#[cfg(any(test, feature = "mock"))]
+pub mod mock {
+    use crypto::server_keys::generate::Ca;
+    use p256::ecdsa::SigningKey;
+    use wscd::payload::wia::WiaWalletInfo;
+
+    use crate::wia_issuer::WiaIssuer;
+
+    pub type MockWiaIssuer = WiaIssuer<SigningKey>;
+
+    impl MockWiaIssuer {
+        pub fn new_mock(wp_trusted_list_ca: &Ca) -> Self {
+            Self {
+                keypair: wp_trusted_list_ca.generate_wia_mock().unwrap(),
+                sub: "sub".to_string(),
+                wallet_info: WiaWalletInfo::new_mock(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use attestation_types::status_claim::StatusClaim;
+    use chrono::Utc;
+    use crypto::server_keys::generate::Ca;
+    use crypto::x509::CertificateExtendedKeyUsage;
+    use utils::generator::TimeGenerator;
+    use utils::generator::mock::MockTimeGenerator;
+    use wscd::payload::wia::WIA_JWT_VALIDATION;
+    use wscd::payload::wia::WiaPopClaims;
+    use wscd::payload::wia::WiaWalletInfo;
+
+    use super::WiaIssuer;
+
+    #[tokio::test]
+    async fn it_works() {
+        let ca = Ca::generate_wptl_mock_ca().unwrap();
+        let wia_keypair = ca.generate_wia_mock().unwrap();
+        let sub = "sub";
+
+        let wia_issuer = WiaIssuer::new(wia_keypair, sub.to_string(), WiaWalletInfo::new_mock());
+
+        let pop_claims = WiaPopClaims {
+            iss: "wallet".to_string(),
+            aud: "verifier".to_string(),
+            iat: Utc::now().into(),
+            jti: "jti".to_string(),
+            challenge: None,
+        };
+
+        let wia_disclosure = wia_issuer
+            .issue_wia(
+                (Utc::now() + Duration::from_secs(600)).into(),
+                StatusClaim::new_mock(),
+                &pop_claims,
+                &MockTimeGenerator::default(),
+            )
+            .await
+            .unwrap();
+
+        let (_, wia_claims) = wia_disclosure
+            .wia()
+            .parse_and_verify_against_trust_anchors(
+                &ca.to_trust_anchors(),
+                &TimeGenerator,
+                Some(CertificateExtendedKeyUsage::Wia),
+                WIA_JWT_VALIDATION.to_owned(),
+            )
+            .unwrap();
+
+        assert_eq!(wia_claims.sub, sub.to_string());
+        assert!(*wia_claims.exp.as_ref() > Utc::now());
+    }
+}

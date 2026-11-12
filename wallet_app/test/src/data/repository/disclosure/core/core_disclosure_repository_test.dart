@@ -20,18 +20,7 @@ void main() {
       MockMapper(),
       MockMapper(),
       MockMapper(),
-      MockMapper(),
     );
-  });
-
-  test('Call to cancelDisclosure is forwarded to wallet core', () async {
-    await repository.cancelDisclosure();
-    verify(mockTypedWalletCore.cancelDisclosure()).called(1);
-  });
-
-  test('Call to hasActiveDisclosureSession is forwarded to wallet core', () async {
-    await repository.hasActiveDisclosureSession();
-    verify(mockTypedWalletCore.hasActiveDisclosureSession()).called(1);
   });
 
   test('Call to acceptDisclosure is forwarded to wallet core with correct argument', () async {
@@ -47,16 +36,18 @@ void main() {
   test('StartDisclosureResultRequest is mapped successfully to StartDisclosureReadyToDisclose', () async {
     when(mockTypedWalletCore.startDisclosure(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
       return const StartDisclosureResult.request(
-        relyingParty: Organization(legalName: [], displayName: [], description: [], category: []),
-        requestOriginBaseUrl: '',
+        relyingParty: Organization(
+          legalName: '',
+          displayName: '',
+          serviceDescription: [],
+          identifier: '',
+          countryCode: '',
+          supportUri: 'https://example.org/support',
+          personType: PersonType.LegalPerson,
+        ),
         sharedDataWithRelyingPartyBefore: false,
         sessionType: DisclosureSessionType.CrossDevice,
         requestPurpose: [],
-        policy: RequestPolicy(
-          dataSharedWithThirdParties: false,
-          dataDeletionPossible: true,
-          policyUrl: 'https://example.org',
-        ),
         requestType: DisclosureType.Login,
         disclosureOptions: [],
       );

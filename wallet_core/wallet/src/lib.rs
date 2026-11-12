@@ -1,9 +1,9 @@
 mod account_provider;
 mod attestation;
 mod config;
-mod digid;
 mod instruction;
 mod lock;
+mod notification;
 mod pin;
 mod repository;
 mod reqwest;
@@ -14,58 +14,94 @@ mod wallet;
 
 pub mod errors;
 
+#[cfg(feature = "hardware_integration_test")]
+pub use crate::wallet::hardware_test;
+
+#[cfg(any(test, feature = "test"))]
+pub mod test_assets {
+    pub const JPEG_IMAGE: &[u8] = include_bytes!("../assets/tests/willeke.jpeg");
+    pub const JPEG2000_IMAGE: &[u8] = include_bytes!("../assets/tests/willeke.jp2");
+}
+
+pub use token_status_list::verification::verifier::RevocationStatus;
+pub use wallet_account::RevocationCode;
+pub use wallet_account::messages::errors::AccountRevokedData;
+pub use wallet_account::messages::errors::RevocationReason;
+pub use wallet_account::messages::transfer::TransferSessionState;
+
 pub use crate::attestation::AttestationAttribute;
-pub use crate::attestation::AttestationAttributeValue;
 pub use crate::attestation::AttestationIdentity;
 pub use crate::attestation::AttestationPresentation;
+pub use crate::attestation::AttributeValue;
+pub use crate::attestation::ImageAttribute;
+pub use crate::attestation::ValidityStatus;
+pub use crate::notification::DisplayTarget;
+pub use crate::notification::Notification;
+pub use crate::notification::NotificationType;
+pub use crate::pin::key::Pin;
 pub use crate::pin::validation::validate_pin;
 pub use crate::storage::DisclosureStatus;
 pub use crate::storage::WalletEvent;
+pub use crate::wallet::AttributesNotAvailable;
+pub use crate::wallet::BlockedReason;
+pub use crate::wallet::CloseProximityDisclosureUpdate;
 pub use crate::wallet::DisclosureAttestationOptions;
+pub use crate::wallet::DisclosureBasedIssuanceResult;
 pub use crate::wallet::DisclosureProposalPresentation;
 pub use crate::wallet::DisclosureUriSource;
+pub use crate::wallet::InvocationUri;
+pub use crate::wallet::IssuanceContinueResult;
 pub use crate::wallet::IssuanceResult;
+pub use crate::wallet::IssuanceStartResult;
 pub use crate::wallet::LockCallback;
+pub use crate::wallet::Pagination;
+pub use crate::wallet::PidIssuancePurpose;
+pub use crate::wallet::RedirectUri;
+pub use crate::wallet::ScheduledNotificationsCallback;
+pub use crate::wallet::TransferRole;
 pub use crate::wallet::UnlockMethod;
 pub use crate::wallet::UriType;
 pub use crate::wallet::Wallet;
 pub use crate::wallet::WalletClients;
+pub use crate::wallet::WalletRepositories;
 pub use crate::wallet::WalletState;
-pub use crate::wallet::WalletTransferRole;
-
-pub use wallet_account::messages::transfer::TransferSessionState;
 
 pub mod attestation_data {
-    pub use attestation_data::attributes::Attribute;
-    pub use attestation_data::attributes::AttributeValue;
-    pub use attestation_data::auth::Image;
-    pub use attestation_data::auth::LocalizedStrings;
-    pub use attestation_data::auth::Organization;
-    pub use attestation_data::auth::reader_auth::DeletionPolicy;
-    pub use attestation_data::auth::reader_auth::ReaderRegistration;
-    pub use attestation_data::auth::reader_auth::RetentionPolicy;
-    pub use attestation_data::auth::reader_auth::SharingPolicy;
     pub use attestation_data::disclosure_type::DisclosureType;
+    pub use attestation_data::organization::Organization;
+    pub use attestation_data::organization::ServiceDescription;
+    pub use attestation_data::registration_certificate::SubjectType;
+    pub use attestation_data::validity::ValidityWindow;
+}
+
+pub mod attestation_types {
+    pub use attestation_types::credential_format::Format;
+    pub use attestation_types::image::Image;
+}
+
+/// How an attestation and its claims are displayed to the user, independent of the kind of metadata the attestation
+/// was issued with.
+pub mod display {
+    pub use crate::attestation::metadata::AttestationDisplayMetadata;
+    pub use crate::attestation::metadata::BackgroundImage;
+    pub use crate::attestation::metadata::ClaimDisplay;
+    pub use crate::attestation::metadata::Logo;
+    pub use crate::attestation::metadata::Rendering;
 }
 
 pub mod configuration {
     pub use wallet_configuration::wallet_config::AccountServerConfiguration;
-    pub use wallet_configuration::wallet_config::DisclosureConfiguration;
     pub use wallet_configuration::wallet_config::LockTimeoutConfiguration;
-    pub use wallet_configuration::wallet_config::PidIssuanceConfiguration;
+    pub use wallet_configuration::wallet_config::MdocPath;
+    pub use wallet_configuration::wallet_config::MsoMdocPidClaims;
+    pub use wallet_configuration::wallet_config::PidAttributesConfiguration;
+    pub use wallet_configuration::wallet_config::SdJwtPidClaims;
+    pub use wallet_configuration::wallet_config::UpdatePolicyServerConfiguration;
     pub use wallet_configuration::wallet_config::WalletConfiguration;
 }
 
 pub mod openid4vc {
     pub use openid4vc::verifier::SessionType;
-}
-
-pub mod sd_jwt_vc_metadata {
-    pub use sd_jwt_vc_metadata::ClaimDisplayMetadata;
-    pub use sd_jwt_vc_metadata::DisplayMetadata;
-    pub use sd_jwt_vc_metadata::Image;
-    pub use sd_jwt_vc_metadata::LogoMetadata;
-    pub use sd_jwt_vc_metadata::RenderingMetadata;
 }
 
 pub mod utils {
@@ -79,17 +115,16 @@ pub mod test {
     pub use crate::account_provider::AccountProviderClient;
     pub use crate::account_provider::HttpAccountProviderClient;
     pub use crate::account_provider::MockAccountProviderClient;
+    pub use crate::config::CONFIG_EXPIRY_LEEWAY;
+    pub use crate::config::ConfigSigningKey;
     pub use crate::config::FileStorageConfigurationRepository;
     pub use crate::config::HttpConfigurationRepository;
     pub use crate::config::LocalConfigurationRepository;
+    pub use crate::config::ObservableConfigExpiry;
+    pub use crate::config::UpdatingConfigurationRepository;
     pub use crate::config::WalletConfigurationRepository;
     pub use crate::config::default_config_server_config;
     pub use crate::config::default_wallet_config;
-    pub use crate::digid::DigidClient;
-    pub use crate::digid::DigidSession;
-    pub use crate::digid::HttpDigidClient;
-    pub use crate::digid::MockDigidClient;
-    pub use crate::digid::MockDigidSession;
     pub use crate::repository::BackgroundUpdateableRepository;
     pub use crate::repository::Repository;
     pub use crate::repository::RepositoryUpdateState;

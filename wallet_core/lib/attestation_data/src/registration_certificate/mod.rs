@@ -1,0 +1,95 @@
+mod authorization;
+mod envelope;
+mod payload;
+mod status;
+mod validation;
+
+pub use authorization::RegistrationCertificateAuthorizationError;
+pub use envelope::REQUEST_INFO_WRPRC_KEY;
+pub use envelope::RegistrationCertificateEnvelope;
+pub use envelope::RegistrationCertificateEnvelopeError;
+pub use envelope::RegistrationCertificateEnvelopeParseError;
+pub use envelope::RegistrationCertificateJwtParseError;
+pub use envelope::RegistrationCertificateRequestParseError;
+pub use envelope::VerifiedRegistrationCertificateEnvelope;
+pub use envelope::verify_registration_certificate_envelope;
+pub use payload::Credential;
+pub use payload::Intermediary;
+pub use payload::MultiLanguageString;
+pub use payload::MultiLanguageStringSet;
+pub use payload::ParsedRegistrationCertificate;
+pub use payload::Subject;
+pub use payload::SupervisoryAuthority;
+pub use payload::UncheckedRegistrationCertificate;
+pub use status::RegistrationCertificateStatusValidationError;
+pub use status::StatusValidatedRegistrationCertificate;
+pub use validation::BoundRegistrationCertificate;
+pub use validation::CredentialSetValidationError;
+pub use validation::MultiLanguageStringSetValidationError;
+pub use validation::RegistrationCertificateValidationError;
+pub use validation::SubjectType;
+
+#[cfg(any(test, feature = "mock"))]
+pub mod mock;
+
+#[cfg(test)]
+mod test {
+    use std::fmt;
+
+    use crypto::x509::DistinguishedName;
+    use serde_json::Value;
+    use serde_json::json;
+
+    use super::BoundRegistrationCertificate;
+    use super::ParsedRegistrationCertificate;
+    use super::StatusValidatedRegistrationCertificate;
+    use super::UncheckedRegistrationCertificate;
+    use super::mock::ANNEX_C_EXAMPLE;
+    use super::mock::STATUS_LIST_URI;
+    use crate::x509::RelyingParty;
+
+    impl fmt::Debug for BoundRegistrationCertificate {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("BoundRegistrationCertificate")
+        }
+    }
+
+    impl fmt::Debug for StatusValidatedRegistrationCertificate {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("StatusValidatedRegistrationCertificate")
+        }
+    }
+
+    impl fmt::Debug for ParsedRegistrationCertificate {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("ParsedRegistrationCertificate")
+        }
+    }
+
+    pub(super) fn valid_parsed_payload() -> ParsedRegistrationCertificate {
+        serde_json::from_value(valid_payload_json()).unwrap()
+    }
+
+    pub(super) fn valid_payload_json() -> Value {
+        let mut payload: Value = serde_json::from_str(ANNEX_C_EXAMPLE).unwrap();
+        payload["status"] = json!({
+            "idx": "0",
+            "uri": STATUS_LIST_URI,
+        });
+        payload
+    }
+
+    pub(super) fn legal_person_access_certificate_subject() -> RelyingParty {
+        RelyingParty::try_from(DistinguishedName::new_legal_person(
+            "Example Company".to_string(),
+            "DE".to_string(),
+            "Example Company GmbH".to_string(),
+            "LEIXG-529900T8BM49AURSDO55".to_string(),
+        ))
+        .unwrap()
+    }
+
+    pub(super) fn valid_payload() -> UncheckedRegistrationCertificate {
+        serde_json::from_value(valid_payload_json()).unwrap()
+    }
+}

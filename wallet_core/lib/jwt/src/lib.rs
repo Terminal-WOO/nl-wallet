@@ -28,7 +28,7 @@
 //!
 //! ## Traits
 //! * [`JwtTyp`]
-//!   - Define `const TYP: &'static str`, `"jwt"` by default.
+//!   - Define `const TYP: &'static str`, `"JWT"` by default, compared case-insensitively.
 //!   - Verification automatically rejects tokens whose header `typ` does not match.
 //! * [`JwtSub`]
 //!   - Define `const SUB: &'static str` and use helpers:
@@ -37,13 +37,12 @@
 pub mod confirmation;
 pub mod error;
 pub mod headers;
+pub mod jades_b_b;
 pub mod jwk;
 pub mod jwt;
-pub mod pop;
-pub mod wua;
-
-pub use jwt::*;
+pub mod nonce;
 
 pub use jsonwebtoken::Algorithm;
+pub use jsonwebtoken::EncodingKey;
 pub use jsonwebtoken::Header;
-pub use jsonwebtoken::Validation;
+pub use jwt::*;

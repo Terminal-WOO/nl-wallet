@@ -10,7 +10,7 @@ import '../../test_util/test_utils.dart';
 
 void main() {
   group('goldens', () {
-    testGoldens('light', (tester) async {
+    testGoldens('ltc12 light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DemoScreen(),
       );
@@ -18,7 +18,16 @@ void main() {
       await screenMatchesGolden('light');
     });
 
-    testGoldens('dark - landscape', (tester) async {
+    testGoldens('ltc12 light - scaled', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const DemoScreen(),
+        textScaleSize: 2,
+      );
+
+      await screenMatchesGolden('light.2x');
+    });
+
+    testGoldens('ltc12 dark - landscape', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const DemoScreen(),
         brightness: Brightness.dark,
@@ -30,7 +39,7 @@ void main() {
   });
 
   group('widget', () {
-    testWidgets('navigates to introduction when continue is pressed', (WidgetTester tester) async {
+    testWidgets('ltc12 navigates to introduction when continue is pressed', (WidgetTester tester) async {
       // Given
       await tester.pumpWidgetWithAppWrapper(const DemoScreen());
 

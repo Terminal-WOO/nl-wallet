@@ -1,7 +1,6 @@
 import 'package:wallet_core/core.dart';
 
 import '../../util/extension/string_extension.dart';
-import 'mock_assets.dart';
 
 final Map<String, Organization> kOrganizations = {
   kRvigId: _kRvigOrganization,
@@ -20,6 +19,7 @@ final Map<String, Organization> kOrganizations = {
   kBankId: _kBankOrganization,
   kMonkeyBikeId: _kMonkeyBikeOrganization,
   kPharmacyId: _kPharmacyOrganization,
+  kSupermarketId: _kSupermarket,
 };
 
 const kRvigId = 'rvig';
@@ -39,278 +39,314 @@ const kBankId = 'bank';
 const kMonkeyBikeId = 'monkey_bike';
 const kPharmacyId = 'pharmacy';
 const kSampleCityTheHague = 'Den Haag';
+const kSupermarketId = 'supermarket';
+
+const _kExampleSupportUri = 'https://example.org/support';
 
 const _kRvigOrganizationName = 'Rijksdienst voor Identiteits­gegevens';
-final _kRvigOrganization = Organization(
+const _kRvigOrganization = Organization(
   //id: kRvigId,
-  legalName: _kRvigOrganizationName.dutch,
-  displayName: _kRvigOrganizationName.dutch,
-  category: [
-    const LocalizedString(language: 'en', value: 'Government'),
-    const LocalizedString(language: 'nl', value: 'Overheid'),
-  ],
-  description: [
-    const LocalizedString(
-      language: 'en',
-      value: 'RvIG is the authority and director for the secure and reliable use of identity data.',
+  legalName: _kRvigOrganizationName,
+  displayName: _kRvigOrganizationName,
+  serviceDescription: [
+    ServiceDescription(
+      translations: [
+        LocalizedString(
+          language: 'en',
+          value: 'RvIG is the authority and director for the secure and reliable use of identity data.',
+        ),
+        LocalizedString(
+          language: 'nl',
+          value: 'RvIG is de autoriteit en regisseur van het veilig en betrouwbaar gebruik van identiteits­gegevens.',
+        ),
+      ],
     ),
-    const LocalizedString(
-      language: 'nl',
-      value: 'RvIG is de autoriteit en regisseur van het veilig en betrouwbaar gebruik van identiteits­gegevens.',
-    ),
   ],
-  city: [
-    const LocalizedString(language: 'en', value: 'The Hague, The Netherlands'),
-    const LocalizedString(language: 'nl', value: 'Den Haag, Nederland'),
-  ],
-  image: const Image.asset(path: MockAssets.logo_rijksoverheid),
   webUrl: 'https://www.rvig.nl/',
   privacyPolicyUrl: 'https://www.rvig.nl/over-deze-site/privacyverklaring-rijksdienst-voor-identiteitsgegevens',
-  kvk: '27373207',
+  identifier: 'NTRNL-27373207',
+  countryCode: 'NL',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://www.rvig.nl/contact',
 );
 
 final _kRdwOrganization = Organization(
   //id: kRdwId,
-  legalName: 'Rijksdienst voor het Wegverkeer (RDW)'.untranslated,
-  displayName: 'RDW'.untranslated,
-  category: 'Overheid'.untranslated,
-  description:
-      'De Rijksdienst voor het Wegverkeer (RDW) draagt bij aan een veilig, schoon, economisch en geordend wegverkeer.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_rdw),
+  legalName: 'Rijksdienst voor het Wegverkeer (RDW)',
+  displayName: 'RDW',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'De Rijksdienst voor het Wegverkeer (RDW) draagt bij aan een veilig, schoon, economisch en geordend wegverkeer.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-27374436',
+  countryCode: 'NL',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 final _kDuoOrganization = Organization(
   //id: kDuoId,
-  legalName: 'Dienst Uitvoering Onderwijs (DUO)'.untranslated,
-  displayName: 'DUO'.untranslated,
-  category: 'Overheid'.untranslated,
-  description:
-      'Dienst Uitvoering Onderwijs (DUO) verzorgt onderwijs en ontwikkeling in opdracht van het Nederlandse ministerie van Onderwijs, Cultuur en Wetenschap.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_rijksoverheid),
+  legalName: 'Dienst Uitvoering Onderwijs (DUO)',
+  displayName: 'DUO',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'Dienst Uitvoering Onderwijs (DUO) verzorgt onderwijs en ontwikkeling in opdracht van het Nederlandse ministerie van Onderwijs, Cultuur en Wetenschap.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-50973029',
+  countryCode: 'NL',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 final _kEmployerOrganization = Organization(
   //id: kEmployerId,
-  legalName: 'Werken voor Nederland'.untranslated,
-  displayName: 'Werken voor Nederland'.untranslated,
-  category: 'Bedrijf'.untranslated,
-  description:
-      'Werken voor Nederland (onderdeel van De Rijksoverheid) is één van de grootste werkgevers van ons land. De kans dat jij jouw baan bij de Rijksoverheid vindt is dan ook behoorlijk groot.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_rijksoverheid),
+  legalName: 'Werken voor Nederland',
+  displayName: 'Werken voor Nederland',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'Werken voor Nederland (onderdeel van De Rijksoverheid) is één van de grootste werkgevers van ons land. De kans dat jij jouw baan bij de Rijksoverheid vindt is dan ook behoorlijk groot.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-98765431',
+  countryCode: 'NL',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 final _kJustisOrganization = Organization(
   //id: kJusticeId,
-  legalName: 'Ministerie van Justitie en Veiligheid'.untranslated,
-  displayName: 'Justis'.untranslated,
-  category: 'Overheid'.untranslated,
-  description:
-      'Screeningsautoriteit Justis beoordeelt de betrouwbaarheid van personen en organisaties ter bevordering van een veilige en rechtvaardige samenleving.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_rijksoverheid),
+  legalName: 'Ministerie van Justitie en Veiligheid',
+  displayName: 'Justis',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'Screeningsautoriteit Justis beoordeelt de betrouwbaarheid van personen en organisaties ter bevordering van een veilige en rechtvaardige samenleving.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-27378698',
+  countryCode: 'NL',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 const _kMarketPlaceOrganization = Organization(
   //id: kMarketplaceId,
-  legalName: [
-    LocalizedString(language: 'en', value: 'Marktplek B.V.'),
-    LocalizedString(language: 'nl', value: 'Marktplek B.V.'),
+  legalName: 'Marktplek B.V.',
+  displayName: 'Marktplek',
+  serviceDescription: [
+    ServiceDescription(
+      translations: [
+        LocalizedString(language: 'en', value: 'Easily sell your second-hand items online at Marktplek.'),
+        LocalizedString(language: 'nl', value: 'Verkoop eenvoudig je tweedehands spullen via Marktplek.'),
+      ],
+    ),
   ],
-  displayName: [
-    LocalizedString(language: 'en', value: 'Marktplek'),
-    LocalizedString(language: 'nl', value: 'Marktplek'),
-  ],
-  category: [
-    LocalizedString(language: 'en', value: 'Trading'),
-    LocalizedString(language: 'nl', value: 'Winkelen'),
-  ],
-  description: [
-    LocalizedString(language: 'en', value: 'Easily sell your second-hand items online at Marktplek.'),
-    LocalizedString(language: 'nl', value: 'Verkoop eenvoudig je tweedehands spullen via Marktplek.'),
-  ],
-  image: Image.asset(path: MockAssets.logo_ecommerce),
-  city: [
-    LocalizedString(language: 'en', value: 'Zwolle, The Netherlands'),
-    LocalizedString(language: 'nl', value: 'Zwolle, Nederland'),
-  ],
-  kvk: '98765432',
-  countryCode: 'nl',
+  identifier: 'NTRNL-98765432',
+  countryCode: 'NL',
   webUrl: 'https://www.marktplek.nl',
   privacyPolicyUrl: 'https://www.marktplek.nl/privacy',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: 'klantenservice@marktplek.nl',
 );
 
 final _kBarOrganization = Organization(
   //id: kBarId,
-  legalName: 'Cafe de Dobbelaar'.untranslated,
-  displayName: 'Cafe de Dobbelaar'.untranslated,
-  category: 'Horeca'.untranslated,
-  description: 'Familiecafe sinds 1984.'.untranslated,
-  image: const Image.asset(path: MockAssets.logo_bar),
+  legalName: 'Henk Dobbelaar',
+  displayName: 'Cafe de Dobbelaar',
+  serviceDescription: [ServiceDescription(translations: 'Familiecafe sinds 1984.'.untranslated)],
+  identifier: 'NTRNL-98765420',
+  countryCode: 'NL',
+  publicBody: false,
+  personType: PersonType.NaturalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 final _kHealthInsurerOrganization = Organization(
   //id: kHealthInsuranceId,
-  legalName: 'Zorgverzekeraar Z'.untranslated,
-  displayName: 'Zorgverzekeraar Z'.untranslated,
-  category: 'Zorgverlener'.untranslated,
-  description:
-      'Of het nu gaat om het regelen van zorg, het betalen van zorg of een gezond leven. Zorgverzekeraar Z zet zich elke dag in voor de gezondheid van haar klanten.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_zorgverzekeraar_z),
+  legalName: 'Zorgverzekeraar Z',
+  displayName: 'Zorgverzekeraar Z',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'Of het nu gaat om het regelen van zorg, het betalen van zorg of een gezond leven. Zorgverzekeraar Z zet zich elke dag in voor de gezondheid van haar klanten.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-98765421',
+  countryCode: 'NL',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 final _kHousingCorporationOrganization = Organization(
   //id: kHousingCorpId,
-  legalName: 'BeterWonen'.untranslated,
-  displayName: 'BeterWonen'.untranslated,
-  category: 'Wooncorporatie'.untranslated,
-  description: 'Moderne woningen voor iedereen in de Gemeente Den Haag en omstreken.'.untranslated,
-  image: const Image.asset(path: MockAssets.logo_housing_corp),
+  legalName: 'BeterWonen',
+  displayName: 'BeterWonen',
+  serviceDescription: [
+    ServiceDescription(
+      translations: 'Moderne woningen voor iedereen in de Gemeente Den Haag en omstreken.'.untranslated,
+    ),
+  ],
   webUrl: 'https://beterwonen.nl',
-  countryCode: 'nl',
-  city: kSampleCityTheHague.untranslated,
-  department: 'Secretariaat'.untranslated,
+  identifier: 'NTRNL-98765422',
+  countryCode: 'NL',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://beterwonen.nl/contact',
 );
 
 final _kCarRentalOrganization = Organization(
   //id: kCarRentalId,
-  legalName: 'CarRental'.untranslated,
-  displayName: 'CarRental'.untranslated,
-  category: 'Autoverhuur'.untranslated,
-  description: 'Betrouwbaar huren.'.untranslated,
-  image: const Image.asset(path: MockAssets.logo_car_rental),
+  legalName: 'CarRental',
+  displayName: 'CarRental',
+  serviceDescription: [ServiceDescription(translations: 'Betrouwbaar huren.'.untranslated)],
+  identifier: 'NTRNL-98765423',
+  countryCode: 'NL',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
 final _kFirstAidOrganization = Organization(
   //id: 'first_aid',
-  legalName: 'Healthcare Facility'.untranslated,
-  displayName: 'Healthcare Facility'.untranslated,
-  category: 'Zorgverlener'.untranslated,
-  description:
-      'Deze Healthcare Facility is fictief ter invulling van de Demo. Dit kan een zorginstelling zijn in Nederland of in het buitenland.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_first_aid),
+  legalName: 'Healthcare Facility',
+  displayName: 'Healthcare Facility',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'Deze Healthcare Facility is fictief ter invulling van de Demo. Dit kan een zorginstelling zijn in Nederland of in het buitenland.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-98765424',
+  countryCode: 'NL',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );
 
-final _kMunicipalityAmsterdamOrganization = Organization(
+const _kMunicipalityAmsterdamOrganization = Organization(
   //id: kMunicipalityAmsterdamId,
-  legalName: [
-    const LocalizedString(language: 'en', value: 'City of Amsterdam'),
-    const LocalizedString(language: 'nl', value: 'Gemeente Amsterdam'),
+  legalName: 'Gemeente Amsterdam',
+  displayName: 'Gemeente Amsterdam',
+  serviceDescription: [
+    ServiceDescription(
+      translations: [
+        LocalizedString(language: 'en', value: 'Everything we do, we do for the city and the people of Amsterdam.'),
+        LocalizedString(language: 'nl', value: 'Alles wat we doen, doen we voor de stad en de Amsterdammers.'),
+      ],
+    ),
   ],
-  displayName: [
-    const LocalizedString(language: 'en', value: 'City of Amsterdam'),
-    const LocalizedString(language: 'nl', value: 'Gemeente Amsterdam'),
-  ],
-  category: [
-    const LocalizedString(language: 'en', value: 'Municipality'),
-    const LocalizedString(language: 'nl', value: 'Gemeente'),
-  ],
-  description: [
-    const LocalizedString(language: 'en', value: 'Everything we do, we do for the city and the people of Amsterdam.'),
-    const LocalizedString(language: 'nl', value: 'Alles wat we doen, doen we voor de stad en de Amsterdammers.'),
-  ],
-  image: const Image.asset(path: MockAssets.logo_municipality_amsterdam),
-  city: 'Amsterdam'.untranslated,
-  countryCode: 'nl',
-  kvk: '34366966',
+  countryCode: 'NL',
+  identifier: 'NTRNL-34366966',
   webUrl: 'https://www.amsterdam.nl',
   privacyPolicyUrl: 'https://www.amsterdam.nl/privacy',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://www.amsterdam.nl/contact',
 );
 
 final _kMunicipalityTheHagueOrganization = Organization(
   //id: kMunicipalityTheHagueId,
-  legalName: 'Gemeente Den Haag'.untranslated,
-  displayName: 'Gemeente Den Haag'.untranslated,
-  category: 'Gemeente'.untranslated,
-  description:
-      'Den Haag is een unieke stad waar we allemaal trots op zijn. Nieuwsgierig, divers en vol vertrouwen. Vrede en Recht.'
-          .untranslated,
-  image: const Image.asset(path: MockAssets.logo_municipality_den_haag),
-  department: 'Parkeren'.untranslated,
-  city: kSampleCityTheHague.untranslated,
-  countryCode: 'nl',
+  legalName: "Gemeente 's-Gravenhage",
+  displayName: 'Gemeente Den Haag',
+  serviceDescription: [
+    ServiceDescription(
+      translations:
+          'Den Haag is een unieke stad waar we allemaal trots op zijn. Nieuwsgierig, divers en vol vertrouwen. Vrede en Recht.'
+              .untranslated,
+    ),
+  ],
+  identifier: 'NTRNL-27370927',
+  countryCode: 'NL',
   webUrl: 'https://www.denhaag.nl',
+  publicBody: true,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://www.denhaag.nl/contact',
 );
 
 const _kBankOrganization = Organization(
   //id: kBankId,
-  legalName: [
-    LocalizedString(language: 'en', value: 'XYZ Bank N.V.'),
-    LocalizedString(language: 'nl', value: 'XYZ Bank N.V.'),
+  legalName: 'XYZ Bank N.V.',
+  displayName: 'XYZ Bank',
+  serviceDescription: [
+    ServiceDescription(
+      translations: [
+        LocalizedString(language: 'en', value: 'The accessible bank for paying, saving and investing.'),
+        LocalizedString(language: 'nl', value: 'Maak het leven makkelijk. Regel je financieën digitaal met Jouw Bank.'),
+      ],
+    ),
   ],
-  displayName: [
-    LocalizedString(language: 'en', value: 'XYZ Bank'),
-    LocalizedString(language: 'nl', value: 'XYZ Bank'),
-  ],
-  category: [
-    LocalizedString(language: 'en', value: 'Bank'),
-    LocalizedString(language: 'nl', value: 'Bank'),
-  ],
-  description: [
-    LocalizedString(language: 'en', value: 'The accessible bank for paying, saving and investing.'),
-    LocalizedString(language: 'nl', value: 'Maak het leven makkelijk. Regel je financieën digitaal met Jouw Bank.'),
-  ],
-  image: Image.asset(path: MockAssets.logo_bank),
-  department: [
-    LocalizedString(language: 'en', value: 'Customer service'),
-    LocalizedString(language: 'nl', value: 'Klantenservice'),
-  ],
-  countryCode: 'nl',
-  city: [
-    LocalizedString(language: 'en', value: 'Utrecht, The Netherlands'),
-    LocalizedString(language: 'nl', value: 'Utrecht, Nederland'),
-  ],
+  identifier: 'NTRNL-12345678',
+  countryCode: 'NL',
   webUrl: 'https://jouwbank.nl',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://jouwbank.nl/contact',
 );
 
 const _kMonkeyBikeOrganization = Organization(
   //id: kMonkeyBikeId,
-  legalName: [
-    LocalizedString(language: 'en', value: 'MonkeyBike Bezorgdiensten B.V.'),
-    LocalizedString(language: 'nl', value: 'MonkeyBike Bezorgdiensten B.V.'),
-  ],
-  displayName: [
-    LocalizedString(language: 'en', value: 'MonkeyBike'),
-    LocalizedString(language: 'nl', value: 'MonkeyBike'),
-  ],
-  category: [
-    LocalizedString(language: 'en', value: 'Delivery service'),
-    LocalizedString(language: 'nl', value: 'Bezorgdienst'),
-  ],
-  description: [
-    LocalizedString(language: 'en', value: 'Your groceries delivered to your home within 10 minutes.'),
-    LocalizedString(
-      language: 'nl',
-      value: 'Razendsnel jouw boodschappen of bestelling bij jouw thuis. Altijd binnen 10 minuten.',
+  legalName: 'MonkeyBike Bezorgdiensten B.V.',
+  displayName: 'MonkeyBike',
+  serviceDescription: [
+    ServiceDescription(
+      translations: [
+        LocalizedString(language: 'en', value: 'Your groceries delivered to your home within 10 minutes.'),
+        LocalizedString(
+          language: 'nl',
+          value: 'Razendsnel jouw boodschappen of bestelling bij jouw thuis. Altijd binnen 10 minuten.',
+        ),
+      ],
     ),
   ],
-  image: Image.asset(path: MockAssets.logo_monkeybike),
-  department: [
-    LocalizedString(language: 'en', value: 'Online marketing'),
-    LocalizedString(language: 'nl', value: 'Online marketing'),
-  ],
-  countryCode: 'nl',
-  city: [
-    LocalizedString(language: 'en', value: 'Groningen, The Netherlands'),
-    LocalizedString(language: 'nl', value: 'Groningen, Nederland'),
-  ],
+  countryCode: 'NL',
   webUrl: 'https://flitsbezorger-monkeybike.nl',
-  kvk: '3945-2932',
+  identifier: 'NTRNL-3945-2932',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://flitsbezorger-monkeybike.nl/contact',
 );
 
 final _kPharmacyOrganization = Organization(
   //id: kPharmacyId,
-  legalName: 'De Noord Apotheek'.untranslated,
-  displayName: 'Apotheek'.untranslated,
-  category: 'Apotheek'.untranslated,
-  description: 'Al meer dan 25 jaar jouw betrouwbare apotheek.'.untranslated,
-  image: const Image.asset(path: MockAssets.logo_zorgverzekeraar_z),
-  kvk: '1234-1234',
-  city: kSampleCityTheHague.untranslated,
-  countryCode: 'nl',
+  legalName: 'De Noord Apotheek',
+  displayName: 'Apotheek',
+  serviceDescription: [ServiceDescription(translations: 'Al meer dan 25 jaar jouw betrouwbare apotheek.'.untranslated)],
+  identifier: 'NTRNL-1234-1234',
+  countryCode: 'NL',
   webUrl: 'https://denoordapotheek.nl',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: 'https://denoordapotheek.nl/contact',
+);
+
+final _kSupermarket = Organization(
+  legalName: 'De Buurt Super',
+  displayName: 'BuurtSuper',
+  serviceDescription: [
+    ServiceDescription(translations: 'Al meer dan 25 jaar jouw betrouwbare supermarkt.'.untranslated),
+  ],
+  identifier: 'NTRNL-1337-1337',
+  countryCode: 'NL',
+  webUrl: 'https://example.org',
+  publicBody: false,
+  personType: PersonType.LegalPerson,
+  supportUri: _kExampleSupportUri,
 );

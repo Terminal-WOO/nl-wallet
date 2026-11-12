@@ -1,25 +1,27 @@
 //! RP software, for verifying mdoc disclosures, see [`DeviceResponse::verify()`].
 
+use attestation_types::status_claim::StatusClaim;
 use chrono::DateTime;
 use chrono::Utc;
+use coset::iana;
+use crypto::keys::PublicKey;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::CertificateExtendedKeyUsage;
+use crypto::x509::KeyIdentifier;
+use error_category::ErrorCategory;
 use futures::future::try_join_all;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use p256::SecretKey;
 use p256::ecdsa::VerifyingKey;
-use rustls_pki_types::TrustAnchor;
-use tracing::debug;
-use tracing::warn;
-
-use attestation_types::qualification::AttestationQualification;
-use attestation_types::status_claim::StatusClaim;
-use crypto::x509::CertificateUsage;
-use http_utils::urls::HttpsUri;
 use token_status_list::verification::client::StatusListClient;
 use token_status_list::verification::verifier::RevocationStatus;
 use token_status_list::verification::verifier::RevocationVerifier;
+use tracing::debug;
+use tracing::warn;
 use utils::generator::Generator;
 use utils::vec_at_least::VecNonEmpty;
+use utils::vec_nonempty;
 
 use crate::Error;
 use crate::Result;
@@ -36,12 +38,11 @@ use crate::utils::serialization::cbor_serialize;
 pub struct DisclosedDocument {
     pub doc_type: String,
     pub attributes: IndexMap<NameSpace, IndexMap<DataElementIdentifier, DataElementValue>>,
-    pub issuer_uri: HttpsUri,
-    pub attestation_qualification: AttestationQualification,
     pub ca: String,
     pub validity_info: ValidityInfo,
     pub revocation_status: Option<RevocationStatus>,
     pub device_key: VerifyingKey,
+    pub aki: Vec<KeyIdentifier>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,34 +52,77 @@ pub struct IssuerSignedVerificationResult {
     pub ca_common_name: String,
 }
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, ErrorCategory)]
+#[category(pd)]
 pub enum VerificationError {
     #[error("errors in device response: {0:#?}")]
-    DeviceResponseErrors(Vec<DocumentError>),
-    #[error("unexpected status: {0}")]
-    UnexpectedStatus(u64),
+    DeviceResponseErrors(VecNonEmpty<DocumentError>),
+
+    #[error("unexpected status: {0:?}")]
+    #[category(critical)]
+    UnexpectedStatus(DeviceResponseStatus),
+
     #[error("no documents found in device response")]
+    #[category(critical)]
     NoDocuments,
+
     #[error("inconsistent doctypes: document contained {document}, mso contained {mso}")]
     WrongDocType { document: DocType, mso: DocType },
+
     #[error("namespace {0} not found in mso")]
     MissingNamespace(NameSpace),
+
     #[error("digest ID {0} not found in mso")]
     MissingDigestID(DigestID),
+
     #[error("attribute verification failed: did not hash to the value in the MSO")]
+    #[category(critical)]
     AttributeVerificationFailed,
+
     #[error("missing ephemeral key")]
+    #[category(critical)]
     EphemeralKeyMissing,
+
     #[error("validity error: {0}")]
+    #[category(defer)]
     Validity(#[from] ValidityError),
+
     #[error("unexpected amount of CA Common Names in issuer certificate: expected 1, found {0}")]
+    #[category(critical)]
     UnexpectedCACommonNameCount(usize),
-    #[error("issuer URI {0} not found in SAN {1:?}")]
-    IssuerUriNotFoundInSan(HttpsUri, VecNonEmpty<HttpsUri>),
-    #[error("missing issuer URI")]
-    MissingIssuerUri,
-    #[error("missing attestation qualification")]
-    MissingAttestationQualification,
+
+    #[error("unsupported issuer algorithm: {0:?}")]
+    #[category(critical)]
+    UnsupportedIssuerAlgorithm(iana::Algorithm),
+
+    #[error("unsupported device algorithm: {0:?}")]
+    #[category(critical)]
+    UnsupportedDeviceAlgorithm(iana::Algorithm),
+}
+
+pub struct SupportedAlgorithms {
+    pub issuer_algorithms: VecNonEmpty<iana::Algorithm>,
+    pub device_algorithms: VecNonEmpty<iana::Algorithm>,
+}
+
+impl Default for SupportedAlgorithms {
+    fn default() -> Self {
+        Self {
+            issuer_algorithms: vec_nonempty![
+                iana::Algorithm::ES256,
+                iana::Algorithm::ESP256,
+                iana::Algorithm::ES384,
+                iana::Algorithm::ESP384
+            ],
+            device_algorithms: vec_nonempty![
+                iana::Algorithm::ES256,
+                iana::Algorithm::ESP256,
+                iana::Algorithm::ES384,
+                iana::Algorithm::ESP384,
+                iana::Algorithm::HMAC_256_256
+            ],
+        }
+    }
 }
 
 impl DeviceResponse {
@@ -95,8 +139,32 @@ impl DeviceResponse {
         eph_reader_key: Option<&SecretKey>,
         session_transcript: &SessionTranscript,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor<'_>],
+        trust_anchors: &TrustAnchors,
         revocation_verifier: &RevocationVerifier<C>,
+    ) -> Result<Vec<DisclosedDocument>>
+    where
+        C: StatusListClient,
+    {
+        self.verify_inner(
+            eph_reader_key,
+            session_transcript,
+            time,
+            trust_anchors,
+            revocation_verifier,
+            &SupportedAlgorithms::default(),
+        )
+        .await
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "private function")]
+    async fn verify_inner<C>(
+        &self,
+        eph_reader_key: Option<&SecretKey>,
+        session_transcript: &SessionTranscript,
+        time: &impl Generator<DateTime<Utc>>,
+        trust_anchors: &TrustAnchors,
+        revocation_verifier: &RevocationVerifier<C>,
+        supported_algorithms: &SupportedAlgorithms,
     ) -> Result<Vec<DisclosedDocument>>
     where
         C: StatusListClient,
@@ -105,7 +173,7 @@ impl DeviceResponse {
             return Err(VerificationError::DeviceResponseErrors(errors.clone()).into());
         }
 
-        if self.status != 0 {
+        if self.status != DeviceResponseStatus::Ok {
             return Err(VerificationError::UnexpectedStatus(self.status).into());
         }
 
@@ -124,6 +192,7 @@ impl DeviceResponse {
                             time,
                             trust_anchors,
                             revocation_verifier,
+                            supported_algorithms,
                         )
                         .await
                         .inspect_err(|error| {
@@ -141,12 +210,15 @@ impl DeviceResponse {
     }
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, ErrorCategory)]
+#[category(pd)]
 pub enum ValidityError {
     #[error("validity parsing failed: {0}")]
     ParsingFailed(#[from] chrono::ParseError),
+
     #[error("not yet valid: valid from {0}")]
     NotYetValid(String),
+
     #[error("expired at {0}")]
     Expired(String),
 }
@@ -181,11 +253,18 @@ impl IssuerSigned {
         &self,
         validity: ValidityRequirement,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor],
+        trust_anchors: &TrustAnchors,
+        algorithms: &[iana::Algorithm],
     ) -> Result<IssuerSignedVerificationResult> {
-        let TaggedBytes(mso) =
-            self.issuer_auth
-                .verify_against_trust_anchors(CertificateUsage::Mdl, time, trust_anchors)?;
+        let algorithm = self.issuer_auth.algorithm()?;
+        if !algorithms.contains(&algorithm) {
+            Err(VerificationError::UnsupportedIssuerAlgorithm(algorithm))?;
+        }
+        let TaggedBytes(mso) = self.issuer_auth.verify_against_trust_anchors(
+            trust_anchors,
+            time,
+            Some(CertificateExtendedKeyUsage::Mdl),
+        )?;
 
         mso.validity_info
             .verify_is_valid_at(time.generate(), validity)
@@ -204,19 +283,14 @@ impl IssuerSigned {
             .transpose()?
             .unwrap_or_default();
 
-        let signing_cert = self.issuer_auth.signing_cert()?;
-        let ca_cns = signing_cert.issuer_common_names()?;
+        let signing_cert = self.issuer_auth.x5chain()?.into_first();
+        let ca_cns = signing_cert
+            .issuer_common_names()
+            .map_err(Error::CertificateNameError)?;
         let ca_common_name = ca_cns
             .into_iter()
             .exactly_one()
             .map_err(|error| VerificationError::UnexpectedCACommonNameCount(error.into_iter().len()))?;
-
-        let san_dns_name_or_uris = signing_cert.san_dns_name_or_uris()?;
-        match mso.issuer_uri {
-            Some(ref uri) if san_dns_name_or_uris.as_ref().contains(uri) => {}
-            Some(uri) => return Err(VerificationError::IssuerUriNotFoundInSan(uri, san_dns_name_or_uris).into()),
-            None => return Err(VerificationError::MissingIssuerUri.into()),
-        }
 
         let result = IssuerSignedVerificationResult {
             mso,
@@ -249,10 +323,10 @@ impl MobileSecurityObject {
         let digest_id = item.0.digest_id;
         let digest = self
             .value_digests
-            .0
+            .as_ref()
             .get(namespace)
             .ok_or_else(|| VerificationError::MissingNamespace(namespace.clone()))?
-            .0
+            .as_ref()
             .get(&digest_id)
             .ok_or_else(|| VerificationError::MissingDigestID(digest_id))?;
         if *digest != cbor_digest(item)? {
@@ -263,26 +337,35 @@ impl MobileSecurityObject {
 }
 
 impl Document {
-    pub async fn verify<C>(
+    #[expect(clippy::too_many_arguments, reason = "crate internal function")]
+    pub(crate) async fn verify<C>(
         &self,
         eph_reader_key: Option<&SecretKey>,
         session_transcript: &SessionTranscript,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor<'_>],
+        trust_anchors: &TrustAnchors,
         revocation_verifier: &RevocationVerifier<C>,
+        supported_algorithms: &SupportedAlgorithms,
     ) -> Result<DisclosedDocument>
     where
         C: StatusListClient,
     {
+        // Check that the device signature is from a supported algorithm.
+        // Issuer signature algorithms is checked separately when verifying the issuer signed.
+        self.verify_device_signature_alg(supported_algorithms.device_algorithms.as_slice())?;
+
         debug!("verifying document with doc_type: {:?}", &self.doc_type);
         debug!("verify issuer_signed");
         let IssuerSignedVerificationResult {
             mso,
             attributes,
             ca_common_name,
-        } = self
-            .issuer_signed
-            .verify(ValidityRequirement::Valid, time, trust_anchors)?;
+        } = self.issuer_signed.verify(
+            ValidityRequirement::Valid,
+            time,
+            trust_anchors,
+            supported_algorithms.issuer_algorithms.as_slice(),
+        )?;
 
         debug!("verifying mso.doc_type matches document doc_type");
         if self.doc_type != mso.doc_type {
@@ -293,22 +376,18 @@ impl Document {
             .into());
         }
 
-        let attestation_qualification = mso
-            .attestation_qualification
-            .ok_or(VerificationError::MissingAttestationQualification)?;
-
         debug!("serializing session transcript");
         let session_transcript_bts = cbor_serialize(&TaggedBytes(session_transcript))?;
         debug!("serializing device_authentication");
         let device_authentication_bts = DeviceAuthenticationKeyed::challenge(&self.doc_type, session_transcript)?;
 
         debug!("extracting device_key");
-        let device_key = (&mso.device_key_info.device_key).try_into()?;
+        let device_key = VerifyingKey::try_from(&mso.device_key_info.device_key)?;
         match &self.device_signed.device_auth {
             DeviceAuth::DeviceSignature(sig) => {
                 debug!("verifying DeviceSignature");
                 sig.clone_with_payload(device_authentication_bts.to_vec())
-                    .verify(&device_key)?;
+                    .verify(&PublicKey::from(device_key))?;
             }
             DeviceAuth::DeviceMac(mac) => {
                 debug!("verifying DeviceMac");
@@ -325,63 +404,78 @@ impl Document {
         }
         debug!("signature valid");
 
+        let issuer_certificate = &self.issuer_signed.issuer_auth.x5chain()?.into_first();
+
         let revocation_status = match &mso.status {
-            Some(StatusClaim::StatusList(status_list_claim)) => {
-                let issuer_certificate = &self.issuer_signed.issuer_auth.signing_cert()?;
+            Some(MdocStatus::StatusList(status_list_claim)) => {
                 let revocation_status = revocation_verifier
-                    .verify(
-                        trust_anchors,
-                        issuer_certificate,
-                        status_list_claim.uri.clone(),
-                        time,
-                        status_list_claim.idx.try_into().unwrap(),
-                    )
+                    .verify(trust_anchors, StatusClaim::StatusList(status_list_claim.clone()), time)
                     .await;
                 Some(revocation_status)
             }
-            _ => None,
+            // `identifier_list` status are treated as undetermined for now (PVW-6106)
+            Some(MdocStatus::IdentifierList(_)) => Some(RevocationStatus::Undetermined),
+            None => None,
         };
+
+        let aki = issuer_certificate.authority_key_id().into_iter().collect();
 
         let disclosed_document = DisclosedDocument {
             doc_type: mso.doc_type,
             attributes,
-            // The presence of the `issuer_uri` is guaranteed by `IssuerSigned::verify()`.
-            issuer_uri: mso.issuer_uri.unwrap(),
-            attestation_qualification,
             ca: ca_common_name,
             validity_info: mso.validity_info,
             revocation_status,
             device_key,
+            aki,
         };
 
         Ok(disclosed_document)
+    }
+
+    fn verify_device_signature_alg(&self, supported_algorithms: &[iana::Algorithm]) -> Result<()> {
+        let device_signature_alg = match &self.device_signed.device_auth {
+            DeviceAuth::DeviceSignature(device_sig) => device_sig.algorithm(),
+            DeviceAuth::DeviceMac(device_mac) => device_mac.algorithm(),
+        }?;
+
+        if !supported_algorithms.contains(&device_signature_alg) {
+            Err(VerificationError::UnsupportedDeviceAlgorithm(device_signature_alg))?
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::ops::Add;
+    use std::sync::Arc;
 
     use chrono::Duration;
     use chrono::Utc;
-
     use crypto::examples::Examples;
+    use crypto::mock_remote::DisclosureMockRemoteWscd;
+    use crypto::mock_remote::MockRemoteEcdsaKey;
     use crypto::server_keys::generate::Ca;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
     use token_status_list::verification::client::mock::StatusListClientStub;
+    use utils::generator::mock::MockTimeGenerator;
 
+    use super::*;
     use crate::examples::EXAMPLE_ATTR_NAME;
     use crate::examples::EXAMPLE_ATTR_VALUE;
     use crate::examples::EXAMPLE_DOC_TYPE;
     use crate::examples::EXAMPLE_NAMESPACE;
     use crate::examples::Example;
     use crate::examples::IsoCertTimeGenerator;
+    use crate::holder::disclosure::PartialMdoc;
     use crate::iso::disclosure::DeviceResponse;
     use crate::iso::engagement::DeviceAuthenticationBytes;
+    use crate::iso::engagement::SessionTranscript;
     use crate::iso::mdocs::ValidityInfo;
     use crate::test;
     use crate::test::DebugCollapseBts;
-
-    use super::*;
 
     fn new_validity_info(add_from_days: i64, add_until_days: i64) -> ValidityInfo {
         let now = Utc::now();
@@ -449,8 +543,10 @@ mod tests {
                 Some(&eph_reader_key),
                 &DeviceAuthenticationBytes::example().0.0.session_transcript,
                 &IsoCertTimeGenerator,
-                &[ca.to_trust_anchor()],
-                &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+                &ca.to_trust_anchors(),
+                &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                    ca.generate_issuer_status_list_mock().unwrap(),
+                ))),
             )
             .await
             .unwrap();
@@ -463,6 +559,48 @@ mod tests {
             EXAMPLE_NAMESPACE,
             EXAMPLE_ATTR_NAME,
             &EXAMPLE_ATTR_VALUE,
+        );
+    }
+
+    #[tokio::test]
+    async fn document_verify_with_identifier_list_status_is_undetermined() {
+        let ca = Ca::generate_issuer_mock_ca().unwrap();
+        let key = MockRemoteEcdsaKey::new("mdoc_key".to_owned(), SigningKey::generate());
+        let status = MdocStatus::IdentifierList(IdentifierListInfo {
+            id: hex::decode("cccc").unwrap(),
+            uri: "https://example.com/identifierlists/1".parse().unwrap(),
+            certificate: None,
+        });
+        let partial_mdoc = PartialMdoc::new_mock_with_ca_key_and_status(&ca, &key, Some(status));
+        let session_transcript = SessionTranscript::new_mock();
+        let wscd = DisclosureMockRemoteWscd::new(vec![key.clone()]);
+
+        let device_responses = DeviceResponse::sign_multiple_from_partial_mdocs(
+            vec_nonempty![(partial_mdoc, key.identifier.clone())],
+            &session_transcript,
+            &wscd,
+        )
+        .await
+        .expect("signing DeviceResponse from mdoc should succeed");
+
+        let disclosed_documents = device_responses
+            .into_first()
+            .verify(
+                None,
+                &session_transcript,
+                &MockTimeGenerator::default(),
+                &ca.to_trust_anchors(),
+                &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                    ca.generate_issuer_status_list_mock().unwrap(),
+                ))),
+            )
+            .await
+            .expect("verifying DeviceResponse should succeed");
+
+        let disclosed_document = disclosed_documents.into_iter().exactly_one().unwrap();
+        assert_eq!(
+            disclosed_document.revocation_status,
+            Some(RevocationStatus::Undetermined)
         );
     }
 }

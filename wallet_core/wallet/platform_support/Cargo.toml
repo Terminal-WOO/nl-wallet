@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[package.metadata.sbom]
+# Included through flutter_api; standalone native-library builds are for tests.
+production-root = false
+
 [lints]
 workspace = true
 
@@ -12,23 +16,20 @@ crate-type = ["staticlib", "cdylib", "lib"]
 doctest = false
 
 [features]
+# Compile the Rust close-proximity session-crypto helpers that depend on `mdoc`.
+# These helpers are only used from the iOS UniFFI bindings.
+ios_session_crypto = ["dep:cose", "dep:mdoc", "dep:rand", "dep:serde_bytes"]
 # Implement the mock hardware key types
-mock_hw_keystore = ["aes-gcm/std", "dep:rand_core"]
+mock_hw_keystore = ["dep:aes-gcm", "dep:rand_core"]
+# Include the MockCloseProximityDisclosureClient
+mock_close_proximity_disclosure = ["dep:mockall", "tokio/time"]
 # Include the MockHardwareAttestedKeyHolder type for use in Apple tests
-mock_attested_key_apple = [
-    "apple_app_attest/mock",
-    "dep:apple_app_attest",
-    "dep:cfg-if",
-    "dep:cfg_eval",
-    "dep:rand_core",
-    "uuid/v4",
-]
+mock_attested_key_apple = ["apple_app_attest/mock", "dep:apple_app_attest", "dep:cfg_eval", "dep:rand_core", "uuid/v4"]
 # Include the MockHardwareAttestedKeyHolder type for use in Android tests
 mock_attested_key_google = [
     "android_attest/mock",
     "dep:android_attest",
     "dep:base64",
-    "dep:cfg-if",
     "dep:cfg_eval",
     "dep:rand_core",
     "uuid/v4",
@@ -39,76 +40,83 @@ mock_attested_key = ["mock_attested_key_apple", "mock_attested_key_google"]
 mock_attested_key_apple_ca = ["apple_app_attest/mock_ca", "mock_attested_key_apple"]
 # Include PersistentMockAttestedKeyHolder for use in the iOS simulator
 persistent_mock_attested_key = [
+    "dep:futures",
     "dep:serde_json",
-    "futures/std",
     "mock_attested_key_apple_ca",
     "serde/derive",
     "serde/rc",
     "serde_with/base64",
     "tokio/fs",
-    "tokio/parking_lot",
     "tokio/sync",
 ]
 # Implement extra constructor on PersistentMockAttestedKeyHolder by reading Xcode environment variables
 xcode_env = ["apple_app_attest/xcode_env"]
 # Include the MockHardwareUtilities type for use in tests
-mock_utils = ["tokio/parking_lot"]
+mock_utils = []
 # Include all mock implementations for use in tests
-mock = ["mock_attested_key", "mock_hw_keystore", "mock_utils"]
+mock = ["mock_attested_key", "mock_close_proximity_disclosure", "mock_hw_keystore", "mock_utils"]
 # Enable helper code for iOS and Android integration tests
 hardware_integration_test = [
-    "android_attest/allow_emulator_keys",
+    "android_attest/test_root_keys",
     "apple_app_attest/xcode_env",
     "dep:android_attest",
     "dep:android_logger",
     "dep:apple_app_attest",
-    "dep:cfg-if",
     "dep:jni",
     "dep:log",
     "dep:rustls-pki-types",
     "tokio/fs",
     "tokio/io-util",
-    "tokio/parking_lot",
     "tokio/rt",
+]
+# Enable helper code to run hardware integration test against an Android emulator
+emulator_integration_test = [
+    "android_attest/allow_emulator_keys",
+    "android_attest/skip_root_key_check",
+    "hardware_integration_test",
 ]
 
 [dependencies]
 async-trait.workspace = true
 derive_more = { workspace = true, features = ["debug"] }
-p256 = { workspace = true, features = ["ecdsa", "pkcs8", "std"] }
+p256 = { workspace = true, features = ["pkcs8"] }
 parking_lot.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+trait-variant.workspace = true
 uniffi.workspace = true
+
+crypto.path = "../../lib/crypto"
+error_category.path = "../../lib/error_category"
+utils.path = "../../lib/utils"
 
 aes-gcm = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
-cfg-if = { workspace = true, optional = true }
 cfg_eval = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
+mockall = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rand_core = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+serde_bytes = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 serde_with = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
-
-crypto = { path = "../../lib/crypto" }
-error_category.path = "../../lib/error_category"
-utils = { path = "../../lib/utils" }
-
-rand_core = { workspace = true, optional = true }
 
 android_attest = { path = "../../lib/android_attest", optional = true }
 apple_app_attest = { path = "../../lib/apple_app_attest", optional = true }
+cose = { path = "../../lib/cose", optional = true }
+mdoc = { path = "../../lib/mdoc", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = { workspace = true, optional = true }
 jni = { workspace = true, optional = true }
 
 [dev-dependencies]
-rustls-pki-types.workspace = true
 log.workspace = true
+rustls-pki-types.workspace = true
 tokio = { workspace = true, features = ["macros", "fs", "io-util"] }
 
 [build-dependencies]

@@ -1,0 +1,15 @@
+{
+  "name": "revocation-portal-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest",
+    "coverage": "vitest run --coverage",
+    "lint": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.11",
+    "allure-vitest": "^3.13.0",
+    "vitest": "^4.1.11"
+  }
+}

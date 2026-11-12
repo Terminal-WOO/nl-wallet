@@ -4,13 +4,13 @@ pub mod unique_id_vec;
 
 use std::ops::Not;
 
+use attestation_types::claim_path::ClaimPath;
+use crypto::x509::KeyIdentifier;
 use nutype::nutype;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_with::skip_serializing_none;
 use strum::EnumDiscriminants;
-
-use attestation_types::claim_path::ClaimPath;
 use utils::vec_at_least::VecNonEmpty;
 use utils::vec_at_least::VecNonEmptyUnique;
 
@@ -131,7 +131,6 @@ pub enum ClaimsSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, EnumDiscriminants)]
 #[strum_discriminants(derive(Hash, strum::Display))]
-#[strum_discriminants(name(CredentialFormat))]
 #[serde(tag = "format", content = "meta", rename_all = "snake_case")]
 pub enum CredentialQueryFormat {
     MsoMdoc {
@@ -174,16 +173,22 @@ pub struct CredentialSetQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "values", rename_all = "snake_case")]
 pub enum TrustedAuthoritiesQuery {
-    /// Contains the KeyIdentifier of the AuthorityKeyIdentifier as defined in Section 4.2.1.1 of [RFC5280],
+    /// "Contains the KeyIdentifier of the AuthorityKeyIdentifier as defined in Section 4.2.1.1 of [RFC5280],
     /// encoded as base64url. The raw byte representation of this element MUST match with the AuthorityKeyIdentifier
     /// element of an X.509 certificate in the certificate chain present in the credential (e.g., in the header of an
     /// mdoc or SD-JWT). Note that the chain can consist of a single certificate and the credential can include the
-    /// entire X.509 chain or parts of it.
-    Aki(VecNonEmpty<String>),
+    /// entire X.509 chain or parts of it."
+    ///
+    /// Note that the above text from the spec says that the KeyIdentifier (a SHA1-hash) MUST match with an
+    /// AuthorityKeyIdentifier (an ASN.1 structure that contains a hash). The latter seems to be short for
+    /// "the KeyIdentifier of an AuthorityKeyIdentifier", a hypothesis that is supported by the example value below
+    /// this text in the spec, which is a base64 string of 27 characters, which would be 20 bytes when decoded:
+    /// precisely the length of a SHA1 hash. Conversely, a full AuthorityKeyIdentifier would necessarily be larger.
+    Aki(VecNonEmpty<KeyIdentifier>),
 
     // Allow parsing of methods not supported by this implementation.
     #[serde(untagged)]
-    Other(String),
+    Other(VecNonEmpty<String>),
 }
 
 /// Specifies claims in the requested Credential.
@@ -201,16 +206,25 @@ pub struct ClaimsQuery {
     /// Claims path pointers that specify the path to a claim within the Credential.
     pub path: VecNonEmpty<ClaimPath>,
 
-    /// Expected values of the claim, if any. If the values property is present, the Wallet SHOULD return the claim
-    /// only if the type and value of the claim both match exactly for at least one of the elements in the array.
+    /// A non-empty array of strings, integers or boolean values that specifies the expected values of the claim. If
+    /// the values property is present, the Wallet SHOULD return the claim only if the type and value of the claim
+    /// both match exactly for at least one of the elements in the array.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub values: Vec<serde_json::Value>,
+    pub values: Vec<ClaimsQueryValue>,
 
     /// Whether the RP intends to retain the attribute after disclosure for some amount of time.
     /// Note: this flag is specific to the mdoc credential format and should not be present in case of other formats.
     ///
     /// <https://openid.net/specs/openid-4-verifiable-presentations-1_0-28.html#name-parameter-in-the-claims-que>
     pub intent_to_retain: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClaimsQueryValue {
+    Boolean(bool),
+    Integer(i64),
+    String(String),
 }
 
 impl MayHaveUniqueId for ClaimsQuery {
@@ -328,11 +342,11 @@ mod tests {
                     "id": "mdl",
                     "format": "mso_mdoc",
                     "meta": {
-                        "doctype_value": "org.iso.7367.1.mVRC"
+                        "doctype_value": "org.iso.7367.2.1.mVC"
                     },
                     "multiple": true,
                     "claims": [
-                        { "path": [ "org.iso.7367.1", "vehicle_holder" ], "intent_to_retain": true },
+                        { "path": [ "org.iso.7367.2.1", "vehicle_holder" ], "intent_to_retain": true },
                         { "path": [ "org.iso.18013.5.1", "first_name" ], "values": [ "John" ] }
                     ]
                 }

@@ -15,6 +15,11 @@ export class GroupedReader implements ResultsReader {
     this.#reader = reader
   }
 
+  matches(data: ResultFile) {
+    const matches = this.#reader.matches
+    return matches ? matches(data) : false
+  }
+
   read(visitor: ResultsVisitor, data: ResultFile) {
     const originFileName = this.#originFileName(data)
     if (!originFileName) {
@@ -27,7 +32,10 @@ export class GroupedReader implements ResultsReader {
         visitor.visitTestResult(groupTestResult(group, result), context),
       visitTestFixtureResult: visitor.visitTestFixtureResult.bind(visitor),
       visitAttachmentFile: visitor.visitAttachmentFile.bind(visitor),
+      visitCheckResult: visitor.visitCheckResult.bind(visitor),
       visitMetadata: visitor.visitMetadata.bind(visitor),
+      visitGlobals: visitor.visitGlobals.bind(visitor),
+      visitMetrics: visitor.visitMetrics.bind(visitor),
     }
     return this.#reader.read(wrappedVisitor, data)
   }

@@ -1,7 +1,5 @@
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::num::ParseIntError;
-use std::str::FromStr;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -23,14 +21,18 @@ pub enum ClaimPath {
 }
 
 impl ClaimPath {
-    pub fn matches_key_path<'a>(
+    pub fn matches_key_path<'a, 'b>(
         claim_path: impl IntoIterator<Item = &'a Self>,
-        key_path: impl IntoIterator<Item = &'a str>,
+        key_path: impl IntoIterator<Item = &'b str>,
     ) -> bool {
-        itertools::equal(
-            claim_path.into_iter().map(ClaimPath::try_key_path),
-            key_path.into_iter().map(Some),
-        )
+        let mut key_path = key_path.into_iter();
+
+        // Every element of the claim path has to be a key that matches the next key, with no keys left over.
+        let all_match = claim_path
+            .into_iter()
+            .all(|claim| claim.try_key_path().is_some_and(|key| key_path.next() == Some(key)));
+
+        all_match && key_path.next().is_none()
     }
 
     pub fn try_key_path(&self) -> Option<&str> {
@@ -48,6 +50,9 @@ impl ClaimPath {
     }
 }
 
+/// A `ClaimPath` can be converted to a string only for error reporting and testing purposes. This implementation is NOT
+/// used when serializing the type. Note that output values of `null` and string consisting only of digits are
+/// ambiguous.
 impl Display for ClaimPath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -58,14 +63,36 @@ impl Display for ClaimPath {
     }
 }
 
-impl FromStr for ClaimPath {
-    type Err = ParseIntError;
+#[cfg(feature = "mock")]
+mod mock {
+    use std::num::ParseIntError;
+    use std::str::FromStr;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "null" => Ok(ClaimPath::SelectAll),
-            s if s.chars().all(|c| c.is_ascii_digit()) => s.parse().map(ClaimPath::SelectByIndex),
-            s => Ok(ClaimPath::SelectByKey(String::from(s))),
+    use utils::vec_at_least::VecNonEmpty;
+
+    use super::ClaimPath;
+
+    /// Parse a `ClaimPath` entry from a string, for use in tests. Note that this makes it impossible to create a
+    /// `SelectByKey` entry that contains either the string of `null` or one that contains solely of digits.
+    impl FromStr for ClaimPath {
+        type Err = ParseIntError;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            match s {
+                "null" => Ok(ClaimPath::SelectAll),
+                s if s.chars().all(|c| c.is_ascii_digit()) => s.parse().map(ClaimPath::SelectByIndex),
+                s => Ok(ClaimPath::SelectByKey(String::from(s))),
+            }
+        }
+    }
+
+    impl ClaimPath {
+        pub fn select_by_keys(keys: &[&str]) -> VecNonEmpty<ClaimPath> {
+            keys.iter()
+                .map(|key| ClaimPath::SelectByKey(String::from(*key)))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
         }
     }
 }

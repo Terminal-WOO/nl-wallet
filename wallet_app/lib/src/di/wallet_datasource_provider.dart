@@ -5,10 +5,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/source/impl/wallet_datasource_impl.dart';
 import '../data/source/wallet_datasource.dart';
 import '../data/store/active_locale_provider.dart';
+import '../data/store/close_proximity_settings_store.dart';
 import '../data/store/impl/active_localization_delegate.dart';
 import '../data/store/impl/language_store_impl.dart';
+import '../data/store/impl/notification_settings_store_impl.dart';
+import '../data/store/impl/revocation_code_store_impl.dart';
 import '../data/store/impl/tour_store_impl.dart';
 import '../data/store/language_store.dart';
+import '../data/store/notification_settings_store.dart';
+import '../data/store/revocation_code_store.dart';
 import '../data/store/tour_store.dart';
 import '../wallet_core/typed/typed_wallet_core.dart';
 
@@ -34,6 +39,15 @@ class WalletDataSourceProvider extends StatelessWidget {
         ),
         RepositoryProvider<TourStore>(
           create: (context) => TourStoreImpl(SharedPreferences.getInstance),
+        ),
+        RepositoryProvider<RevocationCodeStore>(
+          create: (context) => RevocationCodeStoreImpl(SharedPreferences.getInstance),
+        ),
+        RepositoryProvider<CloseProximitySettingsStore>(
+          create: (context) => CloseProximitySettingsStore(SharedPreferences.getInstance),
+        ),
+        RepositoryProvider<NotificationSettingsStore>(
+          create: (context) => NotificationSettingsStoreImpl(SharedPreferences.getInstance),
         ),
         RepositoryProvider<WalletDataSource>(
           create: (context) => WalletDataSourceImpl(context.read(), context.read()),

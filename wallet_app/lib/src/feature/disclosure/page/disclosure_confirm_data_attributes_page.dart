@@ -1,24 +1,21 @@
 import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/card/wallet_card.dart';
 import '../../../domain/model/disclosure/disclose_card_request.dart';
 import '../../../domain/model/organization.dart';
-import '../../../domain/model/policy/organization_policy.dart';
-import '../../../domain/model/policy/policy.dart';
 import '../../../util/extension/build_context_extension.dart';
 import '../../../util/extension/string_extension.dart';
-import '../../../util/mapper/context_mapper.dart';
 import '../../check_attributes/check_attributes_screen.dart';
+import '../../common/builder/request_detail_common_builders.dart';
 import '../../common/sheet/select_card_sheet.dart';
 import '../../common/widget/animation/animated_card_switcher.dart';
 import '../../common/widget/button/confirm/confirm_buttons.dart';
-import '../../common/widget/button/link_button.dart';
 import '../../common/widget/button/primary_button.dart';
 import '../../common/widget/button/secondary_button.dart';
 import '../../common/widget/card/shared_attributes_card.dart';
+import '../../common/widget/divider_side.dart';
 import '../../common/widget/list/list_item.dart';
 import '../../common/widget/spacer/sliver_divider.dart';
 import '../../common/widget/spacer/sliver_sized_box.dart';
@@ -28,7 +25,6 @@ import '../../common/widget/wallet_scrollbar.dart';
 import '../../info/info_screen.dart';
 import '../../organization/detail/organization_detail_screen.dart';
 import '../../organization/widget/organization_row.dart';
-import '../../policy/policy_screen.dart';
 
 class DisclosureConfirmDataAttributesPage extends StatelessWidget {
   /// Callback invoked when the user accepts the data sharing request.
@@ -50,9 +46,6 @@ class DisclosureConfirmDataAttributesPage extends StatelessWidget {
   /// List of wallet cards whose attributes are being requested.
   final List<DiscloseCardRequest> cardRequests;
 
-  /// The policy document defining how the relying party handles disclosed data.
-  final Policy policy;
-
   /// Calculates the total number of attributes across all requested wallet cards.
   int get totalNrOfAttributes => cardRequests.map((it) => it.selection.attributes).flattened.length;
 
@@ -62,7 +55,6 @@ class DisclosureConfirmDataAttributesPage extends StatelessWidget {
     required this.onAlternativeCardSelected,
     required this.relyingParty,
     required this.cardRequests,
-    required this.policy,
     required this.requestPurpose,
     super.key,
   });
@@ -91,8 +83,13 @@ class DisclosureConfirmDataAttributesPage extends StatelessWidget {
               sliver: _buildSharedAttributeCardsSliver(),
             ),
             const SliverSizedBox(height: 24),
-            const SliverDivider(),
-            SliverToBoxAdapter(child: _buildPrivacySection(context)),
+            SliverToBoxAdapter(
+              child: RequestDetailCommonBuilders.buildPolicy(
+                context,
+                organization: relyingParty,
+                side: DividerSide.top,
+              ),
+            ),
             SliverFillRemaining(
               hasScrollBody: false,
               fillOverscroll: true,
@@ -144,7 +141,7 @@ class DisclosureConfirmDataAttributesPage extends StatelessWidget {
         children: [
           const SizedBox(height: 12),
           TitleText(
-            context.l10n.disclosureConfirmDataAttributesShareWithTitle(relyingParty.displayName.l10nValue(context)),
+            context.l10n.disclosureConfirmDataAttributesShareWithTitle(relyingParty.displayName),
           ),
           const SizedBox(height: 8),
           BodyText(
@@ -198,23 +195,6 @@ class DisclosureConfirmDataAttributesPage extends StatelessWidget {
         context.l10n.disclosureConfirmDataAttributesSharedAttributesInfo(totalNrOfAttributes).toTextSpan(context),
       ),
       style: ListItemStyle.vertical,
-    );
-  }
-
-  Widget _buildPrivacySection(BuildContext context) {
-    final subtitle = context.read<ContextMapper<OrganizationPolicy, String>>().map(
-      context,
-      OrganizationPolicy(organization: relyingParty, policy: policy),
-    );
-    return ListItem(
-      icon: const Icon(Icons.handshake_outlined),
-      label: Text.rich(context.l10n.disclosureConfirmDataAttributesSubtitleTerms.toTextSpan(context)),
-      subtitle: Text.rich(subtitle.toTextSpan(context)),
-      style: ListItemStyle.vertical,
-      button: LinkButton(
-        text: Text.rich(context.l10n.disclosureConfirmDataAttributesCheckConditionsCta.toTextSpan(context)),
-        onPressed: () => PolicyScreen.show(context, relyingParty, policy),
-      ),
     );
   }
 }

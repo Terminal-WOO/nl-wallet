@@ -37,7 +37,7 @@ class UserLocksWalletTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC69 Manual logout from menu")
+    @DisplayName("LTC53 Manual logout from menu")
     @Tags(Tag("smoke"))
     fun verifyLockedState(testInfo: TestInfo) {
         setUp(testInfo)
@@ -47,20 +47,20 @@ class UserLocksWalletTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC70 Logout due to inactivity")
+    @DisplayName("LTC54 Logout due to inactivity")
     fun verifyAppLocksAfterInactive(testInfo: TestInfo) {
         setUp(testInfo)
         MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
-        Thread.sleep(122000)
+        Thread.sleep(125000)
         assertTrue(pinScreen.pinScreenVisible(), "pin screen is not visible")
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC71 Logout due to background timeout")
+    @DisplayName("LTC55 Logout due to background timeout")
     fun verifyAppLocksAfterBackground(testInfo: TestInfo) {
         setUp(testInfo)
         OnboardingNavigator().toScreen(OnboardingNavigatorScreen.PersonalizePidPreview)
-        personalizePidPreviewScreen.putAppInBackground(122)
+        personalizePidPreviewScreen.putAppInBackground(125)
         pinScreen.switchToNativeContext()
         assertTrue(pinScreen.pinScreenVisible(), "pin screen is not visible")
         pinScreen.enterPin(DEFAULT_PIN)
@@ -68,8 +68,7 @@ class UserLocksWalletTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC72 User confirms logout on inactivity prompt, LTC73 User dismisses inactivity prompt")
-    @Tags(Tag("a11yBatch2"))
+    @DisplayName("LTC56 User confirms logout on inactivity prompt, LTC57 User dismisses inactivity prompt")
     fun verifyWarningNotificationBeforeLock(testInfo: TestInfo) {
         setUp(testInfo)
         OnboardingNavigator().toScreen(OnboardingNavigatorScreen.PersonalizePidPreview)
@@ -77,6 +76,7 @@ class UserLocksWalletTests : TestBase() {
         inactivityLockWarningNotification.switchToNativeContext()
         assertTrue(inactivityLockWarningNotification.visible())
         assertTrue(inactivityLockWarningNotification.confirmButtonVisible())
+        inactivityLockWarningNotification.captureA11ySnapshot("InactivityLockWarning")
 
         inactivityLockWarningNotification.clickConfirmButton()
         assertTrue(!inactivityLockWarningNotification.visible(), "inactivity warning notification is visible")

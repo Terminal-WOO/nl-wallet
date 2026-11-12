@@ -4,20 +4,23 @@ pub mod reqwest {
 }
 
 pub mod openid4vc {
+    pub use oauth::errors::AuthorizationErrorCode;
+    pub use oauth::errors::ErrorResponse;
+    pub use oauth::errors::RemoteErrorCode;
     pub use openid4vc::disclosure_session::VpClientError;
     pub use openid4vc::disclosure_session::VpMessageClientError;
     pub use openid4vc::disclosure_session::VpMessageClientErrorType;
     pub use openid4vc::disclosure_session::VpVerifierError;
-    pub use openid4vc::errors::AuthorizationErrorCode;
-    pub use openid4vc::errors::ErrorResponse;
-    pub use openid4vc::issuance_session::IssuanceSessionError;
-    pub use openid4vc::oidc::OidcError;
+    pub use openid4vc::errors::CredentialErrorCode;
+    pub use openid4vc::errors::DisclosureErrorResponse;
+    pub use openid4vc::errors::PostAuthResponseErrorCode;
+    pub use openid4vc::wallet_issuance::WalletIssuanceError;
+    pub use openid4vc::wallet_issuance::authorization::OAuthError;
 }
 
 pub use crate::account_provider::AccountProviderError;
 pub use crate::account_provider::AccountProviderResponseError;
 pub use crate::config::ConfigurationError;
-pub use crate::digid::DigidError;
 pub use crate::instruction::InstructionError;
 pub use crate::instruction::RemoteEcdsaKeyError;
 pub use crate::pin::change::ChangePinError;
@@ -27,12 +30,18 @@ pub use crate::repository::HttpClientError;
 pub use crate::storage::KeyFileError;
 pub use crate::storage::StorageError;
 pub use crate::update_policy::UpdatePolicyError;
+pub use crate::wallet::CancelSessionError;
+pub use crate::wallet::CheckPreconditionsError;
+pub use crate::wallet::CloseProximityDisclosureError;
+pub use crate::wallet::DeleteAttestationError;
 pub use crate::wallet::DisclosureBasedIssuanceError;
 pub use crate::wallet::DisclosureError;
 pub use crate::wallet::HistoryError;
 pub use crate::wallet::IssuanceError;
 pub use crate::wallet::PinRecoveryError;
+pub use crate::wallet::RecoveryCodeError;
 pub use crate::wallet::ResetError;
+pub use crate::wallet::RevocationCodeError;
 pub use crate::wallet::TransferError;
 pub use crate::wallet::UriIdentificationError;
 pub use crate::wallet::WalletInitError;

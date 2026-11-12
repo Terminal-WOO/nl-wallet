@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[package.metadata.sbom]
+# Integration and performance test executables.
+production-root = false
+
 [lints]
 workspace = true
 
@@ -15,8 +19,18 @@ name = "performance_test"
 required-features = ["performance_test"]
 
 [[test]]
-name = "config_server"
-path = "tests/config_server.rs"
+name = "static_server"
+path = "tests/static_server.rs"
+required-features = ["integration_test"]
+
+[[test]]
+name = "wallet_config_expiry"
+path = "tests/wallet_config_expiry.rs"
+required-features = ["integration_test"]
+
+[[test]]
+name = "health_metrics"
+path = "tests/health_metrics.rs"
 required-features = ["integration_test"]
 
 [[test]]
@@ -60,6 +74,21 @@ path = "tests/registration.rs"
 required-features = ["integration_test"]
 
 [[test]]
+name = "revocation"
+path = "tests/revocation.rs"
+required-features = ["integration_test"]
+
+[[test]]
+name = "wallet_revocation"
+path = "tests/wallet_revocation.rs"
+required-features = ["integration_test"]
+
+[[test]]
+name = "delete_attestation"
+path = "tests/delete_attestation.rs"
+required-features = ["integration_test"]
+
+[[test]]
 name = "transfer"
 path = "tests/transfer.rs"
 required-features = ["integration_test"]
@@ -69,48 +98,68 @@ name = "update_policy_server"
 path = "tests/update_policy_server.rs"
 required-features = ["integration_test"]
 
+[[test]]
+name = "pre_auth_flow_issuance"
+path = "tests/pre_auth_flow_issuance.rs"
+required-features = ["integration_test"]
+
+[[test]]
+name = "auth_code_flow_issuance"
+path = "tests/auth_code_flow_issuance.rs"
+required-features = ["integration_test"]
+
+[[test]]
+name = "key_rollover"
+path = "tests/key_rollover.rs"
+required-features = ["integration_test"]
+
 [features]
-# Allow the disclosure return URL and its prefix to use http://
-allow_insecure_url = ["openid4vc?/allow_insecure_url"]
+# Test credentials for integration tests
+test_credentials = [
+    "attestation_data/test_credential",
+    "dcql/mock",
+    "dep:attestation_types",
+    "dep:sd_jwt_vc_metadata",
+    "dep:utils",
+    "pid_issuer/mock",
+]
+
+# Allow the disclosure return URL to use http://
+allow_insecure_url = ["wallet?/allow_insecure_url"]
 
 # Initialize global logging using tracing-subscriber
-logging = [
-    "dep:tracing",
-    "tracing-subscriber/ansi",
-    "tracing-subscriber/env-filter",
-    "tracing-subscriber/fmt",
-    "tracing-subscriber/parking_lot",
-    "tracing-subscriber/smallvec",
-    "tracing-subscriber/std",
-    "tracing-subscriber/tracing-log",
-]
+logging = ["dep:tracing", "tracing-subscriber/ansi", "tracing-subscriber/env-filter"]
 
 # Include the common submodule, which includes code all integration tests use.
 test_common = [
     "apple_app_attest/mock",
     "attestation_data/example_credential_payloads",
     "attestation_data/mock",
-    "attestation_data/test_credential",
-    "axum-server/tls-rustls-no-provider",
-    "axum/http1",
+    "dep:axum-server",
     "axum/json",
-    "axum/tokio",
-    "crypto",
-    "dcql/mock",
     "dep:android_attest",
-    "dep:chrono",
-    "dep:configuration_server",
+    "dep:audit_log",
+    "dep:crypto",
     "dep:ctor",
     "dep:futures",
     "dep:gba_hc_converter",
+    "dep:health_checkers",
     "dep:indexmap",
     "dep:issuance_server",
-    "dep:issuer_settings",
+    "dep:pid_issuer",
+    "dep:pacf_issuance_server",
+    "dep:acf_demo_issuer",
+    "dep:issuer_common",
+    "dep:jwt",
+    "dep:oauth",
     "dep:openid4vc",
+    "dep:reqwest",
+    "dep:rustls",
     "dep:semver",
     "dep:serde_json",
-    "dep:serde_urlencoded",
+    "dep:serde_qs",
     "dep:server_utils",
+    "dep:static_server",
     "dep:tempfile",
     "dep:update_policy_server",
     "dep:url",
@@ -118,6 +167,7 @@ test_common = [
     "dep:verification_server",
     "dep:wallet_configuration",
     "dep:wallet_provider",
+    "dep:wallet_provider_domain",
     "dep:wallet_provider_persistence",
     "hsm/test",
     "http_utils/client",
@@ -125,79 +175,96 @@ test_common = [
     "logging",
     "openid4vc_server/disclosure",
     "openid4vc_server/issuance",
-    "p256/pkcs8",
-    "pid_issuer/mock",
+    "p256/pem",
     "platform_support/mock",
-    "reqwest/rustls-tls-webpki-roots",
-    "rustls/ring",
     "sea-orm/debug-print",
-    "sea-orm/macros",
-    "sea-orm/runtime-tokio-rustls",
-    "sea-orm/sqlx-postgres",
-    "sea-orm/with-uuid",
-    "tokio/parking_lot",
+    "status_lists/axum",
+    "test_credentials",
+    "token_status_list/axum",
     "tokio/rt",
     "tokio/time",
     "wallet/test",
+    "wallet_configuration/test",
     "wallet_provider_service/mock",
     "wscd/mock",
 ]
 
 # Include the fake_digid submodule
-fake_digid = ["http_utils/client", "reqwest/rustls-tls-webpki-roots", "dep:url", "dep:wallet_configuration"]
+fake_digid = [
+    "dep:pid_issuer",
+    "dep:reqwest",
+    "dep:tracing",
+    "dep:url",
+    "dep:wallet_configuration",
+    "http_utils/client",
+]
 
 # Include and run test that depend on an external PostgreSQL database
 db_test = [
-    "pid_issuer?/db_test",
+    "audit_log?/db_test",
+    "health_checkers?/db_test",
+    "issuer_common?/db_test",
+    "server_utils?/db_test",
+    "status_lists?/db_test",
+    "verification_server?/db_test",
     "wallet_provider_persistence?/db_test",
     "wallet_provider_service?/db_test",
-    "verification_server?/db_test",
 ]
 
 # Include and run test that depend on a configured HSM
-hsm_test = ["wallet_provider?/hsm_test"]
+hsm_test = ["hsm/hsm_test", "hsm/hsm_test_key_import", "wallet_provider?/hsm_test"]
 
 # Feature used for enabling all integration tests
 integration_test = [
     "allow_insecure_url",
     "db_test",
-    "dep:assert_matches",
+    "dep:chrono",
+    "dep:jsonwebtoken",
     "dep:rand_core",
     "dep:regex",
     "dep:rstest",
+    "dep:serde",
     "dep:serial_test",
     "dep:zstd",
     "hsm_test",
-    "jsonwebtoken/use_pem",
-    "p256/pkcs8",
+    "issuance_server/test_internal_ui",
+    "p256/pem",
+    "pid_issuer/test_internal_ui",
     "test_common",
     "tokio/macros",
-    "tokio/parking_lot",
-    "tokio/rt",
+    "tokio/rt-multi-thread",
     "tokio/sync",
     "tokio/time",
+    "wallet_account/client",
 ]
 
 # Optional feature for running integration tests that depend on the DigiD connector
 digid_test = [
-    "fake_digid",
-    "test_common",
+    "allow_insecure_url",
     "dep:gba_hc_converter",
+    "dep:rand_core",
     "dep:ring",
     "dep:rustls-pki-types",
     "dep:serial_test",
+    "dep:wallet_account",
+    "fake_digid",
+    "test_common",
 ]
 
 # Should be enabled when building the performance_test binary
 performance_test = [
     "apple_app_attest/mock",
     "dcql/mock",
+    "dep:base64",
     "dep:ctor",
+    "dep:crypto",
     "dep:dotenvy",
     "dep:indexmap",
+    "dep:oauth",
     "dep:openid4vc",
+    "dep:reqwest",
     "dep:server_utils",
-    "dep:serde_urlencoded",
+    "dep:serde_qs",
     "dep:tempfile",
     "dep:tracing",
     "dep:url",
@@ -210,95 +277,105 @@ performance_test = [
     "pid_issuer/mock",
     "platform_support/mock",
     "platform_support/mock_attested_key_apple_ca",
-    "reqwest/rustls-tls-webpki-roots",
-    "tokio/parking_lot",
+    "test_credentials",
     "tokio/rt",
     "tokio/time",
     "wallet/test",
 ]
 
 [dependencies]
-assert_matches = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 axum-server = { workspace = true, optional = true }
-ctor = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
+ctor = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 indexmap = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jsonwebtoken = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
-sea-orm = { workspace = true, optional = true }
-
-
-semver = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
 p256 = { workspace = true, optional = true }
 rand_core = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
 ring = { workspace = true, optional = true }
 rstest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
-serde_urlencoded = { workspace = true, optional = true }
+sea-orm = { workspace = true, optional = true }
+semver = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde_qs = { workspace = true, optional = true }
 serial_test = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
-
-
 url = { workspace = true, optional = true }
 zstd = { workspace = true, optional = true }
 
 android_attest = { path = "../lib/android_attest", optional = true }
 apple_app_attest = { path = "../lib/apple_app_attest", optional = true }
 attestation_data = { path = "../lib/attestation_data", optional = true }
-
-
-configuration_server = { path = "../configuration_server", optional = true }
+attestation_types = { path = "../lib/attestation_types", optional = true }
+audit_log = { path = "../wallet_provider/audit_log", optional = true }
 crypto = { path = "../lib/crypto", optional = true }
+db_test.path = "../lib/db_test"
 dcql = { path = "../lib/dcql", optional = true }
 gba_hc_converter = { path = "../gba_hc_converter", optional = true }
+health_checkers = { path = "../lib/health_checkers", optional = true }
 hsm = { path = "../lib/hsm", optional = true }
 http_utils = { path = "../lib/http_utils", optional = true }
 issuance_server = { path = "../wallet_server/issuance_server", optional = true }
-issuer_settings = { path = "../wallet_server/issuer_settings", optional = true }
-jwt.path = "../lib/jwt"
+issuer_common = { path = "../wallet_server/issuer_common", optional = true }
+jwt = { path = "../lib/jwt", optional = true }
+oauth = { path = "../lib/oauth", optional = true }
 openid4vc = { path = "../lib/openid4vc", optional = true }
 openid4vc_server = { path = "../lib/openid4vc_server", optional = true }
-wscd = { path = "../lib/wscd", optional = true }
+pacf_issuance_server = { path = "../wallet_server/pacf_issuance_server", optional = true }
+acf_demo_issuer = { path = "../wallet_server/acf_demo_issuer", optional = true }
 pid_issuer = { path = "../wallet_server/pid_issuer", optional = true }
 platform_support = { path = "../wallet/platform_support", optional = true }
-server_utils = { path = "../wallet_server/server_utils", optional = true, features = [] }
-token_status_list = { path = "../lib/token_status_list", features = ["mock"] }
+sd_jwt_vc_metadata = { path = "../lib/sd_jwt_vc_metadata", optional = true }
+server_utils = { path = "../wallet_server/server_utils", optional = true }
+static_server = { path = "../static_server", optional = true }
+status_lists = { path = "../lib/status_lists", optional = true }
+token_status_list = { path = "../lib/token_status_list", optional = true }
 update_policy_server = { path = "../update_policy/server", optional = true }
-verification_server = { path = "../wallet_server/verification_server", optional = true, features = [] }
-wallet = { path = "../wallet", optional = true }
 utils = { path = "../lib/utils", optional = true }
+verification_server = { path = "../wallet_server/verification_server", optional = true }
+wallet = { path = "../wallet", optional = true }
+wallet_account = { path = "../wallet_provider/wallet_account", optional = true }
 wallet_configuration = { path = "../wallet/configuration", optional = true }
 wallet_provider = { path = "../wallet_provider", optional = true }
+wallet_provider_domain = { path = "../wallet_provider/domain", optional = true }
 wallet_provider_persistence = { path = "../wallet_provider/persistence", optional = true }
 wallet_provider_service = { path = "../wallet_provider/service", optional = true }
-
-[build-dependencies]
-dotenvy = { workspace = true, optional = true }
+wscd = { path = "../lib/wscd", optional = true }
 
 [dev-dependencies]
 itertools.workspace = true
 
-attestation_types = { path = "../lib/attestation_types", features = ["pid_constants"] }
-
 # This enables the automatic running of unit and integration tests for these crates when tests
 # are run from the workspace. The following features are not included in this:
 # * hsm_test
+# * hsm_test_key_import
 # * db_test
 android_attest = { path = "../lib/android_attest", features = ["serialize_key_attestation"] }
+hsm = { path = "../lib/hsm", features = ["test"] }
 issuance_server = { path = "../wallet_server/issuance_server" }
+oauth.path = "../lib/oauth"
 openid4vc = { path = "../lib/openid4vc", features = ["integration"] }
-pid_issuer = { path = "../wallet_server/pid_issuer" }
+openid4vc_server = { path = "../lib/openid4vc_server", features = ["issuance"] }
+pacf_issuance_server = { path = "../wallet_server/pacf_issuance_server" }
+acf_demo_issuer = { path = "../wallet_server/acf_demo_issuer" }
+pid_issuer.path = "../wallet_server/pid_issuer"
 platform_support = { path = "../wallet/platform_support", features = ["persistent_mock_attested_key"] }
 server_utils = { path = "../wallet_server/server_utils", features = ["parsed_key_pair_conversion"] }
+status_lists = { path = "../lib/status_lists", features = ["serve_test"] }
 token_status_list = { path = "../lib/token_status_list", features = ["verification"] }
 verification_server = { path = "../wallet_server/verification_server", features = ["test"] }
+
+[build-dependencies]
+dotenvy = { workspace = true, optional = true }

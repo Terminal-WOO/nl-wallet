@@ -2,6 +2,15 @@ use std::time::Duration;
 
 use chrono::DateTime;
 use chrono::Utc;
+use openid4vc::server_state::Expirable;
+use openid4vc::server_state::HasProgress;
+use openid4vc::server_state::Progress;
+use openid4vc::server_state::SessionDataType;
+use openid4vc::server_state::SessionState;
+use openid4vc::server_state::SessionStore;
+use openid4vc::server_state::SessionStoreError;
+use openid4vc::server_state::SessionStoreTimeouts;
+use openid4vc::server_state::SessionToken;
 use sea_orm::ActiveValue;
 use sea_orm::ColumnTrait;
 use sea_orm::ConnectOptions;
@@ -18,22 +27,13 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::log::LevelFilter;
 use url::Url;
-
-use openid4vc::server_state::Expirable;
-use openid4vc::server_state::HasProgress;
-use openid4vc::server_state::Progress;
-use openid4vc::server_state::SessionDataType;
-use openid4vc::server_state::SessionState;
-use openid4vc::server_state::SessionStore;
-use openid4vc::server_state::SessionStoreError;
-use openid4vc::server_state::SessionStoreTimeouts;
-use openid4vc::server_state::SessionToken;
 use utils::generator::Generator;
 use utils::generator::TimeGenerator;
 
 use crate::entity::session_state;
 
-const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DB_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
+const DB_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "snake_case")]
@@ -57,11 +57,13 @@ impl From<Progress> for SessionStatus {
 pub async fn new_connection(url: Url) -> Result<DatabaseConnection, DbErr> {
     let mut connection_options = ConnectOptions::new(url);
     connection_options
+        .acquire_timeout(DB_ACQUIRE_TIMEOUT)
         .connect_timeout(DB_CONNECT_TIMEOUT)
         .sqlx_logging(true)
         .sqlx_logging_level(LevelFilter::Trace);
 
-    Database::connect(connection_options).await
+    let connection = Database::connect(connection_options).await?;
+    Ok(connection)
 }
 
 #[derive(Debug, Clone)]

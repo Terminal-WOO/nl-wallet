@@ -2,12 +2,9 @@ mod client;
 mod keys;
 
 use error_category::ErrorCategory;
-use jwt::error::JwtError;
+use jwt::error::JwtVerifyError;
 use wallet_account::messages::errors::AccountError;
-
-use crate::account_provider::AccountProviderError;
-use crate::account_provider::AccountProviderResponseError;
-use crate::storage::StorageError;
+use wallet_account::messages::errors::AccountRevokedData;
 
 pub use self::client::HwSignedInstructionClient;
 pub use self::client::InstructionClient;
@@ -17,6 +14,11 @@ pub use self::keys::PinRecoveryRemoteEcdsaWscd;
 pub use self::keys::PinRecoveryWscd;
 pub use self::keys::RemoteEcdsaKeyError;
 pub use self::keys::RemoteEcdsaWscd;
+pub use self::keys::RemoteWiaClient;
+use crate::account_provider::AccountProviderError;
+use crate::account_provider::AccountProviderResponseError;
+use crate::errors::PinKeyError;
+use crate::storage::StorageError;
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]
@@ -30,23 +32,39 @@ pub enum InstructionError {
         attempts_left_in_round: u8,
         is_final_round: bool,
     },
+
     #[error("unlock disabled due to timeout")]
     #[category(expected)]
     Timeout { timeout_millis: u64 },
+
     #[error("unlock permanently disabled")]
     #[category(expected)]
     Blocked,
+
     #[error("server error: {0}")]
     ServerError(#[source] AccountProviderError),
+
     #[error("Wallet Provider could not validate instruction")]
     #[category(critical)]
     InstructionValidation,
+
     #[error("could not sign instruction: {0}")]
     Signing(#[source] wallet_account::error::EncodeError),
+
+    #[error("error computing PIN public key: {0}")]
+    // This error cannot actually occur, as deriving the verifying key from the PIN should never fail.
+    #[category(impossible)]
+    PinKey(#[from] PinKeyError),
+
     #[error("could not validate instruction result received from Wallet Provider: {0}")]
-    InstructionResultValidation(#[source] JwtError),
+    InstructionResultValidation(#[source] JwtVerifyError),
+
     #[error("could not store instruction sequence number in database: {0}")]
     StoreInstructionSequenceNumber(#[from] StorageError),
+
+    #[error("account is revoked with data: {0:?}")]
+    #[category(expected)]
+    AccountRevoked(AccountRevokedData),
 }
 
 impl From<AccountProviderError> for InstructionError {
@@ -72,6 +90,13 @@ impl From<AccountProviderError> for InstructionError {
                 AccountError::InstructionValidation,
                 _,
             )) => Self::InstructionValidation,
+            AccountProviderError::Response(AccountProviderResponseError::Account(
+                AccountError::AccountRevoked(data),
+                _,
+            )) => Self::AccountRevoked(AccountRevokedData {
+                revocation_reason: data.revocation_reason,
+                can_register_new_account: data.can_register_new_account,
+            }),
             value => Self::ServerError(value),
         }
     }

@@ -1,17 +1,32 @@
+import 'package:mockito/mockito.dart';
 import 'package:wallet_core/core.dart';
 import 'package:wallet_mock/mock.dart';
+
+class MockAttestationPresentation extends Mock implements AttestationPresentation {}
 
 abstract class CoreMockData {
   static const AttestationPresentation attestation = AttestationPresentation(
     identity: AttestationIdentity_Ephemeral(),
     attestationType: MockAttestationTypes.pid,
+    format: .SdJwt,
     displayMetadata: [enDisplayMetadata, nlDisplayMetadata],
     issuer: organization,
     attributes: [attestationAttributeName],
+    validityStatus: ValidityStatus_Valid(validUntil: null),
   );
 
-  static const enDisplayMetadata = DisplayMetadata(lang: 'en', name: 'PID attestation', rendering: null);
-  static const nlDisplayMetadata = DisplayMetadata(lang: 'nl', name: 'PID attestatie', rendering: null);
+  static const AttestationPresentation altAttestation = AttestationPresentation(
+    identity: AttestationIdentity_Ephemeral(),
+    attestationType: MockAttestationTypes.pid,
+    format: .MsoMdoc,
+    displayMetadata: [enDisplayMetadata, nlDisplayMetadata],
+    issuer: organization,
+    attributes: [attestationAttributeName, attestationAttributeCity],
+    validityStatus: ValidityStatus_Valid(validUntil: '2050-06-08T19:46:03Z'),
+  );
+
+  static const enDisplayMetadata = DisplayMetadata(locale: 'en', name: 'PID attestation', rendering: null);
+  static const nlDisplayMetadata = DisplayMetadata(locale: 'nl', name: 'PID attestatie', rendering: null);
 
   static const AttestationAttribute attestationAttributeName = AttestationAttribute(
     key: 'name',
@@ -26,15 +41,26 @@ abstract class CoreMockData {
   );
 
   static const Organization organization = Organization(
-    legalName: [LocalizedString(language: 'en', value: 'legalName')],
-    displayName: [LocalizedString(language: 'en', value: 'displayName')],
-    category: [LocalizedString(language: 'en', value: 'category')],
-    description: [LocalizedString(language: 'en', value: 'description')],
+    legalName: 'legalName',
+    displayName: 'displayName',
+    serviceDescription: [
+      ServiceDescription(
+        translations: [LocalizedString(language: 'en', value: 'description')],
+      ),
+    ],
+    identifier: 'identifier',
+    countryCode: 'NL',
+    supportUri: 'https://example.org/support',
+    personType: PersonType.LegalPerson,
   );
 
-  static const RequestPolicy policy = RequestPolicy(
-    dataSharedWithThirdParties: true,
-    dataDeletionPossible: true,
-    policyUrl: 'https://example.org',
+  static const FlutterConfiguration flutterConfiguration = FlutterConfiguration(
+    inactiveWarningTimeout: 0,
+    inactiveLockTimeout: 0,
+    backgroundLockTimeout: 0,
+    pidAttestations: [],
+    staticAssetsBaseUrl: '',
+    version: '0',
+    environment: 'test',
   );
 }

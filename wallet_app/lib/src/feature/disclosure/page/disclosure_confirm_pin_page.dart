@@ -9,6 +9,8 @@ import '../../pin/pin_page.dart';
 class DisclosureConfirmPinPage extends StatelessWidget {
   final OnPinValidatedCallback<String?> onPinValidated;
   final OnPinErrorCallback onConfirmWithPinFailed;
+  final VoidCallback? onForgotPinPressed;
+  final VoidCallback? onPinValidationStarted;
   final String title;
 
   @visibleForTesting
@@ -17,6 +19,8 @@ class DisclosureConfirmPinPage extends StatelessWidget {
   const DisclosureConfirmPinPage({
     required this.onPinValidated,
     required this.onConfirmWithPinFailed,
+    this.onForgotPinPressed,
+    this.onPinValidationStarted,
     required this.title,
     this.bloc,
     super.key,
@@ -27,11 +31,14 @@ class DisclosureConfirmPinPage extends StatelessWidget {
     return BlocProvider<PinBloc>(
       create: (BuildContext context) => bloc ?? PinBloc(context.read<AcceptDisclosureUseCase>()),
       child: PinPage(
-        headerBuilder: (context, attempts, isFinalRound) {
-          return PinHeader(title: title);
-        },
+        headerBuilder: (context, attempts, isFinalRound) => PinHeader(title: title),
         onPinValidated: (result) => onPinValidated.call(result as String?),
         onPinError: onConfirmWithPinFailed,
+        onForgotPinPressed: onForgotPinPressed,
+        onStateChanged: (context, state) {
+          if (state is PinValidateInProgress) onPinValidationStarted?.call();
+          return false;
+        },
       ),
     );
   }

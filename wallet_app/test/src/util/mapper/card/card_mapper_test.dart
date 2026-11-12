@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:wallet/src/domain/model/attribute/attribute.dart';
 import 'package:wallet/src/domain/model/card/metadata/card_display_metadata.dart';
+import 'package:wallet/src/domain/model/card/status/card_status.dart';
 import 'package:wallet/src/domain/model/card/wallet_card.dart';
 import 'package:wallet/src/domain/model/organization.dart';
 import 'package:wallet/src/util/mapper/card/attribute/card_attribute_mapper.dart';
@@ -20,15 +21,18 @@ const _kSampleIssuer = CoreMockData.organization;
 const _kSampleCard = core.AttestationPresentation(
   identity: core.AttestationIdentity.ephemeral(),
   attestationType: 'urn:eudi:pid:nl:1',
+  format: .SdJwt,
   displayMetadata: [CoreMockData.enDisplayMetadata],
   attributes: [_kSampleAttributeName, _kSampleAttributeCity],
   issuer: _kSampleIssuer,
+  validityStatus: core.ValidityStatus_Valid(validUntil: null),
 );
 
 void main() {
   late Mapper<CardAttributeWithCardId, DataAttribute> mockCardAttributeMapper;
   late Mapper<core.Organization, Organization> mockOrganizationMapper;
   late Mapper<core.DisplayMetadata, CardDisplayMetadata> mockDisplayMetadataMapper;
+  late Mapper<core.AttestationPresentation, CardStatus> mockCardStatusMapper;
 
   late Mapper<core.AttestationPresentation, WalletCard> mapper;
 
@@ -36,11 +40,13 @@ void main() {
     mockCardAttributeMapper = MockMapper();
     mockOrganizationMapper = MockMapper();
     mockDisplayMetadataMapper = MockMapper();
+    mockCardStatusMapper = MockMapper();
 
     mapper = CardMapper(
       mockCardAttributeMapper,
       mockOrganizationMapper,
       mockDisplayMetadataMapper,
+      mockCardStatusMapper,
     );
   });
 
@@ -54,9 +60,11 @@ void main() {
       const input = core.AttestationPresentation(
         identity: core.AttestationIdentity.fixed(id: 'id-987'),
         attestationType: _kSampleAttestationType,
+        format: .SdJwt,
         displayMetadata: [CoreMockData.enDisplayMetadata],
         attributes: [],
         issuer: _kSampleIssuer,
+        validityStatus: core.ValidityStatus_Valid(validUntil: null),
       );
       expect(mapper.map(input).attestationId, 'id-987');
     });

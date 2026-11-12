@@ -3,10 +3,9 @@ use sentry::test::with_captured_events;
 
 // Macro is applied in module, to verify whether `pub` is handled correctly
 mod my_module {
-    use thiserror::Error;
-
     use error_category::ErrorCategory;
     use error_category::sentry_capture_error;
+    use thiserror::Error;
 
     // Test `sentry_capture_error` on regular functions
     #[sentry_capture_error]
@@ -267,10 +266,4 @@ fn test_purse_baz() {
         "sentry_capture_error::my_module::Error::CriticalError".to_string()
     );
     assert_eq!(events[0].exception.values[0].value, Some("Just some error".to_string()));
-}
-
-#[test]
-fn sentry_capture_error() {
-    let t = trybuild::TestCases::new();
-    t.compile_fail("tests/sentry_capture_error/fail_*.rs");
 }

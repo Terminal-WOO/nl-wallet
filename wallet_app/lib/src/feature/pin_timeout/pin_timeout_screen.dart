@@ -7,7 +7,6 @@ import '../../util/extension/string_extension.dart';
 import '../../wallet_assets.dart';
 import '../common/dialog/reset_wallet_dialog.dart';
 import '../common/widget/button/confirm/confirm_buttons.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
 import '../common/widget/button/primary_button.dart';
 import '../common/widget/button/tertiary_button.dart';
 import '../common/widget/page_illustration.dart';
@@ -49,7 +48,6 @@ class PinTimeoutScreen extends StatelessWidget {
     return Scaffold(
       appBar: WalletAppBar(
         title: TitleText(context.l10n.pinTimeoutScreenHeadline),
-        actions: const [HelpIconButton()],
       ),
       body: SafeArea(
         child: Column(
@@ -58,53 +56,65 @@ class PinTimeoutScreen extends StatelessWidget {
               child: WalletScrollbar(
                 child: CustomScrollView(
                   slivers: [
-                    SliverPadding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      sliver: SliverToBoxAdapter(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const SizedBox(height: 12),
-                            TitleText(context.l10n.pinTimeoutScreenHeadline),
-                            const SizedBox(height: 8),
-                            PinTimeoutDescription(
-                              expiryTime: expiryTime,
-                              onExpire: onExpire ?? () => _onTimeoutExpired(context),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                    _buildHeaderSliver(context),
                     const SliverSizedBox(height: 24),
-                    const SliverPadding(
-                      padding: EdgeInsets.symmetric(horizontal: 16),
-                      sliver: SliverToBoxAdapter(
-                        child: PageIllustration(
-                          asset: WalletAssets.svg_blocked_temporary,
-                          padding: EdgeInsets.zero,
-                        ),
-                      ),
-                    ),
+                    _buildIllustrationSliver(),
                     const SliverSizedBox(height: 24),
                   ],
                 ),
               ),
             ),
             const Divider(),
-            ConfirmButtons(
-              forceVertical: !context.isLandscape,
-              primaryButton: PrimaryButton(
-                text: Text.rich(context.l10n.pinTimeoutScreenClearWalletCta.toTextSpan(context)),
-                onPressed: () => ResetWalletDialog.show(context),
-                icon: const Icon(Icons.delete_outline_rounded),
-              ),
-              secondaryButton: TertiaryButton(
-                text: Text.rich(context.l10n.pinTimeoutScreenForgotPinCta.toTextSpan(context)),
-                onPressed: () => ForgotPinScreen.show(context),
-              ),
+            _buildConfirmButtons(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeaderSliver(BuildContext context) {
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      sliver: SliverToBoxAdapter(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 12),
+            TitleText(context.l10n.pinTimeoutScreenHeadline),
+            const SizedBox(height: 8),
+            PinTimeoutDescription(
+              expiryTime: expiryTime,
+              onExpire: onExpire ?? () => _onTimeoutExpired(context),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildIllustrationSliver() {
+    return const SliverPadding(
+      padding: EdgeInsets.symmetric(horizontal: 16),
+      sliver: SliverToBoxAdapter(
+        child: PageIllustration(
+          asset: WalletAssets.svg_blocked_temporary,
+          padding: EdgeInsets.zero,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConfirmButtons(BuildContext context) {
+    return ConfirmButtons(
+      forceVertical: !context.isLandscape,
+      primaryButton: PrimaryButton(
+        text: Text.rich(context.l10n.pinTimeoutScreenClearWalletCta.toTextSpan(context)),
+        onPressed: () => ResetWalletDialog.show(context),
+        icon: const Icon(Icons.delete_outline_rounded),
+      ),
+      secondaryButton: TertiaryButton(
+        text: Text.rich(context.l10n.pinTimeoutScreenForgotPinCta.toTextSpan(context)),
+        onPressed: () => ForgotPinScreen.show(context),
       ),
     );
   }

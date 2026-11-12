@@ -5,9 +5,11 @@ extension AttestationPresentationExtension on AttestationPresentation {
     return AttestationPresentation(
       identity: AttestationIdentity.fixed(id: attestationType),
       attestationType: attestationType,
+      format: format,
       displayMetadata: displayMetadata,
       issuer: issuer,
       attributes: attributes,
+      validityStatus: validityStatus,
     );
   }
 }

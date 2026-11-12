@@ -1,192 +1,100 @@
-use indexmap::IndexMap;
+use std::collections::HashSet;
+
+use attestation_types::credential_format::Format;
+use db_test::DbSetup;
+use hsm::test::HsmSetup;
+use pid_issuer::pid::rulebook::constants::PID_BSN;
+use pid_issuer::pid::rulebook::constants::PID_MDOC_DOCTYPE;
+use pid_issuer::pid::rulebook::constants::PID_NL_MDOC_NAMESPACE;
+use pid_issuer::pid::rulebook::constants::PID_NL_SD_JWT_VCT;
+use pid_issuer::pid::rulebook::constants::PID_RECOVERY_CODE;
 use serial_test::serial;
-
-use attestation_data::issuable_document::IssuableDocument;
-use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
-use attestation_types::pid_constants::PID_BIRTH_DATE;
-use attestation_types::pid_constants::PID_BSN;
-use attestation_types::pid_constants::PID_FAMILY_NAME;
-use attestation_types::pid_constants::PID_GIVEN_NAME;
-use attestation_types::pid_constants::PID_RECOVERY_CODE;
-use openid4vc::ErrorResponse;
-use openid4vc::issuance_session::IssuanceSessionError;
-use pid_issuer::pid::mock::mock_issuable_document_address;
-use wallet::AttestationAttributeValue;
-use wallet::attestation_data::Attribute;
-use wallet::attestation_data::AttributeValue;
-use wallet::errors::IssuanceError;
-
 use tests_integration::common::*;
+use wallet::AttestationPresentation;
+use wallet::AttributeValue;
+use wallet::Pin;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_pid_ok() {
-    let pin = "112233";
-    let (mut wallet, _, _) = setup_wallet_and_default_env(WalletDeviceVendor::Apple).await;
-    wallet = do_wallet_registration(wallet, pin).await;
-    wallet = do_pid_issuance(wallet, pin.to_owned()).await;
+async fn ltc1_test_pid_ok() {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let pin: Pin = "112233".into();
 
-    // Verify that the first mdoc contains the bsn
+    let (mut wallet, _, _) =
+        setup_wallet_and_default_env(&db_setup, &hsm_setup, &tempdir, WalletDeviceVendor::Apple).await;
+    wallet = do_wallet_registration(wallet, pin.clone()).await;
+    wallet = do_pid_issuance(wallet, pin.clone()).await;
+
     let attestations = wallet_attestations(&mut wallet).await;
-    let pid_attestation = attestations
-        .iter()
-        .find(|attestation| attestation.attestation_type == PID_ATTESTATION_TYPE)
-        .expect("should have received PID attestation");
 
+    assert_eq!(attestations.len(), 2);
+
+    for pid_attestation in &attestations {
+        test_pid_attestation(pid_attestation)
+    }
+
+    // Both formats should have been issued.
+    let formats = attestations
+        .iter()
+        .map(|attestation| attestation.format)
+        .collect::<HashSet<_>>();
+
+    assert!(formats.contains(&Format::MsoMdoc));
+    assert!(formats.contains(&Format::SdJwt));
+
+    // After the wallet is enrolled and has a PID, the PID can be renewed.
+    wallet = do_pid_renewal(wallet, pin).await;
+
+    let attestations = wallet_attestations(&mut wallet).await;
+
+    assert_eq!(attestations.len(), 2);
+
+    for pid_attestation in &attestations {
+        test_pid_attestation(pid_attestation)
+    }
+
+    // Check that both formats are still present.
+    let renewed_formats = attestations
+        .iter()
+        .map(|attestation| attestation.format)
+        .collect::<HashSet<_>>();
+
+    assert_eq!(formats, renewed_formats);
+}
+
+fn test_pid_attestation(pid_attestation: &AttestationPresentation) {
+    // A PID attestation should have the PID attestation type for its format.
+    let expected_attestation_type = match pid_attestation.format {
+        Format::MsoMdoc => PID_MDOC_DOCTYPE,
+        Format::SdJwt => PID_NL_SD_JWT_VCT,
+    };
+    assert_eq!(pid_attestation.attestation_type, expected_attestation_type);
+
+    // An mdoc's claim key is namespaced, unlike SD-JWT's flat one.
+    let (expected_bsn_key, expected_recovery_code_key): (Vec<&str>, Vec<&str>) = match pid_attestation.format {
+        Format::MsoMdoc => (
+            vec![PID_NL_MDOC_NAMESPACE, PID_BSN],
+            vec![PID_NL_MDOC_NAMESPACE, PID_RECOVERY_CODE],
+        ),
+        Format::SdJwt => (vec![PID_BSN], vec![PID_RECOVERY_CODE]),
+    };
+
+    // It should all contain the BSN.
     let bsn_attr = pid_attestation
         .attributes
         .iter()
-        .find(|a| a.key.iter().eq([PID_BSN]))
+        .find(|a| a.key.iter().eq(expected_bsn_key.clone()))
         .unwrap();
 
-    assert_eq!(
-        bsn_attr.value,
-        AttestationAttributeValue::Basic(AttributeValue::Text("999991772".to_string()))
-    );
+    assert_eq!(bsn_attr.value, AttributeValue::Text("999991772".to_string()));
 
-    // Recovery code is hidden from presentation
+    // The recovery code should be hidden from presentation.
     let recovery_code_result = pid_attestation
         .attributes
         .iter()
-        .find(|a| a.key.iter().eq([PID_RECOVERY_CODE]));
+        .find(|a| a.key.iter().eq(expected_recovery_code_key.clone()));
 
     assert_eq!(recovery_code_result, None);
-}
-
-fn pid_without_optionals() -> IssuableDocument {
-    IssuableDocument::try_new_with_random_id(
-        PID_ATTESTATION_TYPE.to_string(),
-        IndexMap::from_iter(vec![
-            (
-                PID_FAMILY_NAME.to_string(),
-                Attribute::Single(AttributeValue::Text("De Bruijn".to_string())),
-            ),
-            (
-                PID_GIVEN_NAME.to_string(),
-                Attribute::Single(AttributeValue::Text("Willeke Liselotte".to_string())),
-            ),
-            (
-                PID_BIRTH_DATE.to_string(),
-                Attribute::Single(AttributeValue::Text("1997-05-10".to_string())),
-            ),
-            // only age_over_18 is optional in `eudi::pid::nl:1.json`
-            (
-                PID_BSN.to_string(),
-                Attribute::Single(AttributeValue::Text("999991772".to_string())),
-            ),
-            (
-                PID_RECOVERY_CODE.to_string(),
-                Attribute::Single(AttributeValue::Text("123".to_string())),
-            ),
-        ])
-        .into(),
-    )
-    .unwrap()
-}
-
-fn pid_missing_required() -> IssuableDocument {
-    IssuableDocument::try_new_with_random_id(
-        PID_ATTESTATION_TYPE.to_string(),
-        IndexMap::from_iter(vec![
-            (
-                PID_FAMILY_NAME.to_string(),
-                Attribute::Single(AttributeValue::Text("De Bruijn".to_string())),
-            ),
-            (
-                PID_GIVEN_NAME.to_string(),
-                Attribute::Single(AttributeValue::Text("Willeke Liselotte".to_string())),
-            ),
-            (
-                PID_BIRTH_DATE.to_string(),
-                Attribute::Single(AttributeValue::Text("1997-05-10".to_string())),
-            ),
-            // bsn is missing, which is required
-        ])
-        .into(),
-    )
-    .unwrap()
-}
-
-#[tokio::test]
-#[serial(hsm)]
-async fn test_pid_optional_attributes() {
-    let pin = "112233";
-    let (mut wallet, _, _) = setup_wallet_and_env(
-        WalletDeviceVendor::Apple,
-        update_policy_server_settings(),
-        wallet_provider_settings(),
-        (
-            pid_issuer_settings().0,
-            vec![pid_without_optionals(), mock_issuable_document_address()]
-                .try_into()
-                .unwrap(),
-        ),
-        issuance_server_settings(),
-    )
-    .await;
-    wallet = do_wallet_registration(wallet, pin).await;
-    wallet = do_pid_issuance(wallet, pin.to_owned()).await;
-
-    // Verify that the first mdoc contains the bsn
-    let attestations = wallet_attestations(&mut wallet).await;
-    let pid_attestation = attestations
-        .iter()
-        .find(|attestation| attestation.attestation_type == PID_ATTESTATION_TYPE)
-        .expect("should have received PID attestation");
-
-    let bsn_attr = pid_attestation.attributes.iter().find(|a| a.key.iter().eq([PID_BSN]));
-
-    match bsn_attr {
-        Some(bsn_attr) => assert_eq!(
-            bsn_attr.value,
-            AttestationAttributeValue::Basic(AttributeValue::Text("999991772".to_string()))
-        ),
-        None => panic!("BSN attribute not found"),
-    }
-    // Verify that we didn't get `age_over_18` issued
-    let age_over_18 = pid_attestation
-        .attributes
-        .iter()
-        .find(|a| a.key.iter().eq(["age_over_18"]));
-    assert!(age_over_18.is_none());
-}
-
-#[tokio::test]
-#[serial(hsm)]
-async fn test_pid_missing_required_attributes() {
-    let pin = "112233";
-    let (mut wallet, _, _) = setup_wallet_and_env(
-        WalletDeviceVendor::Apple,
-        update_policy_server_settings(),
-        wallet_provider_settings(),
-        (
-            pid_issuer_settings().0,
-            vec![pid_missing_required(), mock_issuable_document_address()]
-                .try_into()
-                .unwrap(),
-        ),
-        issuance_server_settings(),
-    )
-    .await;
-    wallet = do_wallet_registration(wallet, pin).await;
-    let redirect_url = wallet
-        .create_pid_issuance_auth_url()
-        .await
-        .expect("should create PID issuance redirect URL");
-    let _unsigned_mdocs = wallet
-        .continue_pid_issuance(redirect_url)
-        .await
-        .expect("should continue PID issuance");
-    let error = wallet
-        .accept_issuance(pin.to_owned())
-        .await
-        .expect_err("should fail to accept issuance");
-
-    assert!(matches!(
-        error,
-        IssuanceError::IssuerServer {
-            error: IssuanceSessionError::CredentialRequest(ErrorResponse { error_description: Some(description), .. }),
-            ..
-            } if description.contains("\"urn:eudi:pid:nl:1\": \"bsn\" is a required property")
-    ));
 }

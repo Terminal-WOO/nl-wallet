@@ -3,21 +3,24 @@ import 'dart:async';
 import 'package:equatable/equatable.dart';
 import 'package:fimber/fimber.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:meta/meta.dart';
 
 import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/bloc/error_state.dart';
-import '../../../domain/model/bloc/network_error_state.dart';
+import '../../../domain/model/close_proximity/ble_connection_event.dart';
 import '../../../domain/model/disclosure/disclose_card_request.dart';
 import '../../../domain/model/disclosure/disclosure_session_type.dart';
+import '../../../domain/model/disclosure/start_disclosure_request.dart';
 import '../../../domain/model/event/wallet_event.dart';
 import '../../../domain/model/flow_progress.dart';
 import '../../../domain/model/organization.dart';
-import '../../../domain/model/policy/policy.dart';
 import '../../../domain/model/result/application_error.dart';
-import '../../../domain/usecase/disclosure/cancel_disclosure_usecase.dart';
+import '../../../domain/usecase/close_proximity/observe_close_proximity_connection_usecase.dart';
 import '../../../domain/usecase/disclosure/start_disclosure_usecase.dart';
 import '../../../domain/usecase/event/get_most_recent_wallet_event_usecase.dart';
+import '../../../domain/usecase/session/cancel_session_usecase.dart';
 import '../../../util/cast_util.dart';
+import '../../../util/extension/core_error_extension.dart';
 import '../../../util/extension/list_extension.dart';
 import '../../report_issue/reporting_option.dart';
 
@@ -28,53 +31,35 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
   /// Use case responsible for initiating a disclosure session.
   final StartDisclosureUseCase _startDisclosureUseCase;
 
-  /// Use case responsible for canceling an ongoing disclosure session.
-  final CancelDisclosureUseCase _cancelDisclosureUseCase;
+  /// Use case responsible for observing the close proximity connection events.
+  final ObserveCloseProximityConnectionUseCase _observeCloseProximityConnectionUseCase;
+
+  /// Use case responsible for canceling an ongoing session.
+  final CancelSessionUseCase _cancelSessionUseCase;
 
   /// Use case to retrieve the most recent wallet event after disclosure completion.
   final GetMostRecentWalletEventUseCase _getMostRecentWalletEventUseCase;
 
+  /// Subscription to proximity events (e.g., BLE connection updates) during a close proximity disclosure.
+  StreamSubscription? _closeProximityEventSubscription;
+
   /// Stores the result of a successful [StartDisclosureUseCase] invocation.
   /// Used to track session state and relay data between bloc methods.
-  StartDisclosureResult? _startDisclosureResult;
+  @visibleForTesting
+  StartDisclosureResult? startDisclosureResult;
 
   /// A cached version of the user's card selection, used when navigating back and forth from the selection page.
   List<DiscloseCardRequest>? _cardRequestsSelectionCache;
 
-  /// Returns the relying party organization from the cached [StartDisclosureResult].
-  Organization? get relyingParty => _startDisclosureResult?.relyingParty;
-
-  /// Determines if the current flow is a login type disclosure.
-  bool get isLoginFlow {
-    assert(_startDisclosureResult != null, '_startDisclosureResult should be set to correctly fetch isLoginFlow');
-    return tryCast<StartDisclosureReadyToDisclose>(_startDisclosureResult)?.type == DisclosureType.login;
-  }
-
-  /// Determines if the current session is a cross-device disclosure flow.
-  bool get isCrossDeviceFlow {
-    assert(_startDisclosureResult != null, '_startDisclosureResult should be set to correctly fetch isCrossDeviceFlow');
-    return _startDisclosureResult?.sessionType == DisclosureSessionType.crossDevice;
-  }
-
-  /// Returns the indices of the cards selected by the user for disclosure.
-  ///
-  /// Returns null if the bloc is not in a state where selections can be made.
-  List<int>? get selectedIndices {
-    assert(
-      state is DisclosureConfirmDataAttributes || state is DisclosureCheckOrganizationForLogin,
-      'bloc in incorrect state ($state) to get selectedCardIndices',
-    );
-    return tryCast<DisclosureConfirmDataAttributes>(state)?.cardRequests.selectedIndices ??
-        tryCast<DisclosureCheckOrganizationForLogin>(state)?.cardRequests.selectedIndices;
-  }
-
   DisclosureBloc(
     this._startDisclosureUseCase,
-    this._cancelDisclosureUseCase,
+    this._cancelSessionUseCase,
     this._getMostRecentWalletEventUseCase,
+    this._observeCloseProximityConnectionUseCase,
   ) : super(const DisclosureInitial()) {
     on<DisclosureSessionStarted>(_onSessionStarted);
     on<DisclosureStopRequested>(_onStopRequested);
+    on<DisclosureCancelRequested>(_onCancelRequested);
     on<DisclosureBackPressed>(_onBackPressed);
     on<DisclosureUrlApproved>(_onUrlApproved);
     on<DisclosureShareRequestedCardsApproved>(_onShareRequestedCardsApproved);
@@ -82,14 +67,15 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
     on<DisclosurePinConfirmed>(_onPinConfirmed);
     on<DisclosureReportPressed>(_onReportPressed);
     on<DisclosureConfirmPinFailed>(_onConfirmPinFailed);
+    on<DisclosureCloseProximityEventReceived>(_onCloseProximityEventReceived);
+    on<DisclosurePinValidationStarted>(_onPinValidationStarted);
   }
 
   Future<void> _onSessionStarted(DisclosureSessionStarted event, Emitter<DisclosureState> emit) async {
-    // Cancel any potential ongoing disclosure, this can happen when a second disclosure
-    // deeplink is pressed while the disclosure flow is currently open. This opens a second
-    // disclosure bloc before the original one is closed, thus we need to cancel it here.
-    await _cancelDisclosureUseCase.invoke();
-    final startDisclosureResult = await _startDisclosureUseCase.invoke(event.uri, isQrCode: event.isQrCode);
+    unawaited(_closeProximityEventSubscription?.cancel());
+    _closeProximityEventSubscription = null;
+
+    final startDisclosureResult = await _startDisclosureUseCase.invoke(event.request);
 
     /// Handle the 4 init cases:
     /// 1. Initiation errors
@@ -99,14 +85,15 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
     await startDisclosureResult.process(
       onError: (error) => _handleApplicationError(error, emit),
       onSuccess: (result) {
-        _startDisclosureResult = result; // Cache the result;
+        this.startDisclosureResult = result; // Cache the result;
         switch (result) {
-          case StartDisclosureReadyToDisclose():
-            if (isCrossDeviceFlow) {
-              emit(DisclosureCheckUrl(originUrl: result.originUrl));
-            } else {
-              _handleReadyToDisclose(result, emit);
-            }
+          case StartDisclosureReadyToDisclose(sessionType: .crossDevice):
+            emit(const DisclosureCheckUrl());
+          case StartDisclosureReadyToDisclose(sessionType: .sameDevice):
+            _handleReadyToDisclose(result, emit);
+          case StartDisclosureReadyToDisclose(sessionType: .closeProximity):
+            _startObservingCloseProximityEvents();
+            _handleReadyToDisclose(result, emit);
           case StartDisclosureMissingAttributes():
             emit(
               DisclosureMissingAttributes(
@@ -118,6 +105,34 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
         }
       },
     );
+  }
+
+  Future<void> _startObservingCloseProximityEvents() async {
+    await _closeProximityEventSubscription?.cancel();
+    _closeProximityEventSubscription = _observeCloseProximityConnectionUseCase
+        .invoke()
+        .map(DisclosureCloseProximityEventReceived.new)
+        .listen(add);
+  }
+
+  FutureOr<void> _onCloseProximityEventReceived(
+    DisclosureCloseProximityEventReceived event,
+    Emitter<DisclosureState> emit,
+  ) async {
+    // Avoid updating UI on event when already showing success or error state.
+    if (state is DisclosureSuccess || state is ErrorState) return;
+
+    switch (event.event) {
+      case BleAdvertising():
+      case BleConnected():
+      case BleDeviceRequestReceived():
+        Fimber.i('Ignored ble event: ${event.event}');
+      case BleDisconnected():
+        unawaited(_cancelSessionUseCase.invoke());
+        emit(DisclosureCloseProximityDisconnected(isLoginFlow: isLoginFlow));
+      case BleError(:final error):
+        await _handleApplicationError(await error.asApplicationError(), emit);
+    }
   }
 
   void _handleReadyToDisclose(
@@ -132,7 +147,6 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
             relyingParty: result.relyingParty,
             requestPurpose: result.requestPurpose,
             cardRequests: _cardRequestsSelectionCache ?? result.cardRequests,
-            policy: result.policy,
             afterBackPressed: afterBackPressed,
             sessionType: result.sessionType,
           ),
@@ -141,9 +155,7 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
         emit(
           DisclosureCheckOrganizationForLogin(
             relyingParty: result.relyingParty,
-            originUrl: result.originUrl,
             sessionType: result.sessionType,
-            policy: result.policy,
             cardRequests: result.cardRequests,
             sharedDataWithOrganizationBefore: result.sharedDataWithOrganizationBefore,
             afterBackPressed: afterBackPressed,
@@ -152,10 +164,18 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
     }
   }
 
+  Future<void> _onCancelRequested(DisclosureCancelRequested event, Emitter<DisclosureState> emit) async {
+    final cancelResult = await _cancelSessionUseCase.invoke();
+    await cancelResult.process(
+      onSuccess: (returnUrl) => Fimber.d('Disclosure session cancelled'),
+      onError: (error) => Fimber.e('Failed to cancel session', ex: error),
+    );
+  }
+
   Future<void> _onStopRequested(DisclosureStopRequested event, Emitter<DisclosureState> emit) async {
     emit(DisclosureLoadInProgress(state.stepperProgress));
     final relyingParty = this.relyingParty;
-    final cancelResult = await _cancelDisclosureUseCase.invoke();
+    final cancelResult = await _cancelSessionUseCase.invoke();
 
     // Handle the edge case where relyingParty (needed to render stopped screen) is not available.
     if (relyingParty == null) {
@@ -178,19 +198,12 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
   }
 
   Future<void> _onBackPressed(DisclosureBackPressed event, emit) async {
-    final startDisclosureResult = _startDisclosureResult;
+    final startDisclosureResult = this.startDisclosureResult;
     if (startDisclosureResult == null) return; // Unknown state, nothing to navigate back to.
     switch (state) {
       case DisclosureConfirmDataAttributes():
       case DisclosureCheckOrganizationForLogin():
-        if (isCrossDeviceFlow) {
-          emit(
-            DisclosureCheckUrl(
-              originUrl: startDisclosureResult.originUrl,
-              afterBackPressed: true,
-            ),
-          );
-        }
+        if (isCrossDeviceFlow) emit(const DisclosureCheckUrl(afterBackPressed: true));
       case DisclosureConfirmPin():
         assert(
           startDisclosureResult is StartDisclosureReadyToDisclose,
@@ -204,7 +217,7 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
   }
 
   Future<void> _onUrlApproved(DisclosureUrlApproved event, emit) async {
-    final startDisclosureResult = _startDisclosureResult;
+    final startDisclosureResult = this.startDisclosureResult;
     if (startDisclosureResult == null) throw UnsupportedError('Invalid event for state: $state');
 
     switch (startDisclosureResult) {
@@ -213,8 +226,6 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
           emit(
             DisclosureCheckOrganizationForLogin(
               relyingParty: startDisclosureResult.relyingParty,
-              originUrl: startDisclosureResult.originUrl,
-              policy: startDisclosureResult.policy,
               cardRequests: startDisclosureResult.cardRequests,
               sessionType: startDisclosureResult.sessionType,
               sharedDataWithOrganizationBefore: startDisclosureResult.sharedDataWithOrganizationBefore,
@@ -226,7 +237,6 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
               relyingParty: startDisclosureResult.relyingParty,
               requestPurpose: startDisclosureResult.requestPurpose,
               cardRequests: _cardRequestsSelectionCache ?? startDisclosureResult.cardRequests,
-              policy: startDisclosureResult.policy,
               sessionType: startDisclosureResult.sessionType,
             ),
           );
@@ -244,24 +254,41 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
   }
 
   void _onShareRequestedCardsApproved(DisclosureShareRequestedCardsApproved event, emit) {
-    assert(_startDisclosureResult is StartDisclosureReadyToDisclose, 'Invalid state to continue disclosing');
-    final selectedIndices = this.selectedIndices;
+    assert(startDisclosureResult is StartDisclosureReadyToDisclose, 'Invalid state to continue disclosing');
+    final selectedIndices = _resolveSelectedCardIndices();
     if (selectedIndices != null) {
       emit(
         DisclosureConfirmPin(
           relyingParty: relyingParty!,
+          isLoginFlow: isLoginFlow,
           isCrossDevice: isCrossDeviceFlow,
           selectedIndices: selectedIndices,
         ),
       );
     } else {
-      _handleApplicationError(
-        GenericError(
-          'App in incorrect state to move to approval',
-          sourceError: Exception('Invalid state'),
-        ),
-        emit,
+      final error = GenericError(
+        'App in incorrect state to move to approval',
+        sourceError: Exception('Invalid state: $state'),
       );
+      _handleApplicationError(error, emit);
+    }
+  }
+
+  /// Retrieves the indices of cards selected by the user from the current [state].
+  ///
+  /// Returns null if the state does not contain selection data.
+  List<int>? _resolveSelectedCardIndices() {
+    final state = this.state;
+    switch (state) {
+      case DisclosureCheckOrganizationForLogin():
+        return state.cardRequests.selectedIndices;
+      case DisclosureConfirmDataAttributes():
+        return state.cardRequests.selectedIndices;
+      case DisclosureConfirmPin():
+        return state.selectedIndices;
+      default:
+        Fimber.e('Can not resolve selected indices for $state');
+        return null;
     }
   }
 
@@ -276,83 +303,115 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
     }
   }
 
-  Future<void> _onPinConfirmed(DisclosurePinConfirmed event, emit) async {
-    assert(_startDisclosureResult != null, 'DisclosureResult should still be available after confirming the tx');
+  Future<void> _onPinConfirmed(DisclosurePinConfirmed event, Emitter<DisclosureState> emit) async {
+    assert(startDisclosureResult != null, 'DisclosureResult should still be available after confirming the tx');
     final lastEvent = await _getMostRecentWalletEventUseCase.invoke();
     assert(lastEvent != null, 'Last event should not be null after a successful disclosure');
+
+    SuccessStyle successStyle = SuccessStyle.regular;
+    if (isLoginFlow) successStyle = .login;
+    if (isCloseProximityFlow) successStyle = .closeProximity;
+    if (event.returnUrl == null && isSameDeviceFlow) successStyle = .sameDeviceNoReturnUrl;
+
     emit(
       DisclosureSuccess(
-        relyingParty: _startDisclosureResult!.relyingParty,
+        relyingParty: relyingParty!,
         event: lastEvent,
         returnUrl: event.returnUrl,
-        isLoginFlow: isLoginFlow,
+        style: successStyle,
         isCrossDevice: isCrossDeviceFlow,
       ),
     );
   }
 
+  Future<void> _onConfirmPinFailed(DisclosureConfirmPinFailed event, Emitter<DisclosureState> emit) {
+    return _handleApplicationError(event.error, emit);
+  }
+
+  FutureOr<void> _onPinValidationStarted(DisclosurePinValidationStarted event, Emitter<DisclosureState> emit) {
+    _closeProximityEventSubscription?.cancel();
+  }
+
   Future<void> _onReportPressed(DisclosureReportPressed event, Emitter<DisclosureState> emit) async {
     Fimber.d('User selected reporting option ${event.option}');
     emit(DisclosureLoadInProgress(state.stepperProgress));
-    final cancelResult = await _cancelDisclosureUseCase.invoke();
+    final cancelResult = await _cancelSessionUseCase.invoke();
     if (cancelResult.hasError) Fimber.e('Failed to explicitly cancel disclosure flow', ex: cancelResult.error);
     emit(DisclosureLeftFeedback(returnUrl: cancelResult.value));
   }
 
-  Future<void> _onConfirmPinFailed(DisclosureConfirmPinFailed event, Emitter<DisclosureState> emit) =>
-      _handleApplicationError(event.error, emit);
-
   Future<void> _handleApplicationError(ApplicationError error, Emitter<DisclosureState> emit) async {
+    if (error is CloseProximityDisconnectedError) {
+      emit(DisclosureCloseProximityDisconnected(isLoginFlow: isLoginFlow));
+      return;
+    }
+
     emit(DisclosureLoadInProgress(state.stepperProgress));
+
+    // Call cancelSession to avoid stale session and to potentially provide more context (e.g. returnUrl).
+    final cancelResult = await _cancelSessionUseCase.invoke();
+    final returnUrl = tryCast<GenericError>(error)?.redirectUrl ?? cancelResult.value;
+
     switch (error) {
-      case GenericError():
-        emit(DisclosureGenericError(error: error, returnUrl: error.redirectUrl));
-      case NetworkError():
-        await _cancelDisclosureUseCase.invoke(); // Attempt to cancel the session, but propagate original error
-        emit(DisclosureNetworkError(hasInternet: error.hasInternet, error: error));
-      case SessionError():
-        _handleSessionError(emit, error);
-      case RelyingPartyError():
-        emit(DisclosureRelyingPartyError(error: error, organizationName: error.organizationName));
+      case SessionError(state: SessionState.expired):
+        _handleSessionExpired(emit, error);
       case ExternalScannerError():
         emit(DisclosureExternalScannerError(error: error));
       default:
-        // Call cancelSession to avoid stale session and to try and provide more context (e.g. returnUrl).
-        final cancelResult = await _cancelDisclosureUseCase.invoke();
-        await cancelResult.process(
-          onSuccess: (returnUrl) => emit(DisclosureGenericError(error: error, returnUrl: returnUrl)),
-          onError: (_) => emit(DisclosureGenericError(error: error)),
-        );
+        emit(DisclosureError(error: error, returnUrl: returnUrl));
     }
   }
 
-  void _handleSessionError(Emitter<DisclosureState> emit, SessionError error) {
-    final isCrossDevice = _startDisclosureResult?.sessionType == DisclosureSessionType.crossDevice;
-    switch (error.state) {
-      case SessionState.expired:
-        emit(
-          DisclosureSessionExpired(
-            error: error,
-            canRetry: error.canRetry,
-            isCrossDevice: isCrossDevice,
-            returnUrl: error.returnUrl,
-          ),
-        );
-      case SessionState.cancelled:
-        emit(
-          DisclosureSessionCancelled(
-            error: error,
-            relyingParty: relyingParty,
-            returnUrl: error.returnUrl,
-          ),
-        );
-    }
+  void _handleSessionExpired(Emitter<DisclosureState> emit, SessionError error) {
+    assert(error.state == SessionState.expired, 'Unexpected error state');
+    final isCrossDevice = startDisclosureResult?.sessionType == DisclosureSessionType.crossDevice;
+    emit(
+      DisclosureSessionExpired(
+        error: error,
+        canRetry: error.canRetry,
+        isCrossDevice: isCrossDevice,
+        returnUrl: error.returnUrl,
+      ),
+    );
   }
 
   @override
   Future<void> close() async {
-    await super.close();
-    _startDisclosureResult = null;
+    unawaited(_closeProximityEventSubscription?.cancel());
+    startDisclosureResult = null;
     _cardRequestsSelectionCache = null;
+    // Note: We explicitly do not cancel the session here. This fixes PVW-5430
+    await super.close();
+  }
+}
+
+/// Extension class to group together convenience getter methods, used to deduce info about the
+/// current session (which is defined by [StartDisclosureResult]).
+extension DisclosureBlocGetterExtension on DisclosureBloc {
+  /// Returns the relying party organization from the cached [StartDisclosureResult].
+  Organization? get relyingParty => startDisclosureResult?.relyingParty;
+
+  /// Determines if the current flow is a login type disclosure.
+  bool get isLoginFlow {
+    assert(startDisclosureResult != null, '_startDisclosureResult should be set to fetch isLoginFlow');
+    return tryCast<StartDisclosureReadyToDisclose>(startDisclosureResult)?.type == DisclosureType.login;
+  }
+
+  /// Determines if the current session is a cross-device disclosure flow.
+  bool get isCrossDeviceFlow {
+    assert(startDisclosureResult != null, '_startDisclosureResult should be set to fetch isCrossDeviceFlow');
+    return startDisclosureResult?.sessionType == DisclosureSessionType.crossDevice;
+  }
+
+  /// Determines if the current session is a same device disclosure flow.
+  bool get isSameDeviceFlow {
+    assert(startDisclosureResult != null, '_startDisclosureResult should be set to fetch isSameDeviceFlow');
+    return startDisclosureResult?.sessionType == DisclosureSessionType.sameDevice;
+  }
+
+  /// Determines if the current session is a close-proximity (ISO 18013-5) disclosure flow.
+  bool get isCloseProximityFlow {
+    assert(startDisclosureResult != null, '_startDisclosureResult should be set to fetch isCloseProximityFlow');
+    return startDisclosureResult?.sessionType == DisclosureSessionType.closeProximity;
   }
 }

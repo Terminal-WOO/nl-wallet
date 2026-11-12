@@ -1,309 +1,125 @@
+use crypto::x509::DistinguishedName;
 use derive_more::Debug;
 
-use crypto::x509::BorrowingCertificate;
-use crypto::x509::BorrowingCertificateExtension;
-use crypto::x509::CertificateError;
-use crypto::x509::CertificateUsage;
-use error_category::ErrorCategory;
-
-use crate::auth::issuer_auth::IssuerRegistration;
-use crate::auth::reader_auth::ReaderRegistration;
-
-/// Acts as configuration for the [Certificate::new] function.
-#[derive(Debug, Clone, PartialEq)]
-#[expect(clippy::large_enum_variant)] // CertificateType is only used as a temporary result
-pub enum CertificateType {
-    Mdl(IssuerRegistration),
-    ReaderAuth(ReaderRegistration),
+/// Relying party of X509 certificates following ETSI EN 319 412-2 and ETSI EN 319 412-3 standard.
+#[derive(Debug, Clone)]
+pub enum RelyingParty {
+    LegalPerson {
+        common_name: String,
+        country_name: String,
+        organization_name: String,
+        organization_identifier: String,
+    },
+    NaturalPerson {
+        common_name: String,
+        country_name: String,
+        serial_number: String,
+        surname: String,
+        given_name: String,
+    },
 }
 
-#[derive(Debug, thiserror::Error, ErrorCategory)]
-pub enum CertificateTypeError {
-    #[error("certificate error: {0}")]
-    #[category(defer)]
-    Certificate(#[from] CertificateError),
+#[derive(thiserror::Error, Debug)]
+#[error("cannot derive RelyingParty from DistinguishedName: {0:?}")]
+pub struct RelyingPartyError(Box<DistinguishedName>);
 
-    #[error("unknown usage: {0}")]
-    #[category(critical)]
-    UnknownUsage(CertificateUsage),
+impl TryFrom<DistinguishedName> for RelyingParty {
+    type Error = RelyingPartyError;
 
-    #[error("issuer registration not found")]
-    #[category(critical)]
-    IssuerRegistrationNotFound,
-
-    #[error("reader registration not found")]
-    #[category(critical)]
-    ReaderRegistrationNotFound,
-}
-
-impl CertificateType {
-    pub fn has_certificate_type(usage: CertificateUsage) -> bool {
-        matches!(usage, CertificateUsage::Mdl | CertificateUsage::ReaderAuth)
-    }
-
-    pub fn from_certificate(cert: &BorrowingCertificate) -> Result<Self, CertificateTypeError> {
-        let usage = CertificateUsage::from_certificate(cert.x509_certificate())?;
-        let result = match usage {
-            CertificateUsage::Mdl => {
-                let Some(registration) = IssuerRegistration::from_certificate(cert)? else {
-                    return Err(CertificateTypeError::IssuerRegistrationNotFound);
-                };
-                CertificateType::Mdl(registration)
-            }
-            CertificateUsage::ReaderAuth => {
-                let Some(registration) = ReaderRegistration::from_certificate(cert)? else {
-                    return Err(CertificateTypeError::ReaderRegistrationNotFound);
-                };
-                CertificateType::ReaderAuth(registration)
-            }
-            _ => return Err(CertificateTypeError::UnknownUsage(usage)),
-        };
-
-        Ok(result)
-    }
-}
-
-impl From<&CertificateType> for CertificateUsage {
-    fn from(source: &CertificateType) -> Self {
-        use CertificateType::*;
-        match source {
-            Mdl(_) => Self::Mdl,
-            ReaderAuth(_) => Self::ReaderAuth,
-        }
-    }
-}
-
-#[cfg(any(test, feature = "generate"))]
-pub mod generate {
-    use rcgen::CustomExtension;
-
-    use crypto::x509::BorrowingCertificateExtension;
-    use crypto::x509::CertificateError;
-    use crypto::x509::CertificateUsage;
-
-    use crate::x509::CertificateType;
-
-    impl TryFrom<CertificateType> for Vec<CustomExtension> {
-        type Error = CertificateError;
-
-        fn try_from(source: CertificateType) -> Result<Vec<CustomExtension>, CertificateError> {
-            let usage = CertificateUsage::from(&source).into();
-            let extension = match source {
-                CertificateType::ReaderAuth(reader_registration) => reader_registration.to_custom_ext()?,
-                CertificateType::Mdl(issuer_registration) => issuer_registration.to_custom_ext()?,
-            };
-            Ok(vec![usage, extension])
-        }
-    }
-
-    #[cfg(any(test, feature = "mock"))]
-    pub mod mock {
-        use crypto::server_keys::KeyPair;
-        use crypto::server_keys::generate::Ca;
-        use crypto::server_keys::generate::mock::ISSUANCE_CERT_CN;
-        use crypto::server_keys::generate::mock::PID_ISSUER_CERT_CN;
-        use crypto::server_keys::generate::mock::RP_CERT_CN;
-
-        use crate::auth::issuer_auth::IssuerRegistration;
-        use crate::auth::reader_auth::ReaderRegistration;
-
-        use super::*;
-
-        pub fn generate_issuer_mock_with_registration(
-            ca: &Ca,
-            issuer_registration: IssuerRegistration,
-        ) -> Result<KeyPair, CertificateError> {
-            ca.generate_key_pair(
-                ISSUANCE_CERT_CN,
-                CertificateType::Mdl(issuer_registration),
-                Default::default(),
-            )
-        }
-
-        pub fn generate_pid_issuer_mock_with_registration(
-            ca: &Ca,
-            issuer_registration: IssuerRegistration,
-        ) -> Result<KeyPair, CertificateError> {
-            ca.generate_key_pair(
-                PID_ISSUER_CERT_CN,
-                CertificateType::Mdl(issuer_registration),
-                Default::default(),
-            )
-        }
-
-        pub fn generate_reader_mock_with_registration(
-            ca: &Ca,
-            reader_registration: ReaderRegistration,
-        ) -> Result<KeyPair, CertificateError> {
-            ca.generate_key_pair(
-                RP_CERT_CN,
-                CertificateType::ReaderAuth(reader_registration),
-                Default::default(),
-            )
+    fn try_from(value: DistinguishedName) -> Result<Self, Self::Error> {
+        match value {
+            DistinguishedName {
+                common_name,
+                country_name,
+                serial_number: Some(serial_number),
+                surname: Some(surname),
+                given_name: Some(given_name),
+                ..
+            } => Ok(RelyingParty::NaturalPerson {
+                common_name,
+                country_name,
+                serial_number,
+                surname,
+                given_name,
+            }),
+            DistinguishedName {
+                common_name,
+                country_name,
+                organization_name: Some(organization_name),
+                organization_identifier: Some(organization_identifier),
+                ..
+            } => Ok(RelyingParty::LegalPerson {
+                common_name,
+                country_name,
+                organization_name,
+                organization_identifier,
+            }),
+            _ => Err(RelyingPartyError(value.into())),
         }
     }
 }
 
 #[cfg(test)]
-mod test {
-    use chrono::DateTime;
-    use chrono::Duration;
-    use chrono::Utc;
-    use time::OffsetDateTime;
-    use time::macros::datetime;
-    use x509_parser::certificate::X509Certificate;
+mod tests {
+    use std::assert_matches;
 
-    use crypto::server_keys::generate::Ca;
-    use crypto::x509::CertificateConfiguration;
-    use utils::generator::TimeGenerator;
-
-    use crate::auth::issuer_auth::IssuerRegistration;
-    use crate::auth::reader_auth::ReaderRegistration;
-    use crate::x509::CertificateType;
-
-    use super::CertificateUsage;
+    use super::*;
 
     #[test]
-    fn generate_and_verify_issuer_cert() {
-        let ca = Ca::generate("myca", Default::default()).unwrap();
-        let mdl = CertificateType::from(IssuerRegistration::new_mock());
+    fn parse_legal_person_name() {
+        let dn = DistinguishedName::create_legal_person_mock("Test");
+        let rp = RelyingParty::try_from(dn.clone()).unwrap();
 
-        let issuer_key_pair = ca.generate_key_pair("mycert", mdl.clone(), Default::default()).unwrap();
-
-        issuer_key_pair
-            .certificate()
-            .verify(CertificateUsage::Mdl, &[], &TimeGenerator, &[ca.to_trust_anchor()])
-            .unwrap();
-
-        // Verify whether the parsed CertificateType equals the original Mdl usage
-        let cert_usage = CertificateType::from_certificate(issuer_key_pair.certificate()).unwrap();
-        assert_eq!(cert_usage, mdl);
-
-        let x509_cert = issuer_key_pair.certificate().x509_certificate();
-        assert_certificate_common_name(x509_cert, &["mycert"]);
-        assert_certificate_default_validity(x509_cert);
-    }
-
-    #[test]
-    fn generate_and_verify_issuer_cert_with_configuration() {
-        let now = Utc::now();
-        let later = now + Duration::days(42);
-
-        let config = CertificateConfiguration {
-            not_before: Some(now),
-            not_after: Some(later),
+        let RelyingParty::LegalPerson {
+            common_name,
+            country_name,
+            organization_name,
+            organization_identifier,
+        } = rp
+        else {
+            panic!("not a legal person");
         };
-
-        let ca = Ca::generate("myca", Default::default()).unwrap();
-        let mdl = CertificateType::from(IssuerRegistration::new_mock());
-
-        let issuer_key_pair = ca.generate_key_pair("mycert", mdl.clone(), config).unwrap();
-
-        issuer_key_pair
-            .certificate()
-            .verify(CertificateUsage::Mdl, &[], &TimeGenerator, &[ca.to_trust_anchor()])
-            .unwrap();
-
-        // Verify whether the parsed CertificateType equals the original Mdl usage
-        let cert_usage = CertificateType::from_certificate(issuer_key_pair.certificate()).unwrap();
-        assert_eq!(cert_usage, mdl);
-
-        let x509_cert = issuer_key_pair.certificate().x509_certificate();
-        assert_certificate_common_name(x509_cert, &["mycert"]);
-        assert_certificate_validity(x509_cert, now, later);
+        assert_eq!(common_name, dn.common_name);
+        assert_eq!(country_name, dn.country_name);
+        assert_eq!(Some(organization_name), dn.organization_name);
+        assert_eq!(Some(organization_identifier), dn.organization_identifier);
     }
 
     #[test]
-    fn generate_and_verify_reader_cert() {
-        let ca = Ca::generate("myca", Default::default()).unwrap();
-        let reader_auth: CertificateType = ReaderRegistration::new_mock().into();
+    fn parse_natural_person_name() {
+        let dn = DistinguishedName::create_natural_person_mock("John", "Doe");
+        let rp = RelyingParty::try_from(dn.clone()).unwrap();
 
-        let reader_key_pair = ca
-            .generate_key_pair("mycert", reader_auth.clone(), Default::default())
-            .unwrap();
-
-        reader_key_pair
-            .certificate()
-            .verify(
-                CertificateUsage::ReaderAuth,
-                &[],
-                &TimeGenerator,
-                &[ca.to_trust_anchor()],
-            )
-            .unwrap();
-
-        // Verify whether the parsed CertificateType equals the original ReaderAuth usage
-        let cert_type = CertificateType::from_certificate(reader_key_pair.certificate()).unwrap();
-        assert_eq!(cert_type, reader_auth);
-
-        let x509_cert = reader_key_pair.certificate().x509_certificate();
-        assert_certificate_common_name(x509_cert, &["mycert"]);
-        assert_certificate_default_validity(x509_cert);
-    }
-
-    #[test]
-    fn generate_and_verify_reader_cert_with_configuration() {
-        let now = Utc::now();
-        let later = now + Duration::days(42);
-
-        let config = CertificateConfiguration {
-            not_before: Some(now),
-            not_after: Some(later),
+        let RelyingParty::NaturalPerson {
+            common_name,
+            country_name,
+            serial_number,
+            surname,
+            given_name,
+        } = rp
+        else {
+            panic!("not a natural person");
         };
-
-        let ca = Ca::generate("myca", Default::default()).unwrap();
-        let reader_auth: CertificateType = ReaderRegistration::new_mock().into();
-
-        let reader_key_pair = ca.generate_key_pair("mycert", reader_auth.clone(), config).unwrap();
-
-        reader_key_pair
-            .certificate()
-            .verify(
-                CertificateUsage::ReaderAuth,
-                &[],
-                &TimeGenerator,
-                &[ca.to_trust_anchor()],
-            )
-            .unwrap();
-
-        // Verify whether the parsed CertificateType equals the original ReaderAuth usage
-        let cert_type = CertificateType::from_certificate(reader_key_pair.certificate()).unwrap();
-        assert_eq!(cert_type, reader_auth);
-
-        let x509_cert = reader_key_pair.certificate().x509_certificate();
-        assert_certificate_common_name(x509_cert, &["mycert"]);
-        assert_certificate_validity(x509_cert, now, later);
+        assert_eq!(common_name, dn.common_name);
+        assert_eq!(country_name, dn.country_name);
+        assert_eq!(Some(serial_number), dn.serial_number);
+        assert_eq!(Some(surname), dn.surname);
+        assert_eq!(Some(given_name), dn.given_name);
     }
 
-    fn assert_certificate_default_validity(certificate: &X509Certificate) {
-        let not_before = certificate.validity().not_before.to_datetime();
-        let not_after = certificate.validity().not_after.to_datetime();
-
-        assert_eq!(not_before, datetime!(1975-01-01 0:00 UTC));
-        assert_eq!(not_after, datetime!(4096-01-01 0:00 UTC));
+    #[test]
+    fn parse_natural_person_name_with_organization() {
+        let mut dn = DistinguishedName::create_natural_person_mock("John", "Doe");
+        dn.organization_name = Some("Test B.V.".into());
+        dn.organization_identifier = Some("NTRNL-12345678".into());
+        let rp = RelyingParty::try_from(dn.clone()).unwrap();
+        assert_matches!(rp, RelyingParty::NaturalPerson { .. });
     }
 
-    fn assert_certificate_validity(
-        certificate: &X509Certificate,
-        expected_not_before: DateTime<Utc>,
-        expected_not_after: DateTime<Utc>,
-    ) {
-        let expected_not_before = OffsetDateTime::from_unix_timestamp(expected_not_before.timestamp()).unwrap();
-        let expected_not_after = OffsetDateTime::from_unix_timestamp(expected_not_after.timestamp()).unwrap();
-
-        let not_before = certificate.validity().not_before.to_datetime();
-        let not_after = certificate.validity().not_after.to_datetime();
-
-        assert_eq!(not_before, expected_not_before);
-        assert_eq!(not_after, expected_not_after);
-    }
-
-    fn assert_certificate_common_name(certificate: &X509Certificate, expected_common_name: &[&str]) {
-        let actual_common_name = certificate
-            .subject
-            .iter_common_name()
-            .map(|cn| cn.as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(actual_common_name, expected_common_name);
+    #[test]
+    fn parse_no_rp() {
+        let dn = DistinguishedName::create_mock("Test");
+        let err = RelyingParty::try_from(dn.clone()).unwrap_err();
+        assert_matches!(err, RelyingPartyError(err_dn) if *err_dn == dn);
     }
 }

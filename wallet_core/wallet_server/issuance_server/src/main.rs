@@ -1,20 +1,14 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use anyhow::anyhow;
-
+use health_checkers::hsm::HsmChecker;
 use hsm::service::Pkcs11Hsm;
-use issuance_server::disclosure::HttpAttributesFetcher;
+use http_utils::reqwest::default_reqwest_client_builder;
 use issuance_server::server;
 use issuance_server::settings::IssuanceServerSettings;
 use server_utils::server::wallet_server_main;
 use server_utils::store::SessionStoreVariant;
-use server_utils::store::StoreConnection;
-use server_utils::store::postgres::new_connection;
-use status_lists::config::StatusListConfigs;
-use status_lists::postgres::PostgresStatusListServices;
-use status_lists::router::create_status_list_routers;
-use token_status_list::verification::reqwest::StatusListReqwestClient;
+use token_status_list::verification::reqwest::HttpStatusListClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,6 +16,12 @@ async fn main() -> Result<()> {
 }
 
 async fn main_impl(settings: IssuanceServerSettings) -> Result<()> {
+    // Note that HTTP is explicitly allowed for the retrieval of status lists.
+    let status_list_client = HttpStatusListClient::new(default_reqwest_client_builder())?;
+    let revocation_verifier = settings.to_revocation_verifier(status_list_client);
+
+    let serve_status_lists = settings.issuer_settings.status_lists.serve;
+
     let hsm = settings
         .issuer_settings
         .server_settings
@@ -29,75 +29,37 @@ async fn main_impl(settings: IssuanceServerSettings) -> Result<()> {
         .clone()
         .map(Pkcs11Hsm::from_settings)
         .transpose()?;
+    let hsm_checker = hsm.as_ref().map(HsmChecker::new);
 
-    let storage_settings = &settings.issuer_settings.server_settings.storage;
-    let store_connection = StoreConnection::try_new(storage_settings.url.clone()).await?;
+    let (issuer, database_checkers, store_connection, server_settings) =
+        settings.issuer_settings.into_issuer(hsm.clone()).await?;
 
-    let issuance_sessions = Arc::new(SessionStoreVariant::new(
-        store_connection.clone(),
-        storage_settings.into(),
-    ));
-    let disclosure_sessions = Arc::new(SessionStoreVariant::new(
-        store_connection.clone(),
-        storage_settings.into(),
-    ));
+    let issuer = Arc::new(issuer);
 
-    let attributes_fetcher = HttpAttributesFetcher::try_new(
-        settings
-            .disclosure_settings
-            .iter()
-            .map(|(id, s)| (id.clone(), s.attestation_url_config.clone()))
-            .collect(),
-    )?;
+    let disclosure_sessions = SessionStoreVariant::new(store_connection, (&server_settings.storage).into());
 
-    let db_connection = match (store_connection, settings.status_lists.storage_url.as_ref()) {
-        (_, Some(url)) => new_connection(url.clone()).await.map_err(anyhow::Error::from),
-        (StoreConnection::Postgres(db_connection), None) => Ok(db_connection),
-        _ => Err(anyhow!(
-            "No database connection configured for status list in issuance server"
-        )),
-    }?;
-    let status_list_configs = StatusListConfigs::from_settings(
-        &settings.issuer_settings.server_settings.public_url,
-        &settings.status_lists,
-        (&settings.issuer_settings.attestation_settings)
-            .into_iter()
-            .map(|(id, settings)| (id.to_owned(), settings.status_list.clone())),
-        &hsm,
-    )
-    .await?;
-    let status_list_service = PostgresStatusListServices::try_new(db_connection, status_list_configs).await?;
-    status_list_service.initialize_lists().await?;
-    let status_list_router = settings
-        .status_lists
-        .serve
-        .then(|| {
-            create_status_list_routers(
-                (&settings.issuer_settings.attestation_settings)
-                    .into_iter()
-                    .map(|(_, settings)| {
-                        (
-                            settings.status_list.context_path.clone(),
-                            settings.status_list.publish_dir.clone(),
-                        )
-                    }),
-                settings.status_lists.ttl,
-            )
-        })
-        .transpose()?;
+    let disclosure_router = settings
+        .verifier_settings
+        .into_disclosure_router(
+            hsm,
+            Arc::clone(&issuer),
+            disclosure_sessions,
+            revocation_verifier,
+            &server_settings,
+        )
+        .await?;
 
-    let status_list_client = StatusListReqwestClient::new()?;
+    let health_checkers = health_checkers::boxed(hsm_checker)
+        .into_iter()
+        .chain(database_checkers.into_iter().map(|checker| Box::new(checker) as Box<_>));
 
     // This will block until the server shuts down.
     server::serve(
-        settings,
-        hsm,
-        issuance_sessions,
-        disclosure_sessions,
-        attributes_fetcher,
-        status_list_service,
-        status_list_router,
-        status_list_client,
+        issuer,
+        server_settings,
+        serve_status_lists,
+        health_checkers,
+        disclosure_router,
     )
     .await
 }

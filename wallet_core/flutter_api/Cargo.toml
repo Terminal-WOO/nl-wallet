@@ -12,27 +12,50 @@ name = "wallet_core"
 crate-type = ["staticlib", "cdylib"]
 doctest = false
 
+[features]
+allow_insecure_url = ["wallet/allow_insecure_url"]
+
 [dependencies]
 anyhow.workspace = true
 backtrace.workspace = true
-flutter_rust_bridge = "=2.11.1"
+chrono.workspace = true
+hayro-jpeg2000.workspace = true
+image = { workspace = true, features = ["bmp"] }
 itertools.workspace = true
 parking_lot.workspace = true
-sentry = { workspace = true, features = ["backtrace", "contexts", "panic", "debug-images", "reqwest", "rustls"] }
+sentry = { workspace = true, features = [
+    "backtrace",
+    "contexts",
+    "debug-images",
+    "logs",
+    "panic",
+    "reqwest",
+    "rustls",
+    "tracing",
+] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_with.workspace = true
-tokio = { workspace = true, features = ["sync", "parking_lot"] }
+tokio = { workspace = true, features = ["rt", "sync"] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["std", "fmt", "tracing-log", "smallvec", "parking_lot"] }
+tracing-subscriber.workspace = true
 url.workspace = true
 
-error_category.path = "../lib/error_category"
+error_category = { path = "../lib/error_category", features = ["sentry"] }
 flutter_api_macros.path = "flutter_api_macros"
+svg_sanitize.path = "../lib/svg_sanitize"
 wallet.path = "../wallet"
+
+[dependencies.flutter_rust_bridge]
+version = "=2.12.0"
+default-features = false
+# default - log - user-utils - wasm-start
+features = ["anyhow", "dart-opaque", "portable-atomic", "rust-async", "thread-pool"]
 
 [dev-dependencies]
 rstest.workspace = true
+
+wallet = { path = "../wallet", features = ["test"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger.workspace = true

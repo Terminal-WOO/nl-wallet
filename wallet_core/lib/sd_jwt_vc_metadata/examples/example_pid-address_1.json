@@ -1,0 +1,69 @@
+{
+  "vct": "urn:example:pid-address:1",
+  "name": "Address credential",
+  "description": "Working version of the address credential",
+  "display": [
+    {
+      "locale": "en-US",
+      "name": "Address",
+      "description": "The address credential"
+    }
+  ],
+  "claims": [
+    {
+      "path": ["address", "country"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Country",
+          "description": "Country of the address"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["address", "locality"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "City",
+          "description": "City of the address"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["address", "postal_code"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Postal code",
+          "description": "Postal code of the address"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["address", "street_address"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Street",
+          "description": "Street of the address"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["address", "house_number"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "House number",
+          "description": "House number of the address"
+        }
+      ],
+      "sd": "always"
+    }
+  ]
+}

@@ -1,53 +1,58 @@
-use itertools::Itertools;
-use rstest::rstest;
-use serial_test::serial;
+use std::assert_matches;
 
 use attestation_data::disclosure::DisclosedAttestations;
 use attestation_data::disclosure::DisclosedAttributes;
 use attestation_types::claim_path::ClaimPath;
-use dcql::CredentialFormat;
-use dcql::normalized::MdocAttributeRequest;
+use attestation_types::credential_format::Format;
+use db_test::DbSetup;
 use dcql::normalized::NormalizedCredentialRequest;
 use dcql::normalized::NormalizedCredentialRequests;
 use dcql::normalized::SdJwtAttributeRequest;
+use hsm::test::HsmSetup;
+use itertools::Itertools;
 use openid4vc::verifier::StatusResponse;
 use openid4vc_server::verifier::DisclosedAttributesParams;
 use openid4vc_server::verifier::StartDisclosureRequest;
 use openid4vc_server::verifier::StartDisclosureResponse;
 use openid4vc_server::verifier::StatusParams;
+use rstest::rstest;
+use serial_test::serial;
+use tests_integration::common::*;
 use utils::vec_nonempty;
+use wallet::AttributeValue;
 use wallet::DisclosureAttestationOptions;
+use wallet::DisclosureBasedIssuanceResult;
 use wallet::DisclosureUriSource;
+use wallet::Pin;
 use wallet::openid4vc::SessionType;
 
-use tests_integration::common::*;
-
 #[rstest]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_disclosure_based_issuance_and_disclosure(
-    #[values(CredentialFormat::MsoMdoc, CredentialFormat::SdJwt)] pid_format: CredentialFormat,
-    #[values(CredentialFormat::MsoMdoc, CredentialFormat::SdJwt)] degree_format: CredentialFormat,
+async fn ltc5_test_disclosure_based_issuance_and_disclosure(
+    #[values(Format::MsoMdoc, Format::SdJwt)] pid_format: Format,
 ) {
-    // Start with a wallet that contains the PID.
-    let pin = "112233";
-    let (mut wallet, urls, issuance_url) = setup_wallet_and_default_env(WalletDeviceVendor::Apple).await;
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let pin: Pin = "112233".into();
 
-    wallet = do_wallet_registration(wallet, pin).await;
-    wallet = do_pid_issuance(wallet, pin.to_owned()).await;
+    // Start with a wallet that contains the PID.
+    let (mut wallet, disclosure_urls, issuance_data) =
+        setup_wallet_and_default_env(&db_setup, &hsm_setup, &tempdir, WalletDeviceVendor::Apple).await;
+
+    wallet = do_wallet_registration(wallet, pin.clone()).await;
+    wallet = do_pid_issuance(wallet, pin.clone()).await;
 
     // Perform issuance of university degrees based on this PID.
-    let _proposal = wallet
-        .start_disclosure(&universal_link(&issuance_url, pid_format), DisclosureUriSource::Link)
-        .await
-        .unwrap();
-
-    let attestation_previews = wallet
-        .continue_disclosure_based_issuance(&[0], pin.to_owned())
-        .await
-        .unwrap();
-
-    wallet.accept_issuance(pin.to_owned()).await.unwrap();
+    let attestation_previews = do_degree_issuance(
+        &mut wallet,
+        pin.clone(),
+        &issuance_data.issuance_server.public,
+        &issuance_data.degree_client_ids,
+        pid_format,
+    )
+    .await;
 
     let attestations = wallet_attestations(&mut wallet).await;
 
@@ -62,25 +67,13 @@ async fn test_disclosure_based_issuance_and_disclosure(
     }
 
     // Prepare a disclosure request and send this to the verifier.
-    let credential_request = match degree_format {
-        CredentialFormat::MsoMdoc => NormalizedCredentialRequest::MsoMdoc {
-            id: "degree".parse().unwrap(),
-            doctype_value: "com.example.degree".to_string(),
-            claims: vec_nonempty![MdocAttributeRequest {
-                path: vec_nonempty![
-                    ClaimPath::SelectByKey("com.example.degree".to_string()),
-                    ClaimPath::SelectByKey("education".to_string())
-                ],
-                intent_to_retain: Some(true),
-            }],
-        },
-        CredentialFormat::SdJwt => NormalizedCredentialRequest::SdJwt {
-            id: "degree".parse().unwrap(),
-            vct_values: vec_nonempty!["com.example.degree".to_string()],
-            claims: vec_nonempty![SdJwtAttributeRequest {
-                path: vec_nonempty![ClaimPath::SelectByKey("education".to_string())],
-            }],
-        },
+    let credential_request = NormalizedCredentialRequest::SdJwt {
+        id: "degree".parse().unwrap(),
+        vct_values: vec_nonempty!["com.example.degree".to_string()],
+        claims: vec_nonempty![SdJwtAttributeRequest {
+            path: vec_nonempty![ClaimPath::SelectByKey("education".to_string())],
+        }],
+        aki: vec![],
     };
 
     let start_request = StartDisclosureRequest {
@@ -96,7 +89,7 @@ async fn test_disclosure_based_issuance_and_disclosure(
     let client = reqwest::Client::new();
 
     let StartDisclosureResponse { session_token } = client
-        .post(urls.verifier_internal_url.join("disclosure/sessions"))
+        .post(disclosure_urls.verifier_internal_url.join("disclosure/sessions"))
         .json(&start_request)
         .send()
         .await
@@ -107,9 +100,11 @@ async fn test_disclosure_based_issuance_and_disclosure(
         .await
         .unwrap();
 
-    // The the universal link the wallet can use for disclosure.
-    let mut status_url = urls.verifier_url.join(&format!("disclosure/sessions/{session_token}"));
-    let status_query = serde_urlencoded::to_string(StatusParams {
+    // The universal link the wallet can use for disclosure.
+    let mut status_url = disclosure_urls
+        .verifier_url
+        .join(&format!("disclosure/sessions/{session_token}"));
+    let status_query = serde_qs::to_string(&StatusParams {
         session_type: Some(SessionType::SameDevice),
     })
     .unwrap();
@@ -149,7 +144,9 @@ async fn test_disclosure_based_issuance_and_disclosure(
                         .attributes
                         .iter()
                         .find(|attribute| attribute.key.iter().eq(["education"]))
-                        .is_some_and(|attribute| attribute.value.to_string() == "MSc")
+                        .is_some_and(
+                            |attribute| matches!(&attribute.value, AttributeValue::Text(string) if string == "MSc"),
+                        )
                 })
                 .unwrap()
         }
@@ -157,7 +154,7 @@ async fn test_disclosure_based_issuance_and_disclosure(
     };
 
     let return_url = wallet
-        .accept_disclosure(&[msc_index], pin.to_string())
+        .accept_disclosure(&[msc_index], pin)
         .await
         .expect("Could not accept disclosure");
 
@@ -168,10 +165,10 @@ async fn test_disclosure_based_issuance_and_disclosure(
         .find_map(|(key, value)| (key == "nonce").then(|| value.into_owned()))
         .unwrap();
 
-    let mut disclosed_attributes_url = urls
+    let mut disclosed_attributes_url = disclosure_urls
         .verifier_internal_url
         .join(&format!("disclosure/sessions/{session_token}/disclosed_attributes"));
-    let query = serde_urlencoded::to_string(DisclosedAttributesParams { nonce: Some(nonce) }).unwrap();
+    let query = serde_qs::to_string(&DisclosedAttributesParams { nonce: Some(nonce) }).unwrap();
     disclosed_attributes_url.set_query(Some(query.as_str()));
 
     let disclosed_attestations = client
@@ -196,16 +193,8 @@ async fn test_disclosure_based_issuance_and_disclosure(
         .attributes;
 
     // Check that the only attribute disclosed is the education.
-    let education = match (degree_format, attributes) {
-        (CredentialFormat::MsoMdoc, DisclosedAttributes::MsoMdoc(attributes)) => attributes
-            .iter()
-            .exactly_one()
-            .ok()
-            .and_then(|(name_space, attributes)| (name_space == "com.example.degree").then_some(attributes))
-            .and_then(|attributes| attributes.into_iter().exactly_one().ok())
-            .and_then(|(key, value)| (key == "education").then_some(value))
-            .unwrap(),
-        (CredentialFormat::SdJwt, DisclosedAttributes::SdJwt(attributes)) => attributes
+    let education = match attributes {
+        DisclosedAttributes::SdJwt(attributes) => attributes
             .flattened()
             .into_iter()
             .exactly_one()
@@ -219,35 +208,112 @@ async fn test_disclosure_based_issuance_and_disclosure(
 }
 
 #[rstest]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_disclosure_based_issuance_error_no_attributes(
-    #[values(CredentialFormat::MsoMdoc, CredentialFormat::SdJwt)] format: CredentialFormat,
+async fn ltc10_test_disclosure_based_issuance_error_no_attributes(
+    #[values(Format::MsoMdoc, Format::SdJwt)] format: Format,
 ) {
-    let (issuance_server_settings, _, di_trust_anchor, di_tls_config) = issuance_server_settings();
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let pin: Pin = "112233".into();
 
-    let pin = "112233";
-    let (mut wallet, _, issuance_url) = setup_wallet_and_env(
+    let (issuance_server_settings, _, di_trust_anchor, di_tls_config) =
+        issuance_server_settings(db_setup.issuance_server_url());
+    let (mut wallet, _, issuance_urls) = setup_wallet_and_env(
+        &db_setup,
+        &hsm_setup,
+        &tempdir,
         WalletDeviceVendor::Apple,
         update_policy_server_settings(),
-        wallet_provider_settings(),
-        pid_issuer_settings(),
+        wallet_provider_settings(db_setup.wallet_provider_url(), db_setup.audit_log_url()),
+        pid_issuer_settings(db_setup.pid_issuer_url(), None),
         (issuance_server_settings, vec![], di_trust_anchor, di_tls_config),
     )
     .await;
 
-    wallet = do_wallet_registration(wallet, pin).await;
-    wallet = do_pid_issuance(wallet, pin.to_owned()).await;
+    wallet = do_wallet_registration(wallet, pin.clone()).await;
+    wallet = do_pid_issuance(wallet, pin.clone()).await;
 
     let _proposal = wallet
-        .start_disclosure(&universal_link(&issuance_url, format), DisclosureUriSource::Link)
+        .start_disclosure(
+            &universal_link(
+                issuance_urls.issuance_server.public.as_base_url(),
+                &issuance_urls.degree_client_ids,
+                format,
+            ),
+            DisclosureUriSource::Link,
+        )
         .await
         .unwrap();
 
-    // If the issuer has no attestations to issue, we receive an empty vec and no error.
-    let attestations = wallet
-        .continue_disclosure_based_issuance(&[0], pin.to_owned())
+    let result = wallet.continue_disclosure_based_issuance(&[0], pin).await.unwrap();
+    assert_matches!(result, DisclosureBasedIssuanceResult::NoIssuableAttestations);
+}
+
+/// Disclosure based issuance against an issuance server configured without the Credential Preview Endpoint.
+///
+/// The wallet receives no previews, only the issuer organization, and stores the issued degrees after acceptance.
+#[rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial(hsm)]
+async fn test_disclosure_based_issuance_without_previews(#[values(Format::MsoMdoc, Format::SdJwt)] format: Format) {
+    let db_setup = DbSetup::create_clean().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let pin: Pin = "112233".into();
+
+    let (mut issuance_server_settings, issuable_documents, di_trust_anchor, di_tls_config) =
+        issuance_server_settings(db_setup.issuance_server_url());
+    issuance_server_settings.issuer_settings.credential_preview_endpoint = false;
+
+    let (mut wallet, _, issuance_urls) = setup_wallet_and_env(
+        &db_setup,
+        &hsm_setup,
+        &tempdir,
+        WalletDeviceVendor::Apple,
+        update_policy_server_settings(),
+        wallet_provider_settings(db_setup.wallet_provider_url(), db_setup.audit_log_url()),
+        pid_issuer_settings(db_setup.pid_issuer_url(), None),
+        (
+            issuance_server_settings,
+            issuable_documents,
+            di_trust_anchor,
+            di_tls_config,
+        ),
+    )
+    .await;
+
+    wallet = do_wallet_registration(wallet, pin.clone()).await;
+    wallet = do_pid_issuance(wallet, pin.clone()).await;
+
+    let _proposal = wallet
+        .start_disclosure(
+            &universal_link(
+                issuance_urls.issuance_server.public.as_base_url(),
+                &issuance_urls.degree_client_ids,
+                format,
+            ),
+            DisclosureUriSource::Link,
+        )
         .await
         .unwrap();
-    assert!(attestations.is_empty());
+
+    let DisclosureBasedIssuanceResult::NoPreviews { issuer } = wallet
+        .continue_disclosure_based_issuance(&[0], pin.clone())
+        .await
+        .unwrap()
+    else {
+        panic!("expected no previews");
+    };
+
+    wallet.accept_issuance(pin).await.unwrap();
+
+    let attestations = wallet_attestations(&mut wallet).await;
+    let degrees = attestations
+        .iter()
+        .filter(|attestation| attestation.attestation_type == "com.example.degree")
+        .collect_vec();
+    assert_eq!(degrees.len(), 2);
+    assert!(degrees.iter().all(|degree| degree.issuer == issuer));
 }

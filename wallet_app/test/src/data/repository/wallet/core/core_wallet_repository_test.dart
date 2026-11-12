@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:wallet/src/data/repository/wallet/core/core_wallet_repository.dart';
+import 'package:wallet/src/util/mapper/wallet/wallet_state_mapper.dart';
 import 'package:wallet/src/wallet_core/typed/typed_wallet_core.dart';
 import 'package:wallet_core/core.dart';
 
@@ -38,7 +39,7 @@ void main() {
       );
     });
     when(core.lockWallet()).thenAnswer((realInvocation) async => mockLockedStream.add(true));
-    repo = CoreWalletRepository(core);
+    repo = CoreWalletRepository(core, WalletStateMapper());
   });
 
   group('locked state', () {
@@ -139,9 +140,11 @@ void main() {
       const samplePidCard = AttestationPresentation(
         identity: AttestationIdentity.fixed(id: '0'),
         attestationType: 'pid',
-        displayMetadata: [DisplayMetadata(lang: 'nl', name: 'card name')],
+        format: .SdJwt,
+        displayMetadata: [DisplayMetadata(locale: 'nl', name: 'card name')],
         attributes: [],
         issuer: CoreMockData.organization,
+        validityStatus: ValidityStatus_Valid(validUntil: null),
       );
       when(core.observeCards()).thenAnswer((_) => Stream.value([samplePidCard]));
       final result = await repo.containsPid();

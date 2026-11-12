@@ -1,0 +1,103 @@
+[package]
+name = "status_lists"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+doctest = false
+
+[[test]]
+name = "postgres"
+path = "tests/postgres.rs"
+required-features = ["db_test"]
+
+[[test]]
+name = "revoke"
+path = "tests/revoke.rs"
+required-features = ["db_test"]
+
+[[test]]
+name = "serve"
+path = "tests/serve.rs"
+required-features = ["serve_test"]
+
+[features]
+axum = [
+    "dep:etag",
+    "dep:mediatype",
+    "dep:utoipa-axum",
+    "axum/json",
+    "http_utils/server",
+    "tower-http/compression-gzip",
+    "tower-http/cors",
+    "utoipa/uuid",
+    "token_status_list/axum",
+]
+# Enable additional test API endpoints
+revocation_helper = []
+test_api = ["axum", "revocation_helper"]
+serve_test = ["axum", "dep:reqwest"]
+db_test = ["serve_test", "dep:db_test", "tokio/rt-multi-thread"]
+
+[dependencies]
+anyhow.workspace = true
+chrono = { workspace = true, features = ["now"] }
+derive_more = { workspace = true, features = ["as_ref", "constructor", "debug", "from", "into_iterator"] }
+futures.workspace = true
+http.workspace = true
+itertools.workspace = true
+metrics.workspace = true
+nutype.workspace = true
+rand.workspace = true
+regex.workspace = true
+rustix = { workspace = true, features = ["fs"] }
+sea-orm = { workspace = true, features = [
+    "macros",
+    "runtime-tokio-rustls",
+    "sqlx-postgres",
+    "with-chrono",
+    "with-uuid",
+] }
+serde = { workspace = true, features = ["derive"] }
+serde_with.workspace = true
+strum = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "fs"] }
+tracing.workspace = true
+trait-variant.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+axum = { workspace = true, optional = true }
+etag = { workspace = true, optional = true }
+mediatype = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+utoipa = { workspace = true, optional = true }
+utoipa-axum = { workspace = true, optional = true }
+
+attestation_types.path = "../attestation_types"
+cose.path = "../cose"
+crypto.path = "../crypto"
+jwt.path = "../jwt"
+http_utils.path = "../http_utils"
+measure.path = "../measure"
+token_status_list.path = "../token_status_list"
+utils.path = "../utils"
+
+db_test = { path = "../db_test", optional = true }
+
+[dev-dependencies]
+coset.workspace = true
+p256.workspace = true
+rstest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros"] }
+uuid = { workspace = true, features = ["v4"] }
+
+crypto = { path = "../crypto", features = ["generate", "mock"] }
+utils = { path = "../utils", features = ["mock_time"] }

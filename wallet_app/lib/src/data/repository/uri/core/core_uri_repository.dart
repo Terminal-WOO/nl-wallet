@@ -1,7 +1,7 @@
-import 'package:wallet_core/core.dart';
-
 import '../../../../../environment.dart';
 import '../../../../domain/model/navigation/navigation_request.dart';
+import '../../../../feature/sign/argument/sign_screen_argument.dart';
+import '../../../../navigation/navigation_request_resolver.dart';
 import '../../../../wallet_core/typed/typed_wallet_core.dart';
 import '../uri_repository.dart';
 
@@ -11,26 +11,13 @@ class CoreUriRepository implements UriRepository {
   CoreUriRepository(this._walletCore);
 
   @override
-  Future<NavigationRequest> processUri(Uri uri) async {
+  Future<NavigationRequest> processUri(Uri inputUri) async {
+    final uri = inputUri.toString();
     if (Environment.mockRepositories) {
-      // When wallet_core supports issue/sign requests, this logic should be removed.
-      if (uri.toString().contains('issue')) return IssuanceNavigationRequest(uri.toString());
-      if (uri.toString().contains('sign')) return SignNavigationRequest(uri.toString());
+      // Once wallet_core supports sign requests, this logic should be removed.
+      if (uri.contains('sign')) return NavigationRequest.sign(argument: SignScreenArgument(uri: uri));
     }
-    final uriType = await _walletCore.identifyUri(uri.toString());
-    switch (uriType) {
-      case IdentifyUriResult.PidIssuance:
-        return PidIssuanceNavigationRequest(uri.toString());
-      case IdentifyUriResult.PidRenewal:
-        return PidRenewalNavigationRequest(uri.toString());
-      case IdentifyUriResult.PinRecovery:
-        return PinRecoveryNavigationRequest(uri.toString());
-      case IdentifyUriResult.Disclosure:
-        return DisclosureNavigationRequest(uri.toString());
-      case IdentifyUriResult.DisclosureBasedIssuance:
-        return IssuanceNavigationRequest(uri.toString());
-      case IdentifyUriResult.Transfer:
-        return NavigationRequest.walletTransferSource(uri.toString());
-    }
+    final uriType = await _walletCore.identifyUri(uri);
+    return resolveNavigationRequest(uriType, uri, isQrCode: false);
   }
 }

@@ -1,10 +1,8 @@
 .wallet-config:
+  extends: .rust
+  stage: init
   script:
-    - scripts/generate-wallet-config.sh
-      wallet_core/wallet
-      "$CONFIG_ENV"
-      "$STATIC_HOSTNAME"
-      "$CONFIG_PUBKEY"
+    - scripts/generate-wallet-config.sh wallet_core/wallet "$CONFIG_ENV" "$STATIC_HOSTNAME" "$CONFIG_KEY_ID" "$CONFIG_PUBKEY"
       "$CONFIG_TLS_CA"
   artifacts:
     name: wallet-config-$CONFIG_ENV
@@ -17,35 +15,24 @@ wallet-config-ont:
   needs:
     - job: build-env-ont
       artifacts: true
-  rules: !reference [.default-branch, rules]
+  rules:
+    - !reference [.on-schedule-nightly-performance-test, rules]
+    - !reference [.default-or-merge-request, rules]
 
 wallet-config-demo:
   extends: .wallet-config
   needs:
     - job: build-env-demo
       artifacts: true
+  artifacts:
+    expire_in: 3 month
   rules: !reference [.on-demo-build, rules]
 
-wallet-config-acceptance:
+wallet-config-pub:
   extends: .wallet-config
   needs:
-    - job: build-env-acceptance
+    - job: build-env-pub
       artifacts: true
-  rules: !reference [.release-tag, rules]
-  when: manual
-
-wallet-config-preproduction:
-  extends: .wallet-config
-  needs:
-    - job: build-env-preproduction
-      artifacts: true
-  rules: !reference [.release-tag, rules]
-  when: manual
-
-wallet-config-production:
-  extends: .wallet-config
-  needs:
-    - job: build-env-production
-      artifacts: true
-  rules: !reference [.release-tag, rules]
-  when: manual
+  artifacts:
+    expire_in: 3 month
+  rules: !reference [.on-pub-build, rules]

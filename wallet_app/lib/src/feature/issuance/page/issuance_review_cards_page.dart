@@ -3,7 +3,6 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
-import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/card/wallet_card.dart';
 import '../../../theme/wallet_theme.dart';
 import '../../../util/extension/build_context_extension.dart';
@@ -98,13 +97,7 @@ class IssuanceReviewCardsPage extends StatelessWidget {
   Widget _buildCardListItem(BuildContext context, WalletCard card) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Stack(
-        fit: StackFit.passthrough,
-        children: [
-          WalletCardItem.fromWalletCard(context, card),
-          Positioned(bottom: 0, left: 0, right: 0, child: _buildCardButtons(context, card: card)),
-        ],
-      ),
+      child: WalletCardItem.fromWalletCard(context, card, footer: _buildCardButtons(context, card: card)),
     );
   }
 
@@ -169,8 +162,8 @@ class IssuanceReviewCardsPage extends StatelessWidget {
   }
 
   String _getOrganizationName(BuildContext context) {
-    if (hasOfferedCards) return offeredCards.first.issuer.displayName.l10nValue(context);
-    if (hasRenewedCards) return renewedCards.first.issuer.displayName.l10nValue(context);
+    if (hasOfferedCards) return offeredCards.first.issuer.displayName;
+    if (hasRenewedCards) return renewedCards.first.issuer.displayName;
     return context.l10n.organizationFallbackName;
   }
 

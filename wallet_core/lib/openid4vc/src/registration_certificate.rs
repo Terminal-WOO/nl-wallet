@@ -1,0 +1,417 @@
+use attestation_data::registration_certificate::RegistrationCertificateAuthorizationError;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+use attestation_data::registration_certificate::RegistrationCertificateEnvelopeError;
+use attestation_data::registration_certificate::RegistrationCertificateStatusValidationError;
+use attestation_data::registration_certificate::RegistrationCertificateValidationError;
+use attestation_data::registration_certificate::StatusValidatedRegistrationCertificate;
+use attestation_data::registration_certificate::verify_registration_certificate_envelope;
+use attestation_data::x509::RelyingParty;
+use attestation_data::x509::RelyingPartyError;
+use attestation_types::credential_kind::CredentialKind;
+use crypto::trust_anchor::TrustAnchors;
+use crypto::x509::BorrowingCertificate;
+use crypto::x509::DistinguishedNameError;
+use dcql::Query;
+use token_status_list::verification::client::StatusListClient;
+use token_status_list::verification::verifier::RevocationVerifier;
+use utils::generator::Generator;
+
+#[derive(Debug, thiserror::Error)]
+pub enum RegistrationCertificateError {
+    #[error("no registration certificate found")]
+    Missing,
+    #[error("multiple registration certificates found")]
+    Multiple,
+    #[error("registration certificate has an invalid envelope: {0}")]
+    Envelope(#[source] RegistrationCertificateEnvelopeError),
+    #[error("could not parse access-certificate subject: {0}")]
+    AccessCertificateSubject(#[source] DistinguishedNameError),
+    #[error("access certificate does not contain a relying-party subject: {0}")]
+    RelyingParty(#[source] RelyingPartyError),
+    #[error("registration certificate has invalid WRPAC binding: {0}")]
+    Binding(#[source] RegistrationCertificateValidationError),
+    #[error("registration certificate has invalid status: {0}")]
+    Status(#[source] RegistrationCertificateStatusValidationError),
+    #[error("registration certificate does not authorize the request: {0}")]
+    Authorization(#[source] RegistrationCertificateAuthorizationError),
+}
+
+/// Validate a registration certificate's envelope, WRPAC binding, validity and status.
+///
+/// This does not check authorization for disclosure or issuance.
+pub async fn validate_registration_certificate<C>(
+    registration_certificate: &RegistrationCertificateEnvelope,
+    access_certificate: &BorrowingCertificate,
+    registration_certificate_trust_anchors: &TrustAnchors,
+    revocation_verifier: &RevocationVerifier<C>,
+    time: &impl Generator<chrono::DateTime<chrono::Utc>>,
+) -> Result<StatusValidatedRegistrationCertificate, RegistrationCertificateError>
+where
+    C: StatusListClient,
+{
+    let envelope = verify_registration_certificate_envelope(
+        registration_certificate,
+        registration_certificate_trust_anchors,
+        time,
+    )
+    .map_err(RegistrationCertificateError::Envelope)?;
+    let payload = envelope.into_payload();
+    let access_certificate_subject = access_certificate
+        .to_distinguished_name()
+        .map_err(RegistrationCertificateError::AccessCertificateSubject)?;
+    let access_subject =
+        RelyingParty::try_from(access_certificate_subject).map_err(RegistrationCertificateError::RelyingParty)?;
+
+    let certificate = payload
+        .validate_binding(&access_subject)
+        .map_err(RegistrationCertificateError::Binding)?;
+    certificate
+        .validate_status(revocation_verifier, registration_certificate_trust_anchors, time)
+        .await
+        .map_err(RegistrationCertificateError::Status)
+}
+
+/// Validate a registration certificate and ensure that it authorizes the DCQL query.
+pub async fn validate_registration_certificate_and_query<C>(
+    registration_certificate: &RegistrationCertificateEnvelope,
+    query: &Query,
+    access_certificate: &BorrowingCertificate,
+    registration_certificate_trust_anchors: &TrustAnchors,
+    revocation_verifier: &RevocationVerifier<C>,
+    time: &impl Generator<chrono::DateTime<chrono::Utc>>,
+) -> Result<StatusValidatedRegistrationCertificate, RegistrationCertificateError>
+where
+    C: StatusListClient,
+{
+    let certificate = validate_registration_certificate(
+        registration_certificate,
+        access_certificate,
+        registration_certificate_trust_anchors,
+        revocation_verifier,
+        time,
+    )
+    .await?;
+
+    certificate
+        .validate_dcql_authorization(query)
+        .map_err(RegistrationCertificateError::Authorization)?;
+
+    Ok(certificate)
+}
+
+pub async fn validate_registration_certificate_and_issuance<C>(
+    registration_certificate: &RegistrationCertificateEnvelope,
+    credential_kinds: impl IntoIterator<Item = CredentialKind>,
+    access_certificate: &BorrowingCertificate,
+    registration_certificate_trust_anchors: &TrustAnchors,
+    revocation_verifier: &RevocationVerifier<C>,
+    time: &impl Generator<chrono::DateTime<chrono::Utc>>,
+) -> Result<StatusValidatedRegistrationCertificate, RegistrationCertificateError>
+where
+    C: StatusListClient,
+{
+    let certificate = validate_registration_certificate(
+        registration_certificate,
+        access_certificate,
+        registration_certificate_trust_anchors,
+        revocation_verifier,
+        time,
+    )
+    .await?;
+
+    certificate
+        .validate_issuance_authorization(credential_kinds)
+        .map_err(RegistrationCertificateError::Authorization)?;
+
+    Ok(certificate)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+    use std::sync::Arc;
+
+    use attestation_data::registration_certificate::RegistrationCertificateAuthorizationError;
+    use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
+    use attestation_data::registration_certificate::RegistrationCertificateStatusValidationError;
+    use attestation_data::registration_certificate::RegistrationCertificateValidationError;
+    use attestation_data::registration_certificate::mock::MockRegistrationCertificateAuthority;
+    use attestation_data::registration_certificate::mock::StaticStatusListClient;
+    use attestation_data::registration_certificate::mock::issuer_registration_certificate_payload;
+    use attestation_types::credential_format::Format;
+    use attestation_types::credential_kind::CredentialKind;
+    use crypto::server_keys::KeyPair;
+    use crypto::server_keys::generate::Ca;
+    use crypto::trust_anchor::TrustAnchors;
+    use crypto::x509::BorrowingCertificate;
+    use crypto::x509::DistinguishedName;
+    use dcql::Query;
+    use rstest::rstest;
+    use serde_json::Value;
+    use serde_json::json;
+    use token_status_list::status_list::StatusType;
+    use token_status_list::verification::verifier::RevocationVerifier;
+    use utils::generator::TimeGenerator;
+
+    use super::RegistrationCertificateError;
+    use super::validate_registration_certificate;
+    use super::validate_registration_certificate_and_issuance;
+    use super::validate_registration_certificate_and_query;
+
+    enum EnvelopeFormat {
+        Jwt,
+        Cwt,
+    }
+
+    fn setup(status: StatusType) -> (KeyPair, Query, MockRegistrationCertificateAuthority) {
+        let access_certificate_ca = Ca::generate_wrpac_mock_ca().unwrap();
+        let access_key_pair = access_certificate_ca.generate_wrpac_verifier_mock().unwrap();
+        let query = Query::new_mock_mdoc_pid_example();
+        let authority = MockRegistrationCertificateAuthority::new_with_status(status);
+
+        (access_key_pair, query, authority)
+    }
+
+    fn registration_certificate_envelope(certificate: &[u8]) -> RegistrationCertificateEnvelope {
+        RegistrationCertificateEnvelope::from_slice(certificate).unwrap()
+    }
+
+    async fn validate(
+        registration_certificate: &RegistrationCertificateEnvelope,
+        query: &Query,
+        access_certificate: &BorrowingCertificate,
+        trust_anchors: &TrustAnchors,
+        status_list_client: StaticStatusListClient,
+    ) -> Result<(), RegistrationCertificateError> {
+        let revocation_verifier = RevocationVerifier::new_without_caching(Arc::new(status_list_client));
+
+        validate_registration_certificate_and_query(
+            registration_certificate,
+            query,
+            access_certificate,
+            trust_anchors,
+            &revocation_verifier,
+            &TimeGenerator,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    #[rstest]
+    #[case::jwt(EnvelopeFormat::Jwt)]
+    #[case::cwt(EnvelopeFormat::Cwt)]
+    #[tokio::test]
+    async fn validate_registration_certificate_envelope(#[case] format: EnvelopeFormat) {
+        let (access_key_pair, query, authority) = setup(StatusType::Valid);
+        let certificate = match format {
+            EnvelopeFormat::Jwt => authority.issue_jwt(access_key_pair.certificate(), query.clone()),
+            EnvelopeFormat::Cwt => authority.issue_cwt(access_key_pair.certificate(), query.clone()),
+        };
+        let envelope = registration_certificate_envelope(&certificate);
+
+        let revocation_verifier =
+            RevocationVerifier::new_without_caching(Arc::new(authority.status_list_client.clone()));
+        let validated_certificate = validate_registration_certificate(
+            &envelope,
+            access_key_pair.certificate(),
+            &authority.trust_anchors,
+            &revocation_verifier,
+            &TimeGenerator,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(validated_certificate.payload().support_uri, "support@example.com");
+
+        validate(
+            &envelope,
+            &query,
+            access_key_pair.certificate(),
+            &authority.trust_anchors,
+            authority.status_list_client.clone(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[rstest]
+    #[case::missing(None, None)]
+    #[case::null(Some(json!(null)), None)]
+    #[case::empty(Some(json!([])), Some(Format::MsoMdoc))]
+    #[case::authorized(Some(json!([
+        { "format": "mso_mdoc", "meta": { "doctype_value": "urn:example:pid" } },
+        { "format": "dc+sd-jwt", "meta": { "vct_values": ["urn:example:other", "urn:example:pid"] } }
+    ])), None)]
+    #[case::wrong_doctype(Some(json!([
+        { "format": "mso_mdoc", "meta": { "doctype_value": "urn:example:other" } },
+        { "format": "dc+sd-jwt", "meta": { "vct_values": ["urn:example:pid"] } }
+    ])), Some(Format::MsoMdoc))]
+    #[case::wrong_vct(Some(json!([
+        { "format": "mso_mdoc", "meta": { "doctype_value": "urn:example:pid" } },
+        { "format": "dc+sd-jwt", "meta": { "vct_values": ["urn:example:other"] } }
+    ])), Some(Format::SdJwt))]
+    #[case::mdoc_does_not_authorize_sd_jwt(Some(json!([
+        { "format": "mso_mdoc", "meta": { "doctype_value": "urn:example:pid" } }
+    ])), Some(Format::SdJwt))]
+    #[case::sd_jwt_does_not_authorize_mdoc(Some(json!([
+        { "format": "dc+sd-jwt", "meta": { "vct_values": ["urn:example:pid"] } }
+    ])), Some(Format::MsoMdoc))]
+    #[tokio::test]
+    async fn validate_issuance_authorization(
+        #[case] provides_attestations: Option<Value>,
+        #[case] unauthorized_format: Option<Format>,
+        #[values(EnvelopeFormat::Jwt, EnvelopeFormat::Cwt)] envelope_format: EnvelopeFormat,
+    ) {
+        let ca = Ca::generate_wrpac_mock_ca().unwrap();
+        let access_key_pair = ca.generate_wrpac_issuer_mock().unwrap();
+        let authority = MockRegistrationCertificateAuthority::new();
+        let credential_kinds =
+            [Format::MsoMdoc, Format::SdJwt].map(|format| CredentialKind::new(format, "urn:example:pid".to_string()));
+        let mut payload =
+            issuer_registration_certificate_payload(access_key_pair.certificate(), credential_kinds.clone());
+        match &provides_attestations {
+            Some(value) => payload.0["provides_attestations"] = value.clone(),
+            None => {
+                payload.0.as_object_mut().unwrap().remove("provides_attestations");
+            }
+        }
+        let certificate = match envelope_format {
+            EnvelopeFormat::Jwt => authority.sign_jwt(&payload),
+            EnvelopeFormat::Cwt => authority.sign_cwt(&payload),
+        };
+        let envelope = registration_certificate_envelope(&certificate);
+        let revocation_verifier = RevocationVerifier::new_without_caching(Arc::new(authority.status_list_client));
+
+        let result = validate_registration_certificate_and_issuance(
+            &envelope,
+            credential_kinds,
+            access_key_pair.certificate(),
+            &authority.trust_anchors,
+            &revocation_verifier,
+            &TimeGenerator,
+        )
+        .await;
+
+        let result = result.map(|validated| validated.payload().support_uri.clone());
+        if provides_attestations.as_ref().is_none_or(Value::is_null) {
+            assert_matches!(
+                result,
+                Err(RegistrationCertificateError::Authorization(
+                    RegistrationCertificateAuthorizationError::MissingProvidesAttestations
+                ))
+            );
+        } else if let Some(format) = unauthorized_format {
+            assert_matches!(
+                result,
+                Err(RegistrationCertificateError::Authorization(
+                    RegistrationCertificateAuthorizationError::UnauthorizedCredentialKind(kind)
+                )) if kind == CredentialKind::new(format, "urn:example:pid".to_string())
+            );
+        } else {
+            assert_eq!(result.unwrap(), "support@example.com");
+        }
+    }
+
+    #[tokio::test]
+    async fn reject_registration_certificate_from_untrusted_signer() {
+        let (access_key_pair, query, authority) = setup(StatusType::Valid);
+        let certificate = authority.issue_jwt(access_key_pair.certificate(), query.clone());
+        let envelope = registration_certificate_envelope(&certificate);
+        let untrusted_ca = Ca::generate_mock();
+
+        let error = validate(
+            &envelope,
+            &query,
+            access_key_pair.certificate(),
+            &untrusted_ca.to_trust_anchors(),
+            authority.status_list_client.clone(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_matches!(error, RegistrationCertificateError::Envelope(_));
+    }
+
+    #[tokio::test]
+    async fn reject_registration_certificate_with_mismatching_access_certificate_subject() {
+        let (access_key_pair, query, authority) = setup(StatusType::Valid);
+        let certificate = authority.issue_jwt(access_key_pair.certificate(), query.clone());
+        let envelope = registration_certificate_envelope(&certificate);
+        let mismatching_access_certificate = Ca::generate_wrpac_mock_ca()
+            .unwrap()
+            .generate_key_pair(
+                DistinguishedName::new_legal_person(
+                    "Other relying party".to_string(),
+                    "NL".to_string(),
+                    "Other relying party".to_string(),
+                    "other-organization-identifier".to_string(),
+                ),
+                Default::default(),
+            )
+            .unwrap();
+
+        let error = validate(
+            &envelope,
+            &query,
+            mismatching_access_certificate.certificate(),
+            &authority.trust_anchors,
+            authority.status_list_client.clone(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_matches!(
+            error,
+            RegistrationCertificateError::Binding(RegistrationCertificateValidationError::SubjectIdentifierMismatch {
+                field: "organizationIdentifier"
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_revoked_registration_certificate() {
+        let (access_key_pair, query, authority) = setup(StatusType::Invalid);
+        let certificate = authority.issue_jwt(access_key_pair.certificate(), query.clone());
+        let envelope = registration_certificate_envelope(&certificate);
+
+        let error = validate(
+            &envelope,
+            &query,
+            access_key_pair.certificate(),
+            &authority.trust_anchors,
+            authority.status_list_client.clone(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_matches!(
+            error,
+            RegistrationCertificateError::Status(RegistrationCertificateStatusValidationError::NotValid)
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_query_not_authorized_by_registration_certificate() {
+        let (access_key_pair, authorized_query, authority) = setup(StatusType::Valid);
+        let certificate = authority.issue_jwt(access_key_pair.certificate(), authorized_query);
+        let envelope = registration_certificate_envelope(&certificate);
+        let unauthorized_query = Query::new_mock_sd_jwt_pid_example();
+
+        let error = validate(
+            &envelope,
+            &unauthorized_query,
+            access_key_pair.certificate(),
+            &authority.trust_anchors,
+            authority.status_list_client.clone(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_matches!(
+            error,
+            RegistrationCertificateError::Authorization(
+                RegistrationCertificateAuthorizationError::UnauthorizedCredentialQuery(_)
+            )
+        );
+    }
+}

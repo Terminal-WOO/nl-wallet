@@ -4,32 +4,32 @@ import util.MobileActions
 
 class MenuScreen : MobileActions() {
 
-    private val appTourVideoButton = l10n.getString("menuScreenTourCta")
-    private val helpButton = l10n.getString("menuScreenHelpCta")
+    private val helpAndInfoButton = l10n.getString("menuScreenHelpCta")
     private val historyButton = l10n.getString("menuScreenHistoryCta")
     private val settingsButton = l10n.getString("menuScreenSettingsCta")
     private val feedbackButton = l10n.getString("menuScreenFeedbackCta")
     private val aboutButton = l10n.getString("menuScreenAboutCta")
     private val logoutButton = l10n.getString("menuScreenLockCta")
     private val bottomBackButton = l10n.getString("generalBottomBackCta")
-    private val browserTestButton = "Browser Test"
+    private val browserTestButton = l10n.getString("menuScreenBrowserCta")
+    private val menuHeader = l10n.getString("menuScreenTitle")
 
     fun menuListButtonsVisible() =
-        elementWithTextVisible(helpButton) && elementWithTextVisible(historyButton) && elementWithTextVisible(settingsButton) &&
+        elementWithTextVisible(helpAndInfoButton) && elementWithTextVisible(historyButton) && elementWithTextVisible(settingsButton) &&
             elementWithTextVisible(feedbackButton) && elementWithTextVisible(aboutButton)
+
+    fun menuVisible() = elementWithTextVisible(bottomBackButton) && elementWithTextVisible(menuHeader)
 
     fun logoutButtonVisible(): Boolean {
         scrollToElementWithText(logoutButton)
         return elementWithTextVisible(logoutButton)
     }
 
-    fun clickHelpButton() = clickElementWithText(helpButton)
+    fun clickHelpAndInfoButton() = clickElementWithText(helpAndInfoButton)
 
     fun clickHistoryButton() = clickElementWithText(historyButton)
 
     fun clickSettingsButton() = clickElementWithText(settingsButton)
-
-    fun clickFeedbackButton() = clickElementWithText(feedbackButton)
 
     fun clickAboutButton() {
         scrollToElementWithText(aboutButton)
@@ -47,6 +47,4 @@ class MenuScreen : MobileActions() {
         scrollToElementWithText(logoutButton)
         clickElementContainingText(browserTestButton)
     }
-
-    fun clickAppTourVideoButton()= clickElementContainingText(appTourVideoButton.substringBefore("'"))
 }

@@ -1,44 +1,60 @@
-use indexmap::IndexSet;
+use std::collections::HashSet;
+
+use oauth::authorization::AuthorizationCodeRequest;
+pub use oauth::authorization::AuthorizationRequestBase;
+pub use oauth::authorization::ResponseType;
+use oauth::pkce::PkcePair;
+use oauth::scope::Scope;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_with::DeserializeFromStr;
-use serde_with::SerializeDisplay;
-use serde_with::StringWithSeparator;
-use serde_with::formats::SpaceSeparator;
+use serde_with::TryFromInto;
+use serde_with::json::JsonString;
 use serde_with::serde_as;
 use serde_with::skip_serializing_none;
 use url::Url;
 
-/// See
-/// <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-13.html#name-authorization-request>
-/// and <https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.1>.
-/// When sent using [PAR (Pushed Authorization Requests)](https://datatracker.ietf.org/doc/html/rfc9126),
-/// it is usually sent URL-encoded in the request body to POST /op/par.
+use crate::authorization_details::WalletAuthorizationDetails;
+use crate::authorization_details::WalletAuthorizationDetailsEntries;
+
+/// An OpenID4VCI authorization request, posted in URL-encoded form to the `/par` endpoint
+/// (RFC 9126) and later referenced from `/authorize` via [`PushedAuthorizationRequest`].
+///
+/// This is the OAuth 2.0 authorization code request plus the two parameters OpenID4VCI adds to it. It deliberately
+/// does not carry the OpenID Connect `nonce`, which OpenID4VCI does not define for this request; see
+/// [`oauth::authorization::OidcAuthorizationRequest`] for that.
 #[serde_as]
 #[skip_serializing_none]
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AuthorizationRequest {
-    #[serde_as(as = "StringWithSeparator::<SpaceSeparator, ResponseType>")]
-    pub response_type: IndexSet<ResponseType>,
-
-    pub client_id: String,
-    pub redirect_uri: Option<Url>,
-    pub state: Option<String>,
-    pub authorization_details: Option<Vec<AuthorizationDetails>>,
-
-    /// https://datatracker.ietf.org/doc/html/rfc9126. MUST NOT be sent in a PAR.
-    /// This is a `String` and not a `Url`, because despite its name it need not be an actual URL;
-    /// its contents is completely up to the server and to be considered opaque.
-    pub request_uri: Option<String>,
-
+pub struct VciAuthorizationRequest {
     #[serde(flatten)]
-    pub code_challenge: Option<PkceCodeChallenge>,
+    pub auth_request: AuthorizationCodeRequest,
 
-    #[serde_as(as = "Option<StringWithSeparator::<SpaceSeparator, String>>")]
-    pub scope: Option<IndexSet<String>>,
+    /// String value identifying a certain processing context at the Credential Issuer. A value for this parameter is
+    /// typically passed in a Credential Offer from the Credential Issuer to the Wallet. This request parameter is used
+    /// to pass the `issuer_state` value back to the Credential Issuer.
+    ///
+    /// <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-5.1.3-2.1>
+    pub issuer_state: Option<String>,
 
-    pub nonce: Option<String>,
-    pub response_mode: Option<ResponseMode>,
+    #[serde_as(as = "Option<JsonString<TryFromInto<WalletAuthorizationDetailsEntries>>>")]
+    pub authorization_details: Option<WalletAuthorizationDetails>,
+}
+
+impl VciAuthorizationRequest {
+    pub fn for_auth_code<P: PkcePair>(
+        client_id: String,
+        redirect_uri: Url,
+        state: String,
+        issuer_state: Option<String>,
+        scope: HashSet<Scope>,
+        pkce_pair: &P,
+    ) -> Self {
+        Self {
+            auth_request: AuthorizationCodeRequest::new(client_id, redirect_uri, state, scope, pkce_pair),
+            issuer_state,
+            authorization_details: None,
+        }
+    }
 }
 
 /// Defined in https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#ResponseModes
@@ -55,105 +71,154 @@ pub enum ResponseMode {
     DirectPostJwt,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "code_challenge_method")]
-pub enum PkceCodeChallenge {
-    S256 {
-        code_challenge: String,
-    },
-    #[serde(rename = "plain")]
-    Plain {
-        code_challenge: String,
-    },
-}
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    Hash,
-    SerializeDisplay,
-    DeserializeFromStr,
-    strum::EnumString,
-    strum::Display,
-)]
-#[strum(serialize_all = "snake_case")]
-pub enum ResponseType {
-    /// OAuth
-    #[default]
-    Code,
-
-    /// OpenID4VP
-    VpToken,
-
-    /// SIOPv2 (not supported (yet))
-    IdToken,
-}
-
-impl From<ResponseType> for IndexSet<ResponseType> {
-    fn from(value: ResponseType) -> Self {
-        IndexSet::from([value])
-    }
-}
-
-/// Format-specific data for the [`AuthorizationDetails`].
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "format", rename_all = "snake_case")]
-pub enum AuthorizationDetailsFormatData {
-    MsoMdoc { doctype: String },
-}
-
-#[skip_serializing_none]
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AuthorizationDetails {
-    #[serde(rename = "type")]
-    typ: AuthorizationDetailsType,
-    credential_identifiers: Option<Vec<String>>,
-    #[serde(flatten)]
-    format_data: AuthorizationDetailsFormatData,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthorizationDetailsType {
-    #[default]
-    OpenidCredential,
-}
-
-/// See
-/// <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0-13.html#name-successful-authorization-re>
-/// and <https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1.2>.
-/// Contains the token that may be exchanged for an access token.
-/// URL-encoded and provided as query parameters added to the `redirect_uri` that was passed in the
-/// [`AuthorizationRequest`].
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AuthorizationResponse {
-    pub code: String,
-    pub state: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::collections::HashSet;
 
-    use crate::authorization::AuthorizationDetails;
-    use crate::authorization::AuthorizationDetailsFormatData;
+    use itertools::Itertools;
+    use oauth::authorization::AuthorizationCodeRequest;
+    use oauth::pkce::PkceCodeChallenge;
+    use serde_qs;
+    use url::Url;
+
+    use super::AuthorizationRequestBase;
+    use super::ResponseType;
+    use super::VciAuthorizationRequest;
+
+    fn example_vci_request() -> VciAuthorizationRequest {
+        let scope = HashSet::from(["openid".parse().unwrap(), "profile".parse().unwrap()]);
+
+        VciAuthorizationRequest {
+            auth_request: AuthorizationCodeRequest {
+                oauth_request: AuthorizationRequestBase::new(
+                    HashSet::from([ResponseType::Code]),
+                    "client-123".to_string(),
+                    Some("state-abc".to_string()),
+                ),
+                redirect_uri: Url::parse("https://example.com/callback").unwrap().into(),
+                code_challenge: PkceCodeChallenge::S256 {
+                    code_challenge: "challenge-xyz".to_string(),
+                },
+                scope,
+            },
+            issuer_state: Some("state-xyz".to_string()),
+            authorization_details: None,
+        }
+    }
 
     #[test]
-    fn authorization_details_serialization() {
+    fn vci_authorization_request_urlencoded_roundtrip() {
+        let request = example_vci_request();
+
+        let encoded = serde_qs::to_string(&request).unwrap();
+        let decoded: VciAuthorizationRequest = serde_qs::from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.auth_request.oauth_request.client_id, "client-123");
+        assert_eq!(decoded.auth_request.oauth_request.state.as_deref(), Some("state-abc"));
         assert_eq!(
-            serde_json::to_string(&AuthorizationDetails {
-                typ: crate::authorization::AuthorizationDetailsType::OpenidCredential,
-                credential_identifiers: None,
-                format_data: AuthorizationDetailsFormatData::MsoMdoc {
-                    doctype: "example_doctype".to_string()
-                }
-            })
-            .unwrap(),
-            json!({"type": "openid_credential","format": "mso_mdoc","doctype": "example_doctype"}).to_string(),
+            decoded.auth_request.scope,
+            HashSet::from(["openid".parse().unwrap(), "profile".parse().unwrap()])
+        );
+        assert!(matches!(
+            decoded.auth_request.code_challenge,
+            PkceCodeChallenge::S256 { code_challenge } if code_challenge == "challenge-xyz"
+        ));
+        assert_eq!(decoded.issuer_state.as_deref(), Some("state-xyz"));
+        assert!(decoded.authorization_details.is_none());
+    }
+
+    #[test]
+    fn vci_authorization_request_rejects_request_uri() {
+        let request = example_vci_request();
+        let mut encoded = serde_qs::to_string(&request).unwrap();
+        encoded.push_str("&request_uri=should-not-be-here");
+
+        let err = serde_qs::from_str::<VciAuthorizationRequest>(&encoded).unwrap_err();
+        assert!(
+            err.to_string().contains("MUST NOT be present"),
+            "expected SpecForbidden rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn vci_authorization_request_deserialize_scope_example() {
+        // Source: <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-5.1.2-10>
+        let example = "response_type=code&scope=UniversityDegreeCredential&resource=https%3A%2F%2Fcredential-issuer.\
+                       example.com&client_id=s6BhdRkqt3&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&\
+                       code_challenge_method=S256&redirect_uri=https%3A%2F%2Fwallet.example.org%2Fcb";
+
+        let auth_request = serde_qs::from_str::<VciAuthorizationRequest>(example)
+            .expect("deserializing VciAuthorizationRequest should succeed");
+
+        assert_eq!(
+            auth_request.auth_request.oauth_request.response_type,
+            HashSet::from([ResponseType::Code])
+        );
+        assert_eq!(auth_request.auth_request.oauth_request.client_id, "s6BhdRkqt3");
+        assert!(auth_request.auth_request.oauth_request.state.is_none());
+        assert_eq!(
+            auth_request.auth_request.redirect_uri.as_ref().as_str(),
+            "https://wallet.example.org/cb"
+        );
+        assert_eq!(
+            auth_request.auth_request.code_challenge,
+            PkceCodeChallenge::S256 {
+                code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string()
+            }
+        );
+        assert_eq!(
+            auth_request.auth_request.scope,
+            HashSet::from(["UniversityDegreeCredential".parse().unwrap()])
+        );
+        assert!(auth_request.issuer_state.is_none());
+        assert!(auth_request.authorization_details.is_none());
+    }
+
+    #[test]
+    fn vci_authorization_request_deserialize_authorization_details_example() {
+        // Source: <https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-5.1.1-9>
+        let example = "response_type=code&client_id=s6BhdRkqt3&\
+                       code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&\
+                       authorization_details=%5B%7B%22type%22%3A%20%22openid_credential%22%2C%20%\
+                       22credential_configuration_id%22%3A%20%22UniversityDegreeCredential%22%7D%5D&\
+                       redirect_uri=https%3A%2F%2Fwallet.example.org%2Fcb";
+
+        let auth_request = serde_qs::from_str::<VciAuthorizationRequest>(example)
+            .expect("deserializing VciAuthorizationRequest should succeed");
+
+        assert_eq!(
+            auth_request.auth_request.oauth_request.response_type,
+            HashSet::from([ResponseType::Code])
+        );
+        assert_eq!(auth_request.auth_request.oauth_request.client_id, "s6BhdRkqt3");
+        assert!(auth_request.auth_request.oauth_request.state.is_none());
+        assert_eq!(
+            auth_request.auth_request.redirect_uri.as_ref().as_str(),
+            "https://wallet.example.org/cb"
+        );
+        assert_eq!(
+            auth_request.auth_request.code_challenge,
+            PkceCodeChallenge::S256 {
+                code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_string()
+            }
+        );
+        assert_eq!(auth_request.auth_request.scope, HashSet::new());
+        assert!(auth_request.issuer_state.is_none());
+
+        let authorization_details = auth_request
+            .authorization_details
+            .as_ref()
+            .expect("authorization_details should be present in Authorization Request");
+
+        let entry_container = authorization_details
+            .as_ref()
+            .iter()
+            .exactly_one()
+            .expect("there should exactly one authorization_details entry");
+
+        assert_eq!(
+            entry_container.entry.credential_configuration_id.as_ref(),
+            "UniversityDegreeCredential"
         );
     }
 }

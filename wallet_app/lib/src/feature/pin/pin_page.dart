@@ -8,13 +8,13 @@ import '../../../environment.dart';
 import '../../../l10n/generated/app_localizations.dart';
 import '../../data/service/announcement_service.dart';
 import '../../domain/model/bloc/error_state.dart';
-import '../../util/cast_util.dart';
 import '../../util/extension/build_context_extension.dart';
 import '../../util/extension/string_extension.dart';
 import '../../wallet_constants.dart';
 import '../common/widget/button/button_content.dart';
 import '../common/widget/button/list_button.dart';
 import '../common/widget/pin_header.dart';
+import '../common/widget/text/dialog_title_text.dart';
 import '../common/widget/wallet_scrollbar.dart';
 import '../error/error_screen.dart';
 import '../forgot_pin/forgot_pin_screen.dart';
@@ -31,13 +31,12 @@ const kNonFinalRoundMLeftoverAttemptsMentionThreshold = 3;
 /// Signature for a function that creates a widget while providing the leftover pin attempts.
 /// [attempts] being null indicates that this is the first attempt.
 /// [isFinalAttempt] being true indicates it's the final attempt (followed by the user being blocked, i.e. no more timeout)
-typedef PinHeaderBuilder =
-    Widget Function(
-      BuildContext context,
-      int? attemptsLeftInRound,
-      //ignore: avoid_positional_boolean_parameters
-      bool isFinalRound,
-    );
+typedef PinHeaderBuilder = Widget Function(
+  BuildContext context,
+  int? attemptsLeftInRound,
+  //ignore: avoid_positional_boolean_parameters
+  bool isFinalRound,
+);
 
 /// Signature for a function that is called on any state change exposed by the [PinBloc]. When this method
 /// is provided AND returns true for the given [PinState], the state is considered consumed and will not be handled
@@ -68,7 +67,7 @@ class PinPage extends StatelessWidget {
   final PinStateInterceptor? onStateChanged;
 
   /// Called when the [PinBloc] exposes an [ErrorState] (i.e [PinValidateNetworkError]
-  /// or [PinValidateGenericError]). When [onPinError] is provided these [ErrorState]s
+  /// or [PinValidateError]). When [onPinError] is provided these [ErrorState]s
   /// are no longer handled by the [PinPage].
   final OnPinErrorCallback? onPinError;
 
@@ -115,10 +114,8 @@ class PinPage extends StatelessWidget {
         PinTimeoutScreen.show(context, state.expiryTime);
       case PinValidateBlocked():
         PinBlockedScreen.show(context);
-      case PinValidateNetworkError():
-        ErrorScreen.showNetwork(context, secured: false, networkError: tryCast(state));
-      case PinValidateGenericError():
-        ErrorScreen.showGeneric(context, secured: false);
+      case PinValidateError(:final error):
+        ErrorScreen.show(context, error, secured: false);
       case PinValidateFailure():
         await _showErrorDialog(context, state);
 
@@ -234,27 +231,22 @@ class PinPage extends StatelessWidget {
   }
 
   Widget _buildHeader(PinHeaderBuilder builder) {
-    // FIXME: Remove [MergeSemantics] once flutter issue is fixed.
-    // Merging semantics fixes the (iOS) issue where only the scrollview can gain focus (without any announcement)
-    // Can be removed if the related framework bug is fixed. https://github.com/flutter/flutter/issues/164483
-    return MergeSemantics(
-      child: WalletScrollbar(
-        child: CustomScrollView(
-          slivers: [
-            SliverFillRemaining(
-              hasScrollBody: false,
-              child: BlocBuilder<PinBloc, PinState>(
-                builder: (context, state) {
-                  if (state is PinValidateFailure) {
-                    return builder(context, state.attemptsLeftInRound, state.isFinalRound);
-                  } else {
-                    return builder(context, null, false);
-                  }
-                },
-              ),
+    return WalletScrollbar(
+      child: CustomScrollView(
+        slivers: [
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: BlocBuilder<PinBloc, PinState>(
+              builder: (context, state) {
+                if (state is PinValidateFailure) {
+                  return builder(context, state.attemptsLeftInRound, state.isFinalRound);
+                } else {
+                  return builder(context, null, false);
+                }
+              },
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -317,8 +309,7 @@ class PinPage extends StatelessWidget {
       PinEntryInProgress() => true,
       PinValidateFailure() => true,
       PinValidateTimeout() => true,
-      PinValidateNetworkError() => true,
-      PinValidateGenericError() => true,
+      PinValidateError() => true,
       PinValidateInProgress() => false,
       PinValidateSuccess() => false,
       PinValidateBlocked() => false,
@@ -333,8 +324,7 @@ class PinPage extends StatelessWidget {
       PinValidateSuccess() => false,
       PinValidateTimeout() => false,
       PinValidateBlocked() => false,
-      PinValidateNetworkError() => false,
-      PinValidateGenericError() => false,
+      PinValidateError() => false,
     };
   }
 
@@ -346,8 +336,7 @@ class PinPage extends StatelessWidget {
       PinValidateFailure() => 0,
       PinValidateTimeout() => 0,
       PinValidateBlocked() => 0,
-      PinValidateNetworkError() => 0,
-      PinValidateGenericError() => 0,
+      PinValidateError() => 0,
     };
   }
 
@@ -374,7 +363,7 @@ class PinPage extends StatelessWidget {
       builder: (BuildContext context) {
         return AlertDialog(
           scrollable: true,
-          title: Text.rich(title.toTextSpan(context)),
+          title: DialogTitleText(title),
           content: Text.rich(description.toTextSpan(context)),
           actions: <Widget>[
             TextButton(

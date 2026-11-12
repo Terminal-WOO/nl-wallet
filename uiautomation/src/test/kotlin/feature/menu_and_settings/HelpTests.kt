@@ -1,0 +1,67 @@
+package feature.menu_and_settings
+
+import helper.TestBase
+import navigator.MenuNavigator
+import navigator.screen.MenuNavigatorScreen
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.MethodOrderer
+import org.junit.jupiter.api.TestInfo
+import org.junit.jupiter.api.TestMethodOrder
+import org.junitpioneer.jupiter.RetryingTest
+import screen.help.ActivitiesHelpScreen
+import screen.help.ContactScreen
+import screen.help.HelpAndInfoScreen
+import screen.menu.MenuScreen
+import util.MobileActions.Companion.SCREEN_TRANSITION_MILLIS
+
+@TestMethodOrder(MethodOrderer.DisplayName::class)
+@DisplayName("UC 9.6 Get help")
+class HelpTests : TestBase() {
+
+    private lateinit var menuScreen: MenuScreen
+    private lateinit var helpAndInfoScreen: HelpAndInfoScreen
+    private lateinit var contactScreen: ContactScreen
+    private lateinit var activitiesHelpScreen: ActivitiesHelpScreen
+
+    fun setUp(testInfo: TestInfo) {
+        startDriver(testInfo)
+        MenuNavigator().toScreen(MenuNavigatorScreen.Menu)
+        menuScreen = MenuScreen()
+        helpAndInfoScreen = HelpAndInfoScreen()
+        contactScreen = ContactScreen()
+        activitiesHelpScreen = ActivitiesHelpScreen()
+    }
+
+    @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
+    @DisplayName("LTC31 Get help")
+    fun verifyHelp(testInfo: TestInfo) {
+        setUp(testInfo)
+        menuScreen.clickHelpAndInfoButton()
+        assertTrue(helpAndInfoScreen.visible(), "Help buttons are not visible")
+        helpAndInfoScreen.captureA11ySnapshot("HelpAndInfo")
+
+        helpAndInfoScreen.clickContactButton()
+        assertTrue(contactScreen.visible(), "Contact screen not visible")
+        contactScreen.captureA11ySnapshot("Contact")
+
+        contactScreen.clickBottomBackButton()
+        helpAndInfoScreen.clickActivitiesHelpButton()
+        activitiesHelpScreen.clickCardActivitiesButton()
+
+        activitiesHelpScreen.clickFirstCardActivitiesTopicButton()
+        activitiesHelpScreen.clickSomethingElseButton()
+        assertTrue(contactScreen.visible(), "Contact screen not visible")
+
+        contactScreen.clickBottomBackButton()
+        assertTrue(activitiesHelpScreen.somethingElseButtonVisible(), "somethingElseButton not visible")
+        activitiesHelpScreen.clickBottomBackButton()
+        Thread.sleep(SCREEN_TRANSITION_MILLIS)
+        activitiesHelpScreen.clickBottomBackButton()
+        assertTrue(activitiesHelpScreen.cardActivitiesButtonVisible(), "cardActivitiesButton not visible")
+        helpAndInfoScreen.clickBottomBackButton()
+        assertTrue(helpAndInfoScreen.visible(), "Help buttons are not visible")
+        helpAndInfoScreen.clickBottomBackButton()
+        assertTrue(menuScreen.menuVisible(), "Menu screen not visible")
+    }
+}

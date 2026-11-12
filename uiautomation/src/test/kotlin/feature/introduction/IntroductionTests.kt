@@ -32,25 +32,30 @@ class IntroductionTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC13 Introduction Happy flow")
-    @Tags(Tag("smokeIOS"), Tag("smoke"), Tag("a11yBatch1"))
+    @DisplayName("LTC12 LTC29 Introduction & privacy statement")
+    @Tags(Tag("smoke"))
     fun verifyWelcomeScreen(testInfo: TestInfo) {
         setUp(testInfo)
         assertTrue(introductionScreen.page1Visible(), "page 1 is not visible")
+        introductionScreen.captureA11ySnapshot("IntroductionPage1")
 
         introductionScreen.clickNextButton() // page 1 -> 2
         assertTrue(introductionScreen.page2Visible(), "page 2 is not visible")
+        introductionScreen.captureA11ySnapshot("IntroductionPage2")
 
         introductionScreen.clickNextButton() // page 2 -> 3
         assertTrue(introductionScreen.page3Visible(), "page 3 is not visible")
+        introductionScreen.captureA11ySnapshot("IntroductionPage3")
 
         introductionScreen.clickNextButton() // page 3 -> privacy
         assertTrue(privacyScreen.visible(), "privacy screen is not visible")
+        privacyScreen.captureA11ySnapshot("IntroductionPrivacy")
 
         privacyScreen.clickPrivacyButton()
 
         val privacyPolicyScreen = PrivacyPolicyScreen()
         assertTrue(privacyPolicyScreen.visible(), "privacy policy screen is not visible")
+        privacyPolicyScreen.captureA11ySnapshot("PrivacyPolicy")
 
         privacyPolicyScreen.clickBackButton()
 
@@ -61,7 +66,7 @@ class IntroductionTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC14 User skips introduction")
+    @DisplayName("LTC13 User skips introduction")
     fun verifySkipIntroButton(testInfo: TestInfo) {
         setUp(testInfo)
 

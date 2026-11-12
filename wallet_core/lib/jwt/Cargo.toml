@@ -11,21 +11,26 @@ workspace = true
 doctest = false
 
 [features]
+axum = ["dep:axum"]
 test = []
 
 [dependencies]
 base64.workspace = true
-chrono = { workspace = true, features = ["std", "clock", "serde"] }
-derive_more = { workspace = true, features = ["constructor", "display"] }
+chrono = { workspace = true, features = ["serde"] }
+derive_more = { workspace = true, features = ["as_ref", "display", "from", "into"] }
+ecdsa = { workspace = true, features = ["algorithm"] }
 itertools.workspace = true
 jsonwebtoken.workspace = true
-p256 = { workspace = true, features = ["std", "ecdsa"] }
-rstest.workspace = true
+p256.workspace = true
+p384.workspace = true
+rsa.workspace = true
 rustls-pki-types.workspace = true
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true, features = ["std"] }
+serde_json.workspace = true
 serde_with = { workspace = true, features = ["base64"] }
 thiserror.workspace = true
+
+axum = { workspace = true, optional = true }
 
 attestation_types.path = "../attestation_types"
 crypto.path = "../crypto"
@@ -33,11 +38,18 @@ error_category.path = "../error_category"
 utils.path = "../utils"
 
 [dev-dependencies]
-assert_matches.workspace = true
-futures = { workspace = true, features = ["std"] }
+anyhow.workspace = true
+axum.workspace = true
+futures.workspace = true
+httpmock.workspace = true
+rand.workspace = true
 rand_core.workspace = true
+rstest.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 tokio-test.workspace = true
 
+attestation_types = { path = "../attestation_types", features = ["mock"] }
+chrono = { workspace = true, features = ["now"] }
 crypto = { path = "../crypto", features = ["generate", "mock", "mock_secure_keys"] }
-utils.path = "../utils"
+http_utils = { path = "../http_utils", features = ["httpmock"] }
+utils = { path = "../utils", features = ["mock_time"] }

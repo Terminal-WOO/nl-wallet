@@ -37,24 +37,23 @@ class DashboardTests : TestBase() {
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC32 Show all available cards")
-    @Tags(Tag("smoke"), Tag("a11yBatch1"))
+    @DisplayName("LTC24 Show all available cards")
+    @Tags(Tag("smoke"))
     fun verifyIssuedCardsVisible(testInfo: TestInfo) {
         setUp(testInfo)
         assertAll(
-            { assertTrue(dashboardScreen.cardTitlesVisible(), "card title are not visible") },
+            { assertTrue(dashboardScreen.cardTitleVisible(), "card title is not visible") },
             { assertTrue(dashboardScreen.cardButtonsVisible(), "card buttons are not visible") },
             { assertTrue(dashboardScreen.cardSubtitleVisible(gbaData.getValueByField(GbaDataHelper.Field.FIRST_NAME, DEFAULT_BSN)), "pid card subtitle is not visible") },
-            { assertTrue(dashboardScreen.cardSubtitleVisible(gbaData.getValueByField(GbaDataHelper.Field.CITY, DEFAULT_BSN)), "adress card subtitle is not visible") },
-            { assertTrue(dashboardScreen.checkCardSorting(), "card sorting not as expected") },
         )
+        dashboardScreen.captureA11ySnapshot("DashboardCards")
 
         dashboardScreen.clickCard(tasData.getPidDisplayName())
         assertTrue(cardDetailScreen.visible(), "card detail screen is not visible")
     }
 
     @RetryingTest(value = MAX_RETRY_COUNT, name = "{displayName} - {index}")
-    @DisplayName("LTC32 The card information (and images) is displayed in the active language.")
+    @DisplayName("LTC24 The card information (and images) is displayed in the active language.")
     @Tags(Tag("english"))
     fun verifyActiveLanguage(testInfo: TestInfo) {
         setUp(testInfo)

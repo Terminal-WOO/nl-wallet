@@ -4,18 +4,25 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use derive_more::AsRef;
+use derive_more::Debug;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
 use http::header;
+use http::header::ACCEPT;
 use mime::APPLICATION_JSON;
 use mime::Mime;
 use reqwest::Certificate;
 use reqwest::Client;
 use reqwest::ClientBuilder;
+use reqwest::IntoUrl;
 use reqwest::RequestBuilder;
 use reqwest::Response;
-use url::Url;
+use reqwest::tls::Version;
+use serde::de::DeserializeOwned;
+use x509_parser::error::X509Error;
+use x509_parser::prelude::FromDer;
+use x509_parser::prelude::X509Certificate;
 
 use crate::error::APPLICATION_PROBLEM_JSON;
 use crate::urls::BaseUrl;
@@ -23,10 +30,13 @@ use crate::urls::BaseUrl;
 const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const CLIENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub const APPLICATION_JWT: &str = "application/jwt";
+
 /// Wrapper around a [`Certificate`] implementing `PartialEq`, `Eq` and `Hash`. In addition, it implements
 /// the necessary `From`/`TryFrom` implementations so that it can be (de)serialised using `serde_with`.
-#[derive(Clone, AsRef)]
+#[derive(Clone, Debug, AsRef)]
 pub struct ReqwestTrustAnchor {
+    #[debug(skip)]
     #[as_ref([u8])]
     der_bytes: Vec<u8>,
     certificate: Certificate,
@@ -57,10 +67,14 @@ impl Hash for ReqwestTrustAnchor {
 }
 
 impl TryFrom<Vec<u8>> for ReqwestTrustAnchor {
-    type Error = reqwest::Error;
+    type Error = x509_parser::nom::Err<X509Error>;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        let certificate = Certificate::from_der(&value)?;
+        // Certificate::from_der does not parse the bytes when using `rustls`, so we explicitly parse it here to ensure
+        // the bytes represent a valid X.509 certificate.
+        let _ = X509Certificate::from_der(&value)?;
+        // We know this will succeed, because the `rustls` feature is enabled, and because we have just verified it.
+        let certificate = Certificate::from_der(&value).unwrap();
         Ok(Self {
             der_bytes: value,
             certificate,
@@ -68,12 +82,12 @@ impl TryFrom<Vec<u8>> for ReqwestTrustAnchor {
     }
 }
 
-pub trait IntoPinnedReqwestClient {
-    fn try_into_custom_client<F>(self, builder_adapter: F) -> Result<PinnedReqwestClient, reqwest::Error>
+pub trait IntoReqwestClient {
+    fn try_into_custom_client<F>(self, builder_adapter: F) -> Result<ReqwestClient, reqwest::Error>
     where
         F: FnOnce(ClientBuilder) -> ClientBuilder;
 
-    fn try_into_custom_json_client<F>(self, builder_adapter: F) -> Result<PinnedReqwestClient, reqwest::Error>
+    fn try_into_custom_json_client<F>(self, builder_adapter: F) -> Result<ReqwestClient, reqwest::Error>
     where
         F: FnOnce(ClientBuilder) -> ClientBuilder,
         Self: Sized,
@@ -81,14 +95,14 @@ pub trait IntoPinnedReqwestClient {
         self.try_into_custom_client(|builder| builder_adapter(client_builder_accept_json(builder)))
     }
 
-    fn try_into_client(self) -> Result<PinnedReqwestClient, reqwest::Error>
+    fn try_into_client(self) -> Result<ReqwestClient, reqwest::Error>
     where
         Self: Sized,
     {
         self.try_into_custom_client(std::convert::identity)
     }
 
-    fn try_into_json_client(self) -> Result<PinnedReqwestClient, reqwest::Error>
+    fn try_into_json_client(self) -> Result<ReqwestClient, reqwest::Error>
     where
         Self: Sized,
     {
@@ -99,17 +113,16 @@ pub trait IntoPinnedReqwestClient {
 #[derive(Debug, Clone)]
 pub enum ReqwestClientUrl<'a> {
     Base,
-    Absolute(Url),
     Relative(&'a str),
 }
 
 #[derive(Debug, Clone)]
-pub struct PinnedReqwestClient {
+pub struct ReqwestClient {
     client: Client,
     pub base_url: BaseUrl,
 }
 
-impl PinnedReqwestClient {
+impl ReqwestClient {
     pub(crate) fn new(client: Client, base_url: BaseUrl) -> Self {
         Self { client, base_url }
     }
@@ -125,7 +138,6 @@ impl PinnedReqwestClient {
     {
         let url = match url {
             ReqwestClientUrl::Base => self.base_url.as_ref().clone(),
-            ReqwestClientUrl::Absolute(url) => url,
             ReqwestClientUrl::Relative(path) => self.base_url.clone().join(path),
         };
 
@@ -182,32 +194,170 @@ pub fn is_problem_json_response(response: &Response) -> bool {
     parse_content_type(response).as_ref() == Some(LazyLock::force(&APPLICATION_PROBLEM_JSON))
 }
 
+/// Create a [`ClientBuilder`] with sensible defaults that should be applied project-wide.
 pub fn default_reqwest_client_builder() -> ClientBuilder {
+    // Enable gzip compression by default, but explicitly disable any other compression algorithm,
+    // to prevent these from being automatically enabled by `reqwest` feature flags.
     Client::builder()
         .timeout(CLIENT_REQUEST_TIMEOUT)
         .connect_timeout(CLIENT_CONNECT_TIMEOUT)
+        .gzip(true)
+        .no_brotli()
+        .no_zstd()
+        .no_deflate()
         .tls_built_in_root_certs(true)
+        .min_tls_version(Version::TLS_1_2)
+        // Force `rustls`, which only supports strong ciphers <https://docs.rs/rustls/latest/rustls/crypto/ring/cipher_suite/index.html>
+        .use_rustls_tls()
 }
 
-/// Create a [`ClientBuilder`] that validates certificates signed with the supplied trust anchors (root certificates) as
-/// well as the built-in root certificates.
-pub fn trusted_reqwest_client_builder(trust_anchors: impl Iterator<Item = Certificate>) -> ClientBuilder {
-    trust_anchors.fold(default_reqwest_client_builder(), |builder, root_ca| {
-        builder.add_root_certificate(root_ca)
-    })
+/// Create a [`ClientBuilder`] with sensible defaults that is TLS-only.
+pub fn default_tls_reqwest_client_builder() -> ClientBuilder {
+    default_reqwest_client_builder().https_only(true)
+}
+
+/// Create a [`ClientBuilder`] that is TLS-only and validates certificates signed with the supplied trust anchors (root
+/// certificates) as well as the built-in root certificates.
+pub fn tls_reqwest_client_builder(trust_anchors: impl IntoIterator<Item = Certificate>) -> ClientBuilder {
+    trust_anchors
+        .into_iter()
+        .fold(default_tls_reqwest_client_builder(), |builder, root_ca| {
+            builder.add_root_certificate(root_ca)
+        })
 }
 
 /// Create a [`ClientBuilder`] that only validates certificates signed with the supplied trust anchors (root
 /// certificates). The built-in root certificates are therefore disabled and the client will only work over https.
-pub fn tls_pinned_client_builder(trust_anchors: impl Iterator<Item = Certificate>) -> ClientBuilder {
-    trusted_reqwest_client_builder(trust_anchors)
-        .https_only(true)
-        .tls_built_in_root_certs(false)
+pub fn tls_pinned_client_builder(trust_anchors: impl IntoIterator<Item = Certificate>) -> ClientBuilder {
+    tls_reqwest_client_builder(trust_anchors).tls_built_in_root_certs(false)
 }
 
-pub fn client_builder_accept_json(builder: ClientBuilder) -> ClientBuilder {
+fn client_builder_accept_json(builder: ClientBuilder) -> ClientBuilder {
     builder.default_headers(HeaderMap::from_iter([(
         header::ACCEPT,
         HeaderValue::from_static(APPLICATION_JSON.as_ref()),
     )]))
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpClient(Client);
+
+impl HttpClient {
+    pub fn new(client: Client) -> Self {
+        Self(client)
+    }
+
+    pub fn try_new(client_builder: ClientBuilder) -> Result<Self, reqwest::Error> {
+        let client = client_builder.build()?;
+
+        Ok(Self(client))
+    }
+
+    pub async fn get_json<T>(&self, url: impl IntoUrl) -> Result<T, reqwest::Error>
+    where
+        T: DeserializeOwned,
+    {
+        self.0
+            .get(url)
+            .header(ACCEPT, APPLICATION_JSON.as_ref())
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+    }
+
+    pub async fn get_jwt(&self, url: impl IntoUrl) -> Result<String, reqwest::Error> {
+        self.0
+            .get(url)
+            .header(ACCEPT, APPLICATION_JWT)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await
+    }
+
+    pub fn request(&self, method: Method, url: impl IntoUrl) -> RequestBuilder {
+        self.0.request(method, url)
+    }
+
+    pub async fn post<F>(&self, url: impl IntoUrl, adapter: F) -> Result<Response, reqwest::Error>
+    where
+        F: FnOnce(RequestBuilder) -> RequestBuilder,
+    {
+        adapter(self.0.post(url)).send().await
+    }
+
+    pub async fn delete<F>(&self, url: impl IntoUrl, adapter: F) -> Result<Response, reqwest::Error>
+    where
+        F: FnOnce(RequestBuilder) -> RequestBuilder,
+    {
+        adapter(self.0.delete(url)).send().await
+    }
+}
+
+/// Read `response` bytes in chunks with a `max_response_size`, to avoid exhausting memory.
+/// Returns None when the read size exceeds `max_response_size`.
+pub async fn bytes_with_max_response_size(
+    response: &mut Response,
+    max_response_size: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    // Read the body in chunks rather than via `.bytes()`, so a CRL distribution point cannot
+    // exhaust memory by returning an unbounded or never-ending response body.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > max_response_size {
+            return Ok(None);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Some(bytes))
+}
+
+#[cfg(any(test, feature = "test"))]
+pub mod test {
+    use base64::Engine;
+    use base64::prelude::BASE64_STANDARD;
+    use utils::vec_nonempty;
+
+    use super::ReqwestTrustAnchor;
+    use crate::client::TlsPinningConfig;
+
+    pub const TEST_CERTIFICATE_BASE64: &str = "MIIBUzCB+6ADAgECAhRGv/y0WtvIgkZodTBjwPMTvUcrujAKBggqhkjOPQQDAjAPMQ0wCwYDVQQDDAR0ZXN0MB4XDTI2MDMxMDE2MTUyM1oXDTI3MDMxMTE2MTUyM1owDzENMAsGA1UEAwwEdGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABIIT6QWW/A3sM0BDxZje7PvqheHP4qA1tEC2fSPBj+RbzOyUl6e39tB8nHZDFpk/UrRoLRYpJfa2PCebGeO+dBmjNTAzMB0GA1UdDgQWBBS/TIByJWDzfwSizPd6VRU/BQE4zTASBgNVHRMBAf8ECDAGAQH/AgEAMAoGCCqGSM49BAMCA0cAMEQCIGahEuSBxSDpgLIdGpSbVfqMKdLQ9c9ErbueoxFZZChbAiAGMCrYxBD4YRrhoiSdIndASo8RI9577oaKprb0KFa+Eg==";
+
+    pub fn get_test_trust_anchor() -> ReqwestTrustAnchor {
+        ReqwestTrustAnchor::try_from(BASE64_STANDARD.decode(TEST_CERTIFICATE_BASE64).unwrap()).unwrap()
+    }
+
+    pub fn get_tls_pinning_config_for_url(url: &str) -> TlsPinningConfig {
+        TlsPinningConfig::try_new(url.parse().unwrap(), vec_nonempty![get_test_trust_anchor()]).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::prelude::BASE64_STANDARD;
+    use base64::prelude::Engine;
+    use rstest::rstest;
+
+    use super::ReqwestTrustAnchor;
+    use crate::reqwest::test::TEST_CERTIFICATE_BASE64;
+
+    #[test]
+    fn request_trust_anchor_from_bytes_success() {
+        let der_bytes = BASE64_STANDARD.decode(TEST_CERTIFICATE_BASE64).expect("valid base64");
+
+        let trust_anchor_result: Result<ReqwestTrustAnchor, _> = der_bytes.try_into();
+        let _ = trust_anchor_result.unwrap();
+    }
+
+    #[rstest]
+    #[case("")]
+    #[case("SGVsbG8gV29ybGQh")]
+    fn reqwest_trust_anchor_from_bytes_errors(#[case] input: &str) {
+        let der_bytes = BASE64_STANDARD.decode(input).expect("valid base64");
+
+        let _ = ReqwestTrustAnchor::try_from(der_bytes).expect_err("should fail");
+    }
 }

@@ -1,22 +1,21 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
-use futures::FutureExt;
-use itertools::Itertools;
-use p256::ecdsa::SigningKey;
-use p256::ecdsa::VerifyingKey;
-use rand_core::OsRng;
-use rustls_pki_types::TrustAnchor;
-use serde_json::Value;
-use serde_json::json;
-
 use attestation_types::claim_path::ClaimPath;
+use crypto::keys::PublicKeyRef;
+use crypto::mock_remote::DisclosureMockRemoteWscd;
 use crypto::mock_remote::MockRemoteEcdsaKey;
-use crypto::mock_remote::MockRemoteWscd;
 use crypto::server_keys::KeyPair;
 use crypto::server_keys::generate::Ca;
-use crypto::x509::CertificateUsage;
-use jwt::jwk::jwk_from_p256;
+use crypto::trust_anchor::TrustAnchors;
+use futures::FutureExt;
+use itertools::Itertools;
+use jwt::jwk::jwk_from_public_key;
+use jwt::nonce::Nonce;
+use p256::ecdsa::SigningKey;
+use p256::ecdsa::VerifyingKey;
+use p256::elliptic_curve::Generate;
 use sd_jwt::builder::SdJwtBuilder;
 use sd_jwt::builder::SignedSdJwt;
 use sd_jwt::disclosure::DisclosureContent;
@@ -29,6 +28,8 @@ use sd_jwt::sd_jwt::UnsignedSdJwtPresentation;
 use sd_jwt::sd_jwt::UnverifiedSdJwt;
 use sd_jwt::sd_jwt::UnverifiedSdJwtPresentation;
 use sd_jwt::sd_jwt::VerifiedSdJwt;
+use serde_json::Value;
+use serde_json::json;
 use token_status_list::verification::client::mock::StatusListClientStub;
 use token_status_list::verification::verifier::RevocationVerifier;
 use utils::generator::mock::MockTimeGenerator;
@@ -39,7 +40,7 @@ async fn make_sd_jwt(
     claims: Value,
     disclosable_values: impl IntoIterator<Item = VecNonEmpty<ClaimPath>>,
     holder_pubkey: &VerifyingKey,
-) -> (SignedSdJwt, Vec<TrustAnchor<'static>>, KeyPair) {
+) -> (SignedSdJwt, TrustAnchors, KeyPair) {
     let ca = Ca::generate_issuer_mock_ca().unwrap();
     let issuer_keypair = ca.generate_issuer_mock().unwrap();
 
@@ -53,7 +54,7 @@ async fn make_sd_jwt(
         .await
         .unwrap();
 
-    (sd_jwt, vec![ca.to_trust_anchor().to_owned()], issuer_keypair)
+    (sd_jwt, ca.to_trust_anchors(), issuer_keypair)
 }
 
 #[test]
@@ -61,6 +62,7 @@ fn complex_sd_jwt_vc() {
     let sd_jwt = VerifiedSdJwt::spec_sd_jwt_vc();
     let disclosed = sd_jwt.decoded_claims().unwrap();
     let expected = json!({
+        "iss": "https://issuer.example.com",
         "given_name": "Erika",
         "also_known_as": "Schwester Agnes",
         "family_name": "Mustermann",
@@ -94,7 +96,7 @@ fn complex_sd_jwt_vc() {
 
 #[tokio::test]
 async fn concealing_property_of_concealable_value_works() {
-    let holder_signing_key = SigningKey::random(&mut OsRng);
+    let holder_signing_key = SigningKey::generate();
     let (signed_sd_jwt, _, _) = make_sd_jwt(
         json!({
             "parent": {
@@ -103,32 +105,31 @@ async fn concealing_property_of_concealable_value_works() {
             }
         }),
         [
-            vec![
+            vec_nonempty![
                 ClaimPath::SelectByKey(String::from("parent")),
                 ClaimPath::SelectByKey(String::from("property1")),
-            ]
-            .try_into()
-            .unwrap(),
-            vec![
+            ],
+            vec_nonempty![
                 ClaimPath::SelectByKey(String::from("parent")),
                 ClaimPath::SelectByKey(String::from("property2")),
                 ClaimPath::SelectByIndex(0),
-            ]
-            .try_into()
-            .unwrap(),
-            vec![ClaimPath::SelectByKey(String::from("parent"))].try_into().unwrap(),
+            ],
+            vec_nonempty![ClaimPath::SelectByKey(String::from("parent"))],
         ],
         holder_signing_key.verifying_key(),
     )
     .await;
 
-    let holder_key = SigningKey::random(&mut OsRng);
+    let holder_key = SigningKey::generate();
     let verified_sd_jwt = signed_sd_jwt.into_verified();
     verified_sd_jwt
         .into_presentation_builder()
         .finish()
         .sign(
-            KeyBindingJwtBuilder::new(String::from("https://example.com"), String::from("abcdefghi")),
+            KeyBindingJwtBuilder::new(
+                String::from("https://example.com"),
+                Nonce::from("abcdefghi".to_string()),
+            ),
             &holder_key,
             &MockTimeGenerator::default(),
         )
@@ -139,7 +140,7 @@ async fn concealing_property_of_concealable_value_works() {
 #[tokio::test]
 async fn sd_jwt_without_disclosures_works() {
     let time = MockTimeGenerator::default();
-    let holder_signing_key = SigningKey::random(&mut OsRng);
+    let holder_signing_key = SigningKey::generate();
     let (signed_sd_jwt, trust_anchors, issuer_keypair) = make_sd_jwt(
         json!({
             "parent": {
@@ -166,7 +167,10 @@ async fn sd_jwt_without_disclosures_works() {
         .into_presentation_builder()
         .finish()
         .sign(
-            KeyBindingJwtBuilder::new(String::from("https://example.com"), String::from("abcdefghi")),
+            KeyBindingJwtBuilder::new(
+                String::from("https://example.com"),
+                Nonce::from("abcdefghi".to_string()),
+            ),
             &holder_signing_key,
             &MockTimeGenerator::default(),
         )
@@ -175,7 +179,7 @@ async fn sd_jwt_without_disclosures_works() {
 
     let kb_verification_options = KbVerificationOptions {
         expected_aud: "https://example.com",
-        expected_nonce: "abcdefghi",
+        expected_nonce: &Nonce::from("abcdefghi".to_string()),
         iat_leeway: Duration::ZERO,
         iat_acceptance_window: Duration::from_secs(60),
     };
@@ -189,7 +193,7 @@ async fn sd_jwt_without_disclosures_works() {
             &trust_anchors,
             &kb_verification_options,
             &MockTimeGenerator::default(),
-            &RevocationVerifier::new(StatusListClientStub::new(issuer_keypair)),
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(issuer_keypair))),
         )
         .await
         .unwrap();
@@ -199,7 +203,7 @@ async fn sd_jwt_without_disclosures_works() {
 
 #[tokio::test]
 async fn sd_jwt_sd_hash() {
-    let holder_signing_key = SigningKey::random(&mut OsRng);
+    let holder_signing_key = SigningKey::generate();
     let (signed_sd_jwt, _, _) = make_sd_jwt(
         json!({
             "parent": {
@@ -208,33 +212,32 @@ async fn sd_jwt_sd_hash() {
             }
         }),
         [
-            vec![
+            vec_nonempty![
                 ClaimPath::SelectByKey(String::from("parent")),
                 ClaimPath::SelectByKey(String::from("property1")),
-            ]
-            .try_into()
-            .unwrap(),
-            vec![
+            ],
+            vec_nonempty![
                 ClaimPath::SelectByKey(String::from("parent")),
                 ClaimPath::SelectByKey(String::from("property2")),
                 ClaimPath::SelectByIndex(0),
-            ]
-            .try_into()
-            .unwrap(),
-            vec![ClaimPath::SelectByKey(String::from("parent"))].try_into().unwrap(),
+            ],
+            vec_nonempty![ClaimPath::SelectByKey(String::from("parent"))],
         ],
         holder_signing_key.verifying_key(),
     )
     .await;
 
-    let signing_key = SigningKey::random(&mut OsRng);
+    let signing_key = SigningKey::generate();
 
     let verified_sd_jwt = signed_sd_jwt.into_verified();
     let signed_presentation = verified_sd_jwt
         .into_presentation_builder()
         .finish()
         .sign(
-            KeyBindingJwtBuilder::new(String::from("https://example.com"), String::from("abcdefghi")),
+            KeyBindingJwtBuilder::new(
+                String::from("https://example.com"),
+                Nonce::from("abcdefghi".to_string()),
+            ),
             &signing_key,
             &MockTimeGenerator::default(),
         )
@@ -258,7 +261,7 @@ async fn sd_jwt_sd_hash() {
 
 #[tokio::test]
 async fn test_presentation() {
-    let holder_key = SigningKey::random(&mut OsRng);
+    let holder_key = SigningKey::generate();
 
     let claims = SdJwtVcClaims::example_from_json(
         holder_key.verifying_key(),
@@ -288,46 +291,31 @@ async fn test_presentation() {
 
     println!(
         "issuer_privkey pubkey: {0}",
-        serde_json::to_string_pretty(&jwk_from_p256(issuer_keypair.certificate().public_key()).unwrap()).unwrap()
+        serde_json::to_string_pretty(&jwk_from_public_key(issuer_keypair.certificate().public_key()).unwrap()).unwrap()
     );
     println!(
         "holder_key pubkey: {0}",
-        serde_json::to_string_pretty(&jwk_from_p256(holder_key.verifying_key()).unwrap()).unwrap()
+        serde_json::to_string_pretty(&jwk_from_public_key(&PublicKeyRef::from(holder_key.verifying_key())).unwrap())
+            .unwrap()
     );
 
     // issuer signs SD-JWT
     let signed_sd_jwt = SdJwtBuilder::new(claims)
-        .make_concealable(vec![ClaimPath::SelectByKey(String::from("email"))].try_into().unwrap())
+        .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("email"))])
         .unwrap()
-        .make_concealable(
-            vec![ClaimPath::SelectByKey(String::from("phone_number"))]
-                .try_into()
-                .unwrap(),
-        )
+        .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("phone_number"))])
         .unwrap()
-        .make_concealable(
-            vec![
-                ClaimPath::SelectByKey(String::from("address")),
-                ClaimPath::SelectByKey(String::from("street_address")),
-            ]
-            .try_into()
-            .unwrap(),
-        )
+        .make_concealable(vec_nonempty![
+            ClaimPath::SelectByKey(String::from("address")),
+            ClaimPath::SelectByKey(String::from("street_address")),
+        ])
         .unwrap()
-        .make_concealable(
-            vec![ClaimPath::SelectByKey(String::from("address"))]
-                .try_into()
-                .unwrap(),
-        )
+        .make_concealable(vec_nonempty![ClaimPath::SelectByKey(String::from("address"))])
         .unwrap()
-        .make_concealable(
-            vec![
-                ClaimPath::SelectByKey(String::from("nationalities")),
-                ClaimPath::SelectByIndex(0),
-            ]
-            .try_into()
-            .unwrap(),
-        )
+        .make_concealable(vec_nonempty![
+            ClaimPath::SelectByKey(String::from("nationalities")),
+            ClaimPath::SelectByIndex(0),
+        ])
         .unwrap()
         .add_decoys(&[ClaimPath::SelectByKey(String::from("nationalities"))], 1)
         .unwrap()
@@ -346,20 +334,19 @@ async fn test_presentation() {
     // The holder can withhold from a verifier any concealable claim by calling `conceal`.
     let signed_presentation = verified_sd_jwt
         .into_presentation_builder()
-        .disclose(&vec![ClaimPath::SelectByKey(String::from("email"))].try_into().unwrap())
+        .disclose(&vec_nonempty![ClaimPath::SelectByKey(String::from("email"))])
         .unwrap()
-        .disclose(
-            &vec![
-                ClaimPath::SelectByKey(String::from("address")),
-                ClaimPath::SelectByKey(String::from("street_address")),
-            ]
-            .try_into()
-            .unwrap(),
-        )
+        .disclose(&vec_nonempty![
+            ClaimPath::SelectByKey(String::from("address")),
+            ClaimPath::SelectByKey(String::from("street_address")),
+        ])
         .unwrap()
         .finish()
         .sign(
-            KeyBindingJwtBuilder::new(String::from("https://example.com"), String::from("abcdefghi")),
+            KeyBindingJwtBuilder::new(
+                String::from("https://example.com"),
+                Nonce::from("abcdefghi".to_string()),
+            ),
             &holder_key,
             &MockTimeGenerator::default(),
         )
@@ -368,7 +355,7 @@ async fn test_presentation() {
 
     let kb_verification_options = KbVerificationOptions {
         expected_aud: "https://example.com",
-        expected_nonce: "abcdefghi",
+        expected_nonce: &Nonce::from("abcdefghi".to_string()),
         iat_leeway: Duration::ZERO,
         iat_acceptance_window: Duration::from_secs(60),
     };
@@ -378,10 +365,10 @@ async fn test_presentation() {
         .parse::<UnverifiedSdJwtPresentation>()
         .unwrap()
         .into_verified_against_trust_anchors(
-            &[ca.to_trust_anchor()],
+            &ca.to_trust_anchors(),
             &kb_verification_options,
             &MockTimeGenerator::default(),
-            &RevocationVerifier::new(StatusListClientStub::new(issuer_keypair)),
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(issuer_keypair))),
         )
         .await
         .unwrap();
@@ -413,12 +400,10 @@ fn test_wscd_presentation() {
         &time,
     );
 
-    let ca = Ca::generate("myca", Default::default()).unwrap();
-    let issuer_key_pair = ca
-        .generate_key_pair("mycert", CertificateUsage::Mdl, Default::default())
-        .unwrap();
+    let ca = Ca::generate_mock();
+    let issuer_key_pair = ca.generate_issuer_mock().unwrap();
 
-    let wscd = MockRemoteWscd::new(vec![holder_key]);
+    let wscd = DisclosureMockRemoteWscd::new(vec![holder_key]);
 
     // Create a SD-JWT, signed by the issuer.
     let signed_sd_jwt = SdJwtBuilder::new(claims)
@@ -438,35 +423,35 @@ fn test_wscd_presentation() {
         .unwrap()
         .finish();
 
-    let (sd_jwt_presentations, poa) = UnsignedSdJwtPresentation::sign_multiple(
+    let sd_jwt_presentations = UnsignedSdJwtPresentation::sign_multiple(
         vec_nonempty![(unsigned_presentation, "holder_key")],
-        KeyBindingJwtBuilder::new(String::from("https://example.com"), String::from("abcdefghi")),
+        KeyBindingJwtBuilder::new(
+            String::from("https://example.com"),
+            Nonce::from("abcdefghi".to_string()),
+        ),
         &wscd,
-        (),
         &time,
     )
     .now_or_never()
     .unwrap()
     .expect("signing SD-JWT presentation should succeed");
 
-    assert!(poa.is_none());
-
     let signed_presentation = sd_jwt_presentations.into_iter().exactly_one().unwrap();
     let unverified_sd_jwt_presentation = signed_presentation.into_unverified();
 
     let kb_verification_options = KbVerificationOptions {
         expected_aud: "https://example.com",
-        expected_nonce: "abcdefghi",
+        expected_nonce: &Nonce::from("abcdefghi".to_string()),
         iat_leeway: Duration::ZERO,
         iat_acceptance_window: Duration::from_secs(10 * 60),
     };
 
     let verified_sd_jwt_presentation = unverified_sd_jwt_presentation
         .into_verified_against_trust_anchors(
-            &[ca.to_trust_anchor()],
+            &ca.to_trust_anchors(),
             &kb_verification_options,
             &MockTimeGenerator::default(),
-            &RevocationVerifier::new(StatusListClientStub::new(issuer_key_pair)),
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(issuer_key_pair))),
         )
         .now_or_never()
         .unwrap()

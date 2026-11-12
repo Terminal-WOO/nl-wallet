@@ -1,12 +1,17 @@
 ARG DOCKER_HUB_PROXY
-# trixie-20250721-slim
-FROM ${DOCKER_HUB_PROXY}library/debian@sha256:cc92da07b99dd5c078cb5583fdb4ba639c7c9c14eb78508a2be285ca67cc738a
+# trixie-20261104-slim
+FROM ${DOCKER_HUB_PROXY}library/debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 COPY apt.sh /tmp/
 RUN /tmp/apt.sh
 
 # Update and upgrade to the latest and greatest
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+# Additional default config files for users created in this image
+COPY skel/ /etc/skel/
+RUN  find /etc/skel/ -type d -exec chmod 755 {} +
+RUN  find /etc/skel/ -type f -exec chmod 644 {} +
 
 # Add wallet user with same uid as gitlab-runner and
 RUN useradd -u 1001 -m -d /wallet -s /bin/bash wallet \
@@ -33,7 +38,7 @@ COPY java.sh /tmp/
 RUN /tmp/java.sh
 
 # Change home dir of root to make image workable as root
-RUN sed -i'' '/^root:/ { s#:/root:#:/wallet:# }' /etc/passwd
+RUN sed -i '/^root:/ { s#:/root:#:/wallet:# }' /etc/passwd
 
 # Cleanup
 RUN rm -rf /tmp/*

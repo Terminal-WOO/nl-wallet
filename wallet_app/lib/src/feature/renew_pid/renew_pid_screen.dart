@@ -10,8 +10,8 @@ import '../../data/service/navigation_service.dart';
 import '../../domain/model/bloc/error_state.dart';
 import '../../domain/model/navigation/navigation_request.dart';
 import '../../domain/model/result/application_error.dart';
-import '../../navigation/wallet_routes.dart';
 import '../../util/extension/build_context_extension.dart';
+import '../../util/extension/navigator_state_extension.dart';
 import '../../util/launch_util.dart';
 import '../../wallet_assets.dart';
 import '../../wallet_constants.dart';
@@ -20,7 +20,6 @@ import '../common/dialog/stop_digid_login_dialog.dart';
 import '../common/page/generic_loading_page.dart';
 import '../common/widget/button/icon/back_icon_button.dart';
 import '../common/widget/button/icon/close_icon_button.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
 import '../common/widget/fake_paging_animated_switcher.dart';
 import '../common/widget/text/title_text.dart';
 import '../common/widget/utility/scroll_offset_provider.dart';
@@ -70,8 +69,7 @@ class RenewPidScreen extends StatelessWidget {
           : null,
       automaticallyImplyLeading: false,
       actions: [
-        const HelpIconButton(),
-        CloseIconButton(onPressed: () => _stopRenewPid(context)),
+        if (_showCloseButton(state)) CloseIconButton(onPressed: () => _stopRenewPid(context)),
       ],
       title: _buildTitle(context, state),
       progress: state.stepperProgress,
@@ -87,11 +85,9 @@ class RenewPidScreen extends StatelessWidget {
         title = context.l10n.renewPidCheckDetailsPageTitle;
       case RenewPidSuccess():
         title = context.l10n.renewPidSuccessPageTitle;
+      case RenewPidError(:final error):
+        title = ErrorPage.titleFromError(context, error);
       case RenewPidConfirmPin():
-      case RenewPidDigidFailure():
-      case RenewPidNetworkError():
-      case RenewPidGenericError():
-      case RenewPidSessionExpired():
       case RenewPidLoadingDigidUrl():
       case RenewPidAwaitingDigidAuthentication():
       case RenewPidVerifyingDigidAuthentication():
@@ -110,96 +106,20 @@ class RenewPidScreen extends StatelessWidget {
   Widget _buildBody(BuildContext context) {
     return BlocBuilder<RenewPidBloc, RenewPidState>(
       builder: (context, state) {
-        Widget result;
-        switch (state) {
-          case RenewPidInitial():
-            result = RenewPidInitialPage(
-              onPrimaryPressed: () => context.bloc.add(const RenewPidLoginWithDigidClicked()),
-              onSecondaryButtonPressed: _launchDigidWebsite,
-            );
-          case RenewPidLoadingDigidUrl():
-            result = GenericLoadingPage(
-              key: _kOpeningDigidStateKey,
-              title: context.l10n.renewPidLoadingDigidUrlTitle,
-              description: context.l10n.renewPidLoadingDigidUrlDescription,
-            );
-          case RenewPidAwaitingDigidAuthentication():
-            result = GenericLoadingPage(
-              key: _kOpeningDigidStateKey,
-              title: context.l10n.renewPidOpeningDigidTitle,
-              description: context.l10n.renewPidOpeningDigidDescription,
-              contextImage: Image.asset(WalletAssets.logo_wallet, height: 64, width: 64),
-              onCancel: () => _stopRenewPid(context),
-              cancelCta: context.l10n.renewPidOpeningDigidStopCta,
-              loadingIndicator: const SizedBox.shrink(),
-            );
-          case RenewPidVerifyingDigidAuthentication():
-            result = GenericLoadingPage(
-              title: context.l10n.renewPidVerifyingDigidTitle,
-              description: context.l10n.renewPidVerifyingDigidDescription,
-              contextImage: Image.asset(WalletAssets.logo_wallet, height: 64, width: 64),
-            );
-          case RenewPidCheckData():
-            result = RenewPidCheckDetailsPage(
-              attributes: state.availableAttributes,
-              onAcceptPressed: () => context.bloc.add(RenewPidAttributesConfirmed(state.availableAttributes)),
-              onRejectPressed: () => context.bloc.add(const RenewPidAttributesRejected()),
-            );
-          case RenewPidConfirmPin():
-            result = RenewPidConfirmPinPage(
-              onPidAccepted: (_) => context.bloc.add(RenewPidPinConfirmed()),
-              onAcceptPidFailed: (BuildContext context, ErrorState state) => context.bloc.add(
-                RenewPidPinConfirmationFailed(error: state.error),
-              ),
-            );
-          case RenewPidUpdatingCards():
-            result = GenericLoadingPage(
-              title: context.l10n.renewPidUpdatingCardsTitle,
-              description: context.l10n.renewPidUpdatingCardsDescription,
-            );
-          case RenewPidSuccess():
-            result = RenewPidSuccessPage(
-              cards: state.addedCards,
-              onPrimaryPressed: () => Navigator.popUntil(context, ModalRoute.withName(WalletRoutes.dashboardRoute)),
-            );
-          case RenewPidDigidMismatch():
-            result = RenewPidDigidMismatchPage(
-              onPrimaryPressed: () => context.bloc.add(const RenewPidRetryPressed()),
-              onSecondaryButtonPressed: _launchDigidWebsite,
-            );
-          case RenewPidDigidLoginCancelled():
-            result = RenewPidLoginCancelledPage(
-              onPrimaryPressed: () => context.bloc.add(const RenewPidRetryPressed()),
-              onSecondaryButtonPressed: _launchDigidWebsite,
-            );
-          case RenewPidStopped():
-            result = RenewPidStoppedPage(onPrimaryPressed: () => Navigator.pop(context));
-          case RenewPidNetworkError():
-            result = state.hasInternet
-                ? ErrorPage.network(
-                    context,
-                    onPrimaryActionPressed: () => context.bloc.add(const RenewPidRetryPressed()),
-                    style: ErrorCtaStyle.retry,
-                  )
-                : ErrorPage.noInternet(
-                    context,
-                    onPrimaryActionPressed: () => context.bloc.add(const RenewPidRetryPressed()),
-                    style: ErrorCtaStyle.retry,
-                  );
-          case RenewPidDigidFailure():
-          case RenewPidGenericError():
-            result = ErrorPage.generic(
-              context,
-              onPrimaryActionPressed: () => context.bloc.add(const RenewPidLoginWithDigidClicked()),
-              style: ErrorCtaStyle.retry,
-            );
-          case RenewPidSessionExpired():
-            result = ErrorPage.sessionExpired(
-              context,
-              onPrimaryActionPressed: () => context.bloc.add(const RenewPidLoginWithDigidClicked()),
-              style: ErrorCtaStyle.retry,
-            );
-        }
+        final Widget result = switch (state) {
+          RenewPidInitial() => _buildInitialPage(context),
+          RenewPidLoadingDigidUrl() => _buildLoadingDigidUrlPage(context),
+          RenewPidAwaitingDigidAuthentication() => _buildAwaitingDigidAuthenticationPage(context),
+          RenewPidVerifyingDigidAuthentication() => _buildVerifyingDigidAuthenticationPage(context),
+          RenewPidCheckData() => _buildCheckDataPage(context, state),
+          RenewPidConfirmPin() => _buildConfirmPinPage(context),
+          RenewPidUpdatingCards() => _buildUpdatingCardsPage(context),
+          RenewPidSuccess() => _buildSuccessPage(context, state),
+          RenewPidDigidMismatch() => _buildDigidMismatchPage(context),
+          RenewPidDigidLoginCancelled() => _buildDigidLoginCancelledPage(context),
+          RenewPidStopped() => _buildStoppedPage(context),
+          RenewPidError(:final error) => _buildErrorPage(context, error),
+        };
         return PopScope(
           canPop: _canPop(state),
           child: FakePagingAnimatedSwitcher(
@@ -211,6 +131,101 @@ class RenewPidScreen extends StatelessWidget {
           },
         );
       },
+    );
+  }
+
+  Widget _buildInitialPage(BuildContext context) {
+    return RenewPidInitialPage(
+      onPrimaryPressed: () => context.bloc.add(const RenewPidLoginWithDigidClicked()),
+      onSecondaryButtonPressed: _launchDigidWebsite,
+    );
+  }
+
+  Widget _buildLoadingDigidUrlPage(BuildContext context) {
+    return GenericLoadingPage(
+      key: _kOpeningDigidStateKey,
+      title: context.l10n.renewPidLoadingDigidUrlTitle,
+      description: context.l10n.renewPidLoadingDigidUrlDescription,
+      onCancel: () => _stopRenewPid(context),
+      cancelCta: context.l10n.generalStop,
+    );
+  }
+
+  Widget _buildAwaitingDigidAuthenticationPage(BuildContext context) {
+    return GenericLoadingPage(
+      key: _kOpeningDigidStateKey,
+      title: context.l10n.renewPidOpeningDigidTitle,
+      description: context.l10n.renewPidOpeningDigidDescription,
+      contextImage: Image.asset(WalletAssets.logo_wallet, height: 64, width: 64),
+      onCancel: () => _stopRenewPid(context),
+      cancelCta: context.l10n.renewPidOpeningDigidStopCta,
+      loadingIndicator: const SizedBox.shrink(),
+    );
+  }
+
+  Widget _buildVerifyingDigidAuthenticationPage(BuildContext context) {
+    return GenericLoadingPage(
+      title: context.l10n.renewPidVerifyingDigidTitle,
+      description: context.l10n.renewPidVerifyingDigidDescription,
+      contextImage: Image.asset(WalletAssets.logo_wallet, height: 64, width: 64),
+    );
+  }
+
+  Widget _buildCheckDataPage(BuildContext context, RenewPidCheckData state) {
+    return RenewPidCheckDetailsPage(
+      attributes: state.availableAttributes,
+      onAcceptPressed: () => context.bloc.add(RenewPidAttributesConfirmed(state.availableAttributes)),
+      onRejectPressed: () => context.bloc.add(const RenewPidAttributesRejected()),
+    );
+  }
+
+  Widget _buildConfirmPinPage(BuildContext context) {
+    return RenewPidConfirmPinPage(
+      onPidAccepted: (_) => context.bloc.add(RenewPidPinConfirmed()),
+      onAcceptPidFailed: (BuildContext context, ErrorState state) => context.bloc.add(
+        RenewPidPinConfirmationFailed(error: state.error),
+      ),
+    );
+  }
+
+  Widget _buildUpdatingCardsPage(BuildContext context) {
+    return GenericLoadingPage(
+      title: context.l10n.renewPidUpdatingCardsTitle,
+      description: context.l10n.renewPidUpdatingCardsDescription,
+    );
+  }
+
+  Widget _buildSuccessPage(BuildContext context, RenewPidSuccess state) {
+    return RenewPidSuccessPage(
+      cards: state.addedCards,
+      onPrimaryPressed: () => Navigator.of(context).resetToDashboard(),
+    );
+  }
+
+  Widget _buildDigidMismatchPage(BuildContext context) {
+    return RenewPidDigidMismatchPage(
+      onPrimaryPressed: () => context.bloc.add(const RenewPidRetryPressed()),
+      onSecondaryButtonPressed: _launchDigidWebsite,
+    );
+  }
+
+  Widget _buildDigidLoginCancelledPage(BuildContext context) {
+    return RenewPidLoginCancelledPage(
+      onPrimaryPressed: () => context.bloc.add(const RenewPidRetryPressed()),
+      onSecondaryButtonPressed: _launchDigidWebsite,
+    );
+  }
+
+  Widget _buildStoppedPage(BuildContext context) {
+    return RenewPidStoppedPage(onPrimaryPressed: () => Navigator.pop(context));
+  }
+
+  Widget _buildErrorPage(BuildContext context, ApplicationError error) {
+    return ErrorPage.fromError(
+      context,
+      error,
+      onPrimaryActionPressed: () => context.bloc.add(const RenewPidRetryPressed()),
+      style: ErrorCtaStyle.retry,
     );
   }
 
@@ -228,11 +243,8 @@ class RenewPidScreen extends StatelessWidget {
     switch (state) {
       case RenewPidInitial():
       case RenewPidSuccess():
-      case RenewPidDigidFailure():
       case RenewPidDigidLoginCancelled():
-      case RenewPidNetworkError():
-      case RenewPidGenericError():
-      case RenewPidSessionExpired():
+      case RenewPidError():
       case RenewPidDigidMismatch():
       case RenewPidStopped():
         return true;
@@ -246,6 +258,25 @@ class RenewPidScreen extends StatelessWidget {
     }
   }
 
+  bool _showCloseButton(RenewPidState state) {
+    switch (state) {
+      case RenewPidAwaitingDigidAuthentication():
+      case RenewPidCheckData():
+      case RenewPidConfirmPin():
+      case RenewPidSuccess():
+      case RenewPidLoadingDigidUrl():
+      case RenewPidVerifyingDigidAuthentication():
+      case RenewPidUpdatingCards():
+        return false;
+      case RenewPidInitial():
+      case RenewPidDigidLoginCancelled():
+      case RenewPidError():
+      case RenewPidDigidMismatch():
+      case RenewPidStopped():
+        return true;
+    }
+  }
+
   /// Stop the renew PID flow, this methods checks the current state to make
   /// sure the correct stop action (dialog/sheet/pop) will be executed.
   Future<void> _stopRenewPid(BuildContext context) async {
@@ -253,6 +284,8 @@ class RenewPidScreen extends StatelessWidget {
     if (state is RenewPidAwaitingDigidAuthentication) {
       // This is a special case, for which we show the stop dialog
       unawaited(_showStopDigidLoginDialog(context));
+    } else if (state is RenewPidStopped) {
+      Navigator.pop(context);
     } else {
       if (await RenewPidStopSheet.show(context) && context.mounted) {
         context.bloc.add(const RenewPidStopPressed());
@@ -298,7 +331,7 @@ class RenewPidScreen extends StatelessWidget {
     assert(Environment.mockRepositories, 'Mock login is intended for mock builds only');
     final success = await MockDigidScreen.mockLogin(context);
     if (success && context.mounted) {
-      await context.read<NavigationService>().handleNavigationRequest(PidRenewalNavigationRequest('renew_pid'));
+      await context.read<NavigationService>().handleNavigationRequest(NavigationRequest.pidRenewal('mock'));
     } else if (context.mounted) {
       context.bloc.add(
         const RenewPidLoginWithDigidFailed(

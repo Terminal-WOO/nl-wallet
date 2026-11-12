@@ -2,20 +2,17 @@ use std::result::Result;
 
 use chrono::DateTime;
 use chrono::Utc;
-use rustls_pki_types::TrustAnchor;
-use ssri::Integrity;
-
+use coset::iana;
+use crypto::trust_anchor::TrustAnchors;
 use crypto::x509::BorrowingCertificate;
 use utils::generator::Generator;
+use utils::vec_at_least::VecNonEmpty;
 
-use crate::errors::Error;
 use crate::iso::*;
 use crate::utils::cose::CoseError;
 use crate::utils::serialization::TaggedBytes;
 use crate::verifier::IssuerSignedVerificationResult;
 use crate::verifier::ValidityRequirement;
-
-use super::HolderError;
 
 /// A full mdoc: everything needed to disclose attributes from the mdoc.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,43 +21,51 @@ pub struct Mdoc {
     /// convenience (fetching it from the `issuer_signed` would involve parsing the COSE inside it).
     mso: MobileSecurityObject,
 
-    /// Identifier of the mdoc's private key. Obtain a reference to it with
-    /// [`DisclosureWscd::new_key(private_key_id, public_key)`].
-    // TODO (PVW-4962): Move this field to the `wallet` crate, as it is a concern of `Wallet`.
-    private_key_id: String,
     issuer_signed: IssuerSigned,
+
+    issuer_certificate_chain: VecNonEmpty<BorrowingCertificate>,
 }
 
 impl Mdoc {
     /// Construct a new `Mdoc`, verifying it against the specified thrust anchors before returning it.
     pub fn new(
-        private_key_id: String,
         issuer_signed: IssuerSigned,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor],
+        trust_anchors: &TrustAnchors,
+        supported_algorithms: &[iana::Algorithm],
     ) -> crate::Result<Mdoc> {
         // Unfortunately we have to discard the `attributes` here, even though
         // the only consumer of this function will need them right away.
-        let IssuerSignedVerificationResult { mso, .. } =
-            issuer_signed.verify(ValidityRequirement::AllowNotYetValid, time, trust_anchors)?;
+        let IssuerSignedVerificationResult { mso, .. } = issuer_signed.verify(
+            ValidityRequirement::AllowNotYetValid,
+            time,
+            trust_anchors,
+            supported_algorithms,
+        )?;
+
+        // TODO (PVW-4132): the x5chain is already parsed in `IssuerSigned::verify` and
+        // `IssuerAuth::verify_against_trust_anchors`, so we shouldn't need to parse it again here.
+        let issuer_certificate_chain = issuer_signed.issuer_auth.x5chain()?;
 
         let mdoc = Mdoc {
             mso,
-            private_key_id,
             issuer_signed,
+            issuer_certificate_chain,
         };
 
         Ok(mdoc)
     }
 
     /// Construct a new `Mdoc` by parsing the `issuer_auth` field of an `IssuerSigned` without validating it.
-    pub fn dangerous_parse_unverified(issuer_signed: IssuerSigned, private_key_id: String) -> Result<Self, CoseError> {
+    pub fn dangerous_parse_unverified(issuer_signed: IssuerSigned) -> Result<Self, CoseError> {
         let TaggedBytes(mso) = issuer_signed.issuer_auth.dangerous_parse_unverified()?;
+
+        let issuer_certificate_chain = issuer_signed.issuer_auth.x5chain()?;
 
         let mdoc = Self {
             mso,
-            private_key_id,
             issuer_signed,
+            issuer_certificate_chain,
         };
 
         Ok(mdoc)
@@ -78,36 +83,14 @@ impl Mdoc {
         self.issuer_signed
     }
 
-    pub fn private_key_id(&self) -> &str {
-        &self.private_key_id
+    pub fn into_components(self) -> (MobileSecurityObject, IssuerSigned) {
+        let Self { mso, issuer_signed, .. } = self;
+
+        (mso, issuer_signed)
     }
 
-    pub fn into_private_key_id(self) -> String {
-        self.private_key_id
-    }
-
-    pub fn into_components(self) -> (MobileSecurityObject, String, IssuerSigned) {
-        let Self {
-            mso,
-            private_key_id,
-            issuer_signed,
-        } = self;
-
-        (mso, private_key_id, issuer_signed)
-    }
-
-    pub fn issuer_certificate(&self) -> Result<BorrowingCertificate, CoseError> {
-        self.issuer_signed.issuer_auth.signing_cert()
-    }
-
-    pub fn type_metadata_integrity(&self) -> Result<&Integrity, Error> {
-        let integrity = self
-            .mso
-            .type_metadata_integrity
-            .as_ref()
-            .ok_or(HolderError::MissingMetadataIntegrity)?;
-
-        Ok(integrity)
+    pub fn issuer_certificate_chain(&self) -> &VecNonEmpty<BorrowingCertificate> {
+        &self.issuer_certificate_chain
     }
 }
 
@@ -116,56 +99,48 @@ mod test {
     use chrono::DateTime;
     use chrono::TimeDelta;
     use chrono::Utc;
+    use crypto::keys::CredentialEcdsaKey;
+    use crypto::server_keys::generate::Ca;
     use futures::FutureExt;
     use indexmap::IndexMap;
-    use ssri::Integrity;
-
-    use attestation_types::status_claim::StatusClaim;
-    use crypto::CredentialEcdsaKey;
-    use crypto::server_keys::generate::Ca;
-    use crypto::server_keys::generate::mock::ISSUANCE_CERT_CN;
-    use crypto::x509::CertificateUsage;
-    use http_utils::urls::HttpsUri;
     use utils::generator::Generator;
 
+    use super::Mdoc;
     use crate::iso::disclosure::IssuerSigned;
     use crate::iso::mdocs::DigestAlgorithm;
     use crate::iso::mdocs::Entry;
     use crate::iso::mdocs::IssuerNameSpaces;
     use crate::iso::mdocs::IssuerSignedItemBytes;
+    use crate::iso::mdocs::MdocStatus;
     use crate::iso::mdocs::MobileSecurityObject;
     use crate::iso::mdocs::MobileSecurityObjectVersion;
     use crate::iso::mdocs::ValidityInfo;
     use crate::utils::cose::CoseKey;
-    use crate::utils::cose::MdocCose;
+    use crate::utils::cose::TypedCose;
     use crate::utils::serialization::TaggedBytes;
 
-    use super::Mdoc;
-
     impl Mdoc {
-        pub fn new_unverified(mso: MobileSecurityObject, private_key_id: String, issuer_signed: IssuerSigned) -> Self {
+        pub fn new_unverified(mso: MobileSecurityObject, issuer_signed: IssuerSigned) -> Self {
+            let issuer_certificate_chain = issuer_signed.issuer_auth.x5chain().unwrap();
+
             Self {
                 mso,
-                private_key_id,
                 issuer_signed,
+                issuer_certificate_chain,
             }
         }
 
-        #[expect(clippy::too_many_arguments)]
         pub async fn new_unverified_from_data(
             doc_type: String,
-            issuer_uri: HttpsUri,
             name_spaces: IndexMap<String, Vec<Entry>>,
-            metadata_integrity: Integrity,
+            status: Option<MdocStatus>,
             ca: &Ca,
             device_key: &impl CredentialEcdsaKey,
             time_generator: &impl Generator<DateTime<Utc>>,
         ) -> Self {
             let time = time_generator.generate();
 
-            let issuer_key_pair = ca
-                .generate_key_pair(ISSUANCE_CERT_CN, CertificateUsage::Mdl, Default::default())
-                .unwrap();
+            let issuer_key_pair = ca.generate_issuer_mock().unwrap();
 
             let device_public_key = &device_key.verifying_key().await.unwrap();
             let cose_pubkey = CoseKey::try_from(device_public_key).unwrap();
@@ -184,27 +159,22 @@ mod test {
                     valid_until: (time + TimeDelta::days(365)).into(),
                     expected_update: None,
                 },
-                issuer_uri: Some(issuer_uri),
-                attestation_qualification: Some(Default::default()),
-                status: Some(StatusClaim::new_mock()),
-                type_metadata_integrity: Some(metadata_integrity),
+                status,
             };
 
-            let header = IssuerSigned::create_unprotected_header(issuer_key_pair.certificate().to_vec());
             let mso_tagged = TaggedBytes(mso);
-            let issuer_auth = MdocCose::sign(&mso_tagged, header, &issuer_key_pair, true)
+            let issuer_auth = TypedCose::sign_with_certificate(&mso_tagged, &issuer_key_pair)
                 .now_or_never()
                 .unwrap()
                 .unwrap();
 
             let TaggedBytes(mso) = mso_tagged;
-            let private_key_id = device_key.identifier().to_string();
             let issuer_signed = IssuerSigned {
                 name_spaces: Some(name_spaces),
                 issuer_auth,
             };
 
-            Self::new_unverified(mso, private_key_id, issuer_signed)
+            Self::new_unverified(mso, issuer_signed)
         }
 
         pub fn modify_attributes<F>(&mut self, name_space: &str, modify_func: F)
@@ -219,28 +189,26 @@ mod test {
 
 #[cfg(any(test, feature = "mock_example_constructors"))]
 pub mod mock {
+    use attestation_types::pid_constants::PID_MDOC_DOCTYPE;
+    use attestation_types::status_claim::StatusListClaim;
     use chrono::DateTime;
     use chrono::Utc;
     use ciborium::Value;
-    use indexmap::IndexMap;
-    use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
-
-    use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
-    use crypto::CredentialEcdsaKey;
-    use crypto::examples::EXAMPLE_KEY_IDENTIFIER;
+    use coset::iana;
+    use crypto::keys::CredentialEcdsaKey;
     use crypto::mock_remote::MockRemoteEcdsaKey;
     use crypto::server_keys::generate::Ca;
-    use crypto::server_keys::generate::mock::ISSUANCE_CERT_CN;
-    use sd_jwt_vc_metadata::TypeMetadataDocuments;
+    use indexmap::IndexMap;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
     use utils::generator::Generator;
     use utils::generator::mock::MockTimeGenerator;
 
+    use super::Mdoc;
     use crate::examples::IsoCertTimeGenerator;
     use crate::iso::disclosure::DeviceResponse;
     use crate::iso::mdocs::Entry;
-
-    use super::Mdoc;
+    use crate::iso::mdocs::MdocStatus;
 
     impl Mdoc {
         /// Out of the example data structures in the standard, assemble an mdoc.
@@ -262,36 +230,48 @@ pub mod mock {
                 .issuer_signed;
 
             Mdoc::new(
-                EXAMPLE_KEY_IDENTIFIER.to_string(),
                 issuer_signed,
                 &IsoCertTimeGenerator,
-                &[ca.to_trust_anchor()],
+                &ca.to_trust_anchors(),
+                &[iana::Algorithm::ES256],
             )
             .unwrap()
         }
 
         pub async fn new_mock() -> Self {
             let ca = Ca::generate_issuer_mock_ca().unwrap();
-            let key = MockRemoteEcdsaKey::new("identifier".to_owned(), SigningKey::random(&mut OsRng));
+            let key = MockRemoteEcdsaKey::new("identifier".to_owned(), SigningKey::generate());
             Self::new_mock_with_ca_and_key(&ca, &key).await
         }
 
         pub async fn new_mock_with_ca_and_key(ca: &Ca, device_key: &MockRemoteEcdsaKey) -> Self {
-            Self::new_unverified_nl_pid_example(ca, device_key, &MockTimeGenerator::default()).await
+            Self::new_unverified_nl_pid_example(
+                ca,
+                device_key,
+                Some(MdocStatus::StatusList(StatusListClaim::new_mock())),
+                &MockTimeGenerator::default(),
+            )
+            .await
+        }
+
+        pub async fn new_mock_with_ca_key_and_status(
+            ca: &Ca,
+            device_key: &MockRemoteEcdsaKey,
+            status: Option<MdocStatus>,
+        ) -> Self {
+            Self::new_unverified_nl_pid_example(ca, device_key, status, &MockTimeGenerator::default()).await
         }
 
         pub async fn new_unverified_nl_pid_example(
             ca: &Ca,
             device_key: &impl CredentialEcdsaKey,
+            status: Option<MdocStatus>,
             time_generator: &impl Generator<DateTime<Utc>>,
         ) -> Self {
-            let (metadata_integrity, _) = TypeMetadataDocuments::nl_pid_example();
-
             Self::new_unverified_from_data(
-                PID_ATTESTATION_TYPE.to_string(),
-                format!("https://{ISSUANCE_CERT_CN}").parse().unwrap(),
+                PID_MDOC_DOCTYPE.to_string(),
                 IndexMap::from_iter(vec![(
-                    PID_ATTESTATION_TYPE.to_string(),
+                    PID_MDOC_DOCTYPE.to_string(),
                     vec![
                         Entry {
                             name: "bsn".to_string(),
@@ -307,7 +287,7 @@ pub mod mock {
                         },
                     ],
                 )]),
-                metadata_integrity,
+                status,
                 ca,
                 device_key,
                 time_generator,

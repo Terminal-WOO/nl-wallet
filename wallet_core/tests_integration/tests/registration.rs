@@ -1,50 +1,66 @@
+use db_test::DbSetup;
+use hsm::test::HsmSetup;
 use rstest::rstest;
 use sea_orm::Database;
 use serde_json::json;
 use serial_test::serial;
-
 use tests_integration::common::*;
 use update_policy_server::config::UpdatePolicyConfig;
+use wallet::errors::CheckPreconditionsError;
 use wallet::errors::WalletRegistrationError;
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[rstest]
 #[serial(hsm)]
-async fn test_wallet_registration(
+async fn ltc51_test_wallet_registration(
     #[values(WalletDeviceVendor::Apple, WalletDeviceVendor::Google)] vendor: WalletDeviceVendor,
 ) {
-    let (settings, _) = wallet_provider_settings();
-    let connection = Database::connect(settings.database.url)
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+    let (wallet, _, _) = setup_wallet_and_default_env(&db_setup, &hsm_setup, &tempdir, vendor).await;
+
+    let connection = Database::connect(db_setup.wallet_provider_url())
         .await
         .expect("Could not open database connection");
 
-    let (wallet, _, _) = setup_wallet_and_default_env(vendor).await;
-
     let before = wallet_user_count(&connection).await;
-    do_wallet_registration(wallet, "123344").await;
+    do_wallet_registration(wallet, "123344".into()).await;
     let after = wallet_user_count(&connection).await;
 
     assert_eq!(before + 1, after);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 #[serial(hsm)]
-async fn test_registration_blocked() {
+async fn ltc43_test_registration_blocked() {
+    let db_setup = DbSetup::create().await;
+    let hsm_setup = HsmSetup::new();
+    let tempdir = tempfile::tempdir().unwrap();
+
     let (mut settings, root_ca) = update_policy_server_settings();
     settings.update_policy =
         serde_json::from_value::<UpdatePolicyConfig>(json!({ env!("CARGO_PKG_VERSION"): "Block" })).unwrap();
 
     let (mut wallet, _, _) = setup_wallet_and_env(
+        &db_setup,
+        &hsm_setup,
+        &tempdir,
         WalletDeviceVendor::Apple,
         (settings, root_ca),
-        wallet_provider_settings(),
-        pid_issuer_settings(),
-        issuance_server_settings(),
+        wallet_provider_settings(db_setup.wallet_provider_url(), db_setup.audit_log_url()),
+        pid_issuer_settings(db_setup.pid_issuer_url(), None),
+        issuance_server_settings(db_setup.issuance_server_url()),
     )
     .await;
 
-    let result = wallet.register("123344").await;
+    let result = wallet.register("123344".into()).await;
     assert!(wallet.is_blocked());
 
-    assert!(matches!(result, Err(WalletRegistrationError::VersionBlocked)));
+    assert!(matches!(
+        result,
+        Err(WalletRegistrationError::CheckPreconditions(
+            CheckPreconditionsError::VersionBlocked
+        ))
+    ));
 }

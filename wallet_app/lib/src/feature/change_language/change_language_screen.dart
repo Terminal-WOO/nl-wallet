@@ -72,67 +72,75 @@ class ChangeLanguageScreen extends StatelessWidget {
           itemBuilder: (c, i) {
             final language = state.availableLanguages[i];
             final isSelectedLanguage = state.availableLanguages[i].locale == state.selectedLocale;
-            return Semantics(
-              inMutuallyExclusiveGroup: true,
-              selected: isSelectedLanguage,
-              button: !isSelectedLanguage,
-              onTap: isSelectedLanguage
-                  ? null
-                  : () {
-                      final changeLocaleEvent = ChangeLanguageLocaleSelected(language.locale);
-                      context.read<ChangeLanguageBloc>().add(changeLocaleEvent);
-                    },
-              excludeSemantics: true,
-              attributedLabel: AttributedString(
-                language.name,
-                attributes: [
-                  LocaleStringAttribute(
-                    range: language.name.fullRange,
-                    locale: language.locale,
-                  ),
-                ],
-              ),
-              onTapHint: _lookupSystemLocalizations(context).generalWCAGChangeLanguage,
-              child: InkWell(
-                onTap: isSelectedLanguage
-                    ? null
-                    : () {
-                        final changeLocaleEvent = ChangeLanguageLocaleSelected(language.locale);
-                        context.read<ChangeLanguageBloc>().add(changeLocaleEvent);
-                      },
-                child: Container(
-                  key: ValueKey(language),
-                  constraints: const BoxConstraints(minHeight: 72),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  alignment: Alignment.centerLeft,
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: AnimatedDefaultTextStyle(
-                          duration: kDefaultAnimationDuration,
-                          style: _getRowTextStyle(context, isSelectedLanguage),
-                          child: Text(language.name),
-                        ),
-                      ),
-                      AnimatedOpacity(
-                        opacity: isSelectedLanguage ? 1 : 0,
-                        duration: kDefaultAnimationDuration,
-                        child: Icon(
-                          Icons.check,
-                          color: context.colorScheme.primary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
+            return _buildLanguageItem(context, language, isSelectedLanguage);
           },
           itemCount: state.availableLanguages.length,
         ),
         const SliverDivider(),
       ],
     );
+  }
+
+  Widget _buildLanguageItem(BuildContext context, Language language, bool isSelectedLanguage) {
+    // Dummy placeholder to mark generalWCAGChangeLanguage as used in 'translations_cleaner'
+    context.l10n.generalWCAGChangeLanguage;
+    final onTapHint = _lookupSystemLocalizations(context).generalWCAGChangeLanguage;
+
+    return Semantics(
+      inMutuallyExclusiveGroup: true,
+      selected: isSelectedLanguage,
+      button: !isSelectedLanguage,
+      onTap: isSelectedLanguage ? null : () => _onLanguageSelected(context, language),
+      excludeSemantics: true,
+      attributedLabel: _buildAttributedLanguageString(language),
+      onTapHint: onTapHint,
+      child: InkWell(
+        onTap: isSelectedLanguage ? null : () => _onLanguageSelected(context, language),
+        child: Container(
+          key: ValueKey(language),
+          constraints: const BoxConstraints(minHeight: 72),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          alignment: Alignment.centerLeft,
+          child: Row(
+            children: [
+              Expanded(
+                child: AnimatedDefaultTextStyle(
+                  duration: kDefaultAnimationDuration,
+                  style: _getRowTextStyle(context, isSelectedLanguage),
+                  child: Text(language.name),
+                ),
+              ),
+              AnimatedOpacity(
+                opacity: isSelectedLanguage ? 1 : 0,
+                duration: kDefaultAnimationDuration,
+                child: Icon(
+                  Icons.check,
+                  color: context.colorScheme.primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Builds an [AttributedString] that includes a hint about the pronunciation (language) for the a11y framework
+  AttributedString _buildAttributedLanguageString(Language language) {
+    return AttributedString(
+      language.name,
+      attributes: [
+        LocaleStringAttribute(
+          range: language.name.fullRange,
+          locale: language.locale,
+        ),
+      ],
+    );
+  }
+
+  void _onLanguageSelected(BuildContext context, Language language) {
+    final changeLocaleEvent = ChangeLanguageLocaleSelected(language.locale);
+    context.read<ChangeLanguageBloc>().add(changeLocaleEvent);
   }
 
   /// Looks up the system Locale (so NOT the locale that is currently selected in the app) and
@@ -168,6 +176,9 @@ class ChangeLanguageScreen extends StatelessWidget {
           );
           // Avoid conflicting with the announcement of the (now) selected language
           await Future.delayed(Environment.isTest ? Duration.zero : const Duration(milliseconds: 1500));
+
+          // Check if context is still mounted before using it
+          if (!context.mounted) return;
           await language?.let((it) => _announceNewLanguage(context, it));
         }
       },
@@ -189,7 +200,11 @@ class ChangeLanguageScreen extends StatelessWidget {
 
   Future<void> _announceNewLanguage(BuildContext context, Language language) async {
     final systemL10n = _lookupSystemLocalizations(context);
+
+    // Dummy placeholder to mark generalWCAGLanguageUpdatedAnnouncement as used in 'translations_cleaner'
+    context.l10n.generalWCAGLanguageUpdatedAnnouncement('');
     final announcement = systemL10n.generalWCAGLanguageUpdatedAnnouncement(language.name);
+
     await context.read<AnnouncementService>().announce(announcement);
   }
 }

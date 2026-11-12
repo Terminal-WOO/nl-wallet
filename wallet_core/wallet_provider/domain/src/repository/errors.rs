@@ -1,24 +1,33 @@
-use std::error::Error;
+use crypto::kid::KidError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
     #[error("connection error: {0}")]
-    Connection(#[source] Box<dyn Error + Send + Sync>),
+    Connection(#[source] sea_orm::DbErr),
 
     #[error("transaction error: {0}")]
-    Transaction(#[source] Box<dyn Error + Send + Sync>),
+    Transaction(#[source] sea_orm::DbErr),
 
     #[error("execution error: {0}")]
-    Execution(#[source] Box<dyn Error + Send + Sync>),
+    Execution(#[source] sea_orm::DbErr),
 
     #[error("verifying key conversion error: {0}")]
-    VerifyingKeyConversion(#[from] p256::pkcs8::spki::Error),
+    VerifyingKeyConversion(#[source] Box<p256::pkcs8::spki::Error>),
+
+    #[error("kid conversion error: {0}")]
+    KidConversion(#[source] KidError),
 
     #[error("signing key conversion error: {0}")]
     SigningKeyConversion(#[from] p256::ecdsa::Error),
 
     #[error("error converting to SemVer: {0}")]
     SemVerConversion(#[from] semver::Error),
+
+    #[error("invalid stored enum value: {0}")]
+    EnumConversion(#[source] strum::ParseError),
+
+    #[error("invalid task parameters: {0}")]
+    TaskParametersConversion(#[source] serde_json::Error),
 
     #[error("no rows were updated")]
     NoRowsUpdated,

@@ -1,17 +1,11 @@
+use crypto::keys::EcdsaKey;
+use crypto::keys::SecureEcdsaKey;
 use derive_more::Debug;
+use key::HardwareAttestedKey;
+use key::UniqueCreatedResult;
 use p256::ecdsa::Signature;
 use p256::ecdsa::VerifyingKey;
 use p256::pkcs8::DecodePublicKey;
-
-use crypto::keys::EcdsaKey;
-use crypto::keys::SecureEcdsaKey;
-
-use crate::bridge::attested_key::AttestationData;
-use crate::bridge::attested_key::AttestedKeyBridge;
-use crate::bridge::attested_key::AttestedKeyType;
-use crate::bridge::attested_key::get_attested_key_bridge;
-
-pub use crate::bridge::attested_key::AttestedKeyError;
 
 use super::AppleAssertion;
 use super::AppleAttestedKey;
@@ -20,9 +14,11 @@ use super::AttestedKey;
 use super::AttestedKeyHolder;
 use super::GoogleAttestedKey;
 use super::KeyWithAttestation;
-
-use key::HardwareAttestedKey;
-use key::UniqueCreatedResult;
+use crate::bridge::attested_key::AttestationData;
+use crate::bridge::attested_key::AttestedKeyBridge;
+pub use crate::bridge::attested_key::AttestedKeyError;
+use crate::bridge::attested_key::AttestedKeyType;
+use crate::bridge::attested_key::get_attested_key_bridge;
 
 mod key {
     use std::collections::HashSet;
@@ -76,11 +72,9 @@ mod key {
             self.bridge.public_key(self.identifier.clone()).await
         }
 
-        pub async fn delete(self) -> Result<(), AttestedKeyError> {
+        pub async fn delete(&self) -> Result<(), AttestedKeyError> {
+            UNIQUE_IDENTIFIERS.lock().remove(&self.identifier);
             self.bridge.delete(self.identifier.clone()).await
-
-            // Note that upon returning, the `Drop` implementation will be called and
-            // the identifier will be removed from the static `UNIQUE_IDENTIFIERS`.
         }
     }
 
@@ -98,7 +92,7 @@ pub enum HardwareAttestedKeyError {
     #[error("could not decode DER signature: {0}")]
     Signature(#[from] p256::ecdsa::Error),
     #[error("could not decode DER public key: {0}")]
-    PublicKey(#[from] p256::pkcs8::spki::Error),
+    PublicKey(#[source] Box<p256::pkcs8::spki::Error>),
     #[error("could not perform attested key operation in platform code: {0}")]
     Platform(#[source] AttestedKeyError),
 }
@@ -236,7 +230,7 @@ impl AppleAttestedKey for AppleHardwareAttestedKey {
 pub struct GoogleHardwareAttestedKey(HardwareAttestedKey);
 
 impl GoogleAttestedKey for GoogleHardwareAttestedKey {
-    async fn delete(self) -> Result<(), Self::Error> {
+    async fn delete(&self) -> Result<(), Self::Error> {
         self.0.delete().await?;
 
         Ok(())
@@ -250,7 +244,8 @@ impl EcdsaKey for GoogleHardwareAttestedKey {
 
     async fn verifying_key(&self) -> Result<VerifyingKey, Self::Error> {
         let public_key_bytes = self.0.public_key().await?;
-        let public_key = VerifyingKey::from_public_key_der(&public_key_bytes)?;
+        let public_key = VerifyingKey::from_public_key_der(&public_key_bytes)
+            .map_err(|error| HardwareAttestedKeyError::PublicKey(Box::new(error)))?;
 
         Ok(public_key)
     }

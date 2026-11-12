@@ -1,17 +1,14 @@
 import 'package:bloc_test/bloc_test.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wallet/src/domain/model/attribute/attribute.dart';
-import 'package:wallet/src/domain/model/policy/organization_policy.dart';
+import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/feature/history/detail/bloc/history_detail_bloc.dart';
 import 'package:wallet/src/feature/history/detail/history_detail_screen.dart';
-import 'package:wallet/src/feature/history/detail/widget/page/history_detail_disclose_page.dart';
+import 'package:wallet/src/feature/history/detail/widget/page/history_detail_deletion_page.dart';
+import 'package:wallet/src/feature/history/detail/widget/page/history_detail_disclosure_page.dart';
 import 'package:wallet/src/feature/history/detail/widget/page/history_detail_issue_page.dart';
-import 'package:wallet/src/feature/history/detail/widget/page/history_detail_login_page.dart';
 import 'package:wallet/src/feature/history/detail/widget/page/history_detail_sign_page.dart';
-import 'package:wallet/src/util/mapper/context_mapper.dart';
-import 'package:wallet/src/util/mapper/policy/policy_body_text_mapper.dart';
 
 import '../../../../wallet_app_test_widget.dart';
 import '../../../mocks/wallet_mock_data.dart';
@@ -24,145 +21,121 @@ const _kVeryTallScreen = Size(400, 3000);
 
 void main() {
   group('goldens', () {
-    testGoldens('HistoryDetailLoadSuccess light', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.disclosureEvent),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.light');
     });
 
-    testGoldens('HistoryDetailLoadSuccess issuance - card issued', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess issuance - card issued', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.issuanceEvent),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.card.issued');
     });
 
-    testGoldens('HistoryDetailLoadSuccess issuance - card renewed', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess issuance - card renewed', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.issuanceEventCardRenewed),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.card.renewed');
     });
 
-    testGoldens('HistoryDetailLoadSuccess issuance - card status expired', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess issuance - card status expired', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.issuanceEventCardStatusExpired),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.card.status.expired');
     });
 
-    testGoldens('HistoryDetailLoadSuccess card renewed - light', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess card renewed - light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.issuanceEventCardRenewed),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.renewed.light');
     });
 
-    testGoldens('HistoryDetailLoadSuccess issuance - card status revoked', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess issuance - card status revoked', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.issuanceEventCardStatusRevoked),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.card.status.revoked');
     });
 
-    testGoldens('HistoryDetailLoadSuccess issuance - card status corrupted', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess issuance - card status corrupted', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.issuanceEventCardStatusCorrupted),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.card.status.corrupted');
     });
 
-    testGoldens('HistoryDetailLoadSuccess dark', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess deletion - light', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          HistoryDetailLoadSuccess(WalletMockData.deletionEvent),
+        ),
+      );
+      await screenMatchesGolden('success.card.deleted');
+    });
+
+    testGoldens('ltc22 HistoryDetailLoadSuccess deletion - dark', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          HistoryDetailLoadSuccess(WalletMockData.deletionEvent),
+        ),
+        brightness: Brightness.dark,
+      );
+      await screenMatchesGolden('success.card.deleted.dark');
+    });
+
+    testGoldens('ltc22 HistoryDetailLoadSuccess dark', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.disclosureEvent),
         ),
         brightness: Brightness.dark,
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('success.dark');
     });
 
-    testGoldens('HistoryDetailLoadSuccess - dark landscape', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadSuccess - dark landscape', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.disclosureEvent),
         ),
         brightness: Brightness.dark,
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
         surfaceSize: iphoneXSizeLandscape,
       );
       await screenMatchesGolden('success.dark.landscape');
     });
 
-    testGoldens('HistoryDetailLoadInProgress light', (tester) async {
+    testGoldens('ltc22 HistoryDetailLoadInProgress light', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
@@ -172,63 +145,48 @@ void main() {
       await screenMatchesGolden('loading.light');
     });
 
-    testGoldens('Error state', (tester) async {
+    testGoldens('ltc22 Error state', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
-          const HistoryDetailLoadFailure(),
+          const HistoryDetailLoadFailure(GenericError('test', sourceError: 'test')),
         ),
       );
       await screenMatchesGolden('loading.error.light');
     });
 
-    testGoldens('Disclose cancelled', (tester) async {
+    testGoldens('ltc22 Disclose cancelled', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.cancelledDisclosureEvent),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('cancelled.light');
     });
 
-    testGoldens('Disclose cancelled - dark', (tester) async {
+    testGoldens('ltc22 Disclose cancelled - dark', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.cancelledDisclosureEvent),
         ),
         brightness: Brightness.dark,
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('cancelled.dark');
     });
 
-    testGoldens('Disclose error - some attributes possibly shared', (tester) async {
+    testGoldens('ltc22 Disclose error - some attributes possibly shared', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.failedDisclosureEvent),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('disclose.error.light');
     });
 
-    testGoldens('Disclose error - no attributes shared', (tester) async {
+    testGoldens('ltc22 Disclose error - no attributes shared', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
@@ -236,88 +194,66 @@ void main() {
             WalletMockData.failedDisclosureEventNothingShared,
           ),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('disclose.error.nothing_shared.light');
     });
 
-    testGoldens('Disclose error - dark - some attributes possibly shared', (tester) async {
+    testGoldens('ltc22 Disclose error - dark - some attributes possibly shared', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.failedDisclosureEvent),
         ),
         brightness: Brightness.dark,
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('disclose.error.dark');
     });
 
-    testGoldens('Login error', (tester) async {
+    testGoldens('ltc22 Login error', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.failedLoginEvent),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('login.error.light');
     });
 
-    testGoldens('Login error - nothing shared', (tester) async {
+    testGoldens('ltc22 Login error - nothing shared', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
           HistoryDetailLoadSuccess(WalletMockData.failedLoginEventNothingShared),
         ),
-        providers: [
-          RepositoryProvider<ContextMapper<OrganizationPolicy, String>>(
-            create: (c) => PolicyBodyTextMapper(),
-          ),
-        ],
       );
       await screenMatchesGolden('login.error.nothing_shared.light');
     });
   });
 
   group('widgets', () {
-    testWidgets('Disclose event is rendered with DisclosePage', (tester) async {
+    testWidgets('ltc22 Disclose event is rendered with DisclosePage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
-        const HistoryDetailScreen()
-            .withState<HistoryDetailBloc, HistoryDetailState>(
-              MockHistoryDetailBloc(),
-              HistoryDetailLoadSuccess(WalletMockData.disclosureEvent),
-            )
-            .withDependency<ContextMapper<OrganizationPolicy, String>>((context) => PolicyBodyTextMapper()),
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          HistoryDetailLoadSuccess(WalletMockData.disclosureEvent),
+        ),
         surfaceSize: _kVeryTallScreen,
       );
       final l10n = await TestUtils.englishLocalizations;
       //sharedAttributesCardTitle
-      expect(find.byType(HistoryDetailDisclosePage), findsOneWidget);
-      expect(find.textContaining(WalletMockData.organization.displayName.testValue), findsAtLeast(1));
+      expect(find.byType(HistoryDetailDisclosurePage), findsOneWidget);
+      expect(find.textContaining(WalletMockData.organization.displayName), findsAtLeast(1));
       expect(find.text(WalletMockData.disclosureEvent.purpose.testValue), findsOneWidget);
       final count = WalletMockData.disclosureEvent.cards.first.attributes.length.toString();
       expect(find.text('$count from ${WalletMockData.card.title.testValue}'), findsOneWidget);
       expect(find.text(WalletMockData.disclosureEvent.cards.first.attributes.first.label.testValue), findsOneWidget);
       expect(find.text('1 March 2024, 00:00'), findsOneWidget);
-      expect(find.textContaining('will store your data for', findRichText: true), findsOneWidget);
-      expect(find.textContaining(l10n.disclosureStopSheetReportIssueCta), findsOneWidget);
+      expect(find.text(l10n.privacySectionTitle), findsOneWidget);
+      expect(find.text(l10n.privacySectionCta), findsOneWidget);
       expect(find.text(l10n.generalBottomBackCta), findsOneWidget);
     });
 
-    testWidgets('Issuance event is rendered with IssuePage', (tester) async {
+    testWidgets('ltc22 Issuance event is rendered with IssuePage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
         const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
           MockHistoryDetailBloc(),
@@ -326,7 +262,7 @@ void main() {
       );
       final l10n = await TestUtils.englishLocalizations;
       expect(find.byType(HistoryDetailIssuePage), findsOneWidget);
-      expect(find.textContaining(WalletMockData.organization.displayName.testValue), findsOneWidget);
+      expect(find.textContaining(WalletMockData.organization.displayName), findsOneWidget);
       final count = WalletMockData.issuanceEvent.sharedAttributes.length;
       expect(find.text('$count from ${WalletMockData.card.title.testValue}'), findsOneWidget);
       expect(find.text('1 December 2023, 00:00'), findsOneWidget);
@@ -334,58 +270,72 @@ void main() {
       expect(find.text(l10n.generalBottomBackCta), findsOneWidget);
     });
 
-    testWidgets('Login event is rendered with LoginPage', (tester) async {
+    testWidgets('ltc22 Deletion event is rendered with DeletionPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
-        const HistoryDetailScreen()
-            .withState<HistoryDetailBloc, HistoryDetailState>(
-              MockHistoryDetailBloc(),
-              HistoryDetailLoadSuccess(WalletMockData.loginEvent),
-            )
-            .withDependency<ContextMapper<OrganizationPolicy, String>>((context) => PolicyBodyTextMapper()),
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          HistoryDetailLoadSuccess(WalletMockData.deletionEvent),
+        ),
+      );
+      final l10n = await TestUtils.englishLocalizations;
+      expect(find.byType(HistoryDetailDeletionPage), findsOneWidget);
+      expect(find.textContaining(WalletMockData.organization.displayName), findsOneWidget);
+      final count = WalletMockData.deletionEvent.sharedAttributes.length;
+      expect(find.text('$count from ${WalletMockData.card.title.testValue}'), findsOneWidget);
+      expect(find.text('1 May 2024, 00:00'), findsOneWidget);
+      // The View CTA must NOT appear on the deletion detail screen.
+      expect(find.text(l10n.sharedAttributesCardCta), findsNothing);
+      expect(find.textContaining(l10n.disclosureStopSheetReportIssueCta), findsOneWidget);
+      expect(find.text(l10n.generalBottomBackCta), findsOneWidget);
+    });
+
+    testWidgets('ltc22 Login event is rendered with LoginPage', (tester) async {
+      await tester.pumpWidgetWithAppWrapper(
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          HistoryDetailLoadSuccess(WalletMockData.loginEvent),
+        ),
         surfaceSize: _kVeryTallScreen,
       );
 
       final l10n = await TestUtils.englishLocalizations;
       //sharedAttributesCardTitle
-      expect(find.byType(HistoryDetailLoginPage), findsOneWidget);
-      expect(find.textContaining(WalletMockData.organization.displayName.testValue), findsAtLeast(1));
+      expect(find.byType(HistoryDetailDisclosurePage), findsOneWidget);
+      expect(find.textContaining(WalletMockData.organization.displayName), findsAtLeast(1));
       expect(find.text(WalletMockData.loginEvent.purpose.testValue), findsOneWidget);
       final count = WalletMockData.loginEvent.cards.first.attributes.length.toString();
       expect(find.text('$count from ${WalletMockData.card.title.testValue}'), findsOneWidget);
       expect(find.text(WalletMockData.loginEvent.cards.first.attributes.first.label.testValue), findsOneWidget);
       expect(find.text('1 February 2024, 00:00'), findsOneWidget);
-      expect(find.textContaining('will store your data for', findRichText: true), findsOneWidget);
+      expect(find.text(l10n.privacySectionTitle), findsOneWidget);
+      expect(find.text(l10n.privacySectionCta), findsOneWidget);
       expect(find.textContaining(l10n.disclosureStopSheetReportIssueCta), findsOneWidget);
       expect(find.text(l10n.generalBottomBackCta), findsOneWidget);
     });
 
-    testWidgets('Sign event is rendered with SignPage', (tester) async {
+    testWidgets('ltc22 Sign event is rendered with SignPage', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
-        const HistoryDetailScreen()
-            .withState<HistoryDetailBloc, HistoryDetailState>(
-              MockHistoryDetailBloc(),
-              HistoryDetailLoadSuccess(WalletMockData.signEvent),
-            )
-            .withDependency<ContextMapper<OrganizationPolicy, String>>((context) => PolicyBodyTextMapper()),
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          HistoryDetailLoadSuccess(WalletMockData.signEvent),
+        ),
       );
 
       expect(find.byType(HistoryDetailSignPage), findsOneWidget);
     });
 
-    testWidgets('Error screen is rendered for HistoryDetailLoadFailure', (tester) async {
+    testWidgets('ltc22 Error screen is rendered for HistoryDetailLoadFailure', (tester) async {
       await tester.pumpWidgetWithAppWrapper(
-        const HistoryDetailScreen()
-            .withState<HistoryDetailBloc, HistoryDetailState>(
-              MockHistoryDetailBloc(),
-              const HistoryDetailLoadFailure(),
-            )
-            .withDependency<ContextMapper<OrganizationPolicy, String>>((context) => PolicyBodyTextMapper()),
+        const HistoryDetailScreen().withState<HistoryDetailBloc, HistoryDetailState>(
+          MockHistoryDetailBloc(),
+          const HistoryDetailLoadFailure(GenericError('test', sourceError: 'test')),
+        ),
       );
 
       final l10n = await TestUtils.englishLocalizations;
-      expect(find.text(l10n.historyDetailScreenTitle), findsAtLeast(1));
-      expect(find.text(l10n.errorScreenGenericDescription), findsOneWidget);
-      expect(find.text(l10n.generalRetry), findsOneWidget); // CTA to retry is visible
+      expect(find.text(l10n.errorScreenGenericHeadline), findsAtLeast(1));
+      expect(find.text(l10n.errorScreenGenericDescriptionCloseVariant), findsOneWidget);
+      expect(find.text(l10n.generalClose), findsOneWidget); // CTA to close is visible
     });
   });
 }

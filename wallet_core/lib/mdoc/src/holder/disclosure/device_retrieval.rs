@@ -1,18 +1,19 @@
+use attestation_types::claim_path::ClaimPath;
 use chrono::DateTime;
 use chrono::Utc;
-use itertools::Itertools;
-use rustls_pki_types::TrustAnchor;
-
-use attestation_types::claim_path::ClaimPath;
+use crypto::trust_anchor::TrustAnchors;
 use crypto::x509::BorrowingCertificate;
-use crypto::x509::CertificateUsage;
+use crypto::x509::crl::CertificateCrlVerifier;
+use crypto::x509::crl::CrlFetcher;
 use utils::generator::Generator;
 use utils::vec_at_least::VecNonEmpty;
+use utils::vec_nonempty;
 
 use crate::device_retrieval::DeviceRequest;
 use crate::device_retrieval::DocRequest;
 use crate::device_retrieval::ReaderAuthenticationKeyed;
 use crate::engagement::SessionTranscript;
+use crate::errors::Error;
 use crate::errors::Result;
 use crate::iso::device_retrieval::ItemsRequest;
 use crate::utils::cose::ClonePayload;
@@ -21,20 +22,24 @@ use crate::utils::serialization::CborSeq;
 use crate::utils::serialization::TaggedBytes;
 
 impl DeviceRequest {
-    pub fn into_items_requests(self) -> Vec<ItemsRequest> {
+    pub fn items_requests(&self) -> impl Iterator<Item = &ItemsRequest> {
+        self.doc_requests.iter().map(|doc_request| &doc_request.items_request.0)
+    }
+
+    pub fn into_items_requests(self) -> impl Iterator<Item = ItemsRequest> {
         self.doc_requests
             .into_iter()
             .map(|doc_request| doc_request.items_request.0)
-            .collect_vec()
     }
 }
 
 impl DocRequest {
+    #[cfg(test)]
     pub fn verify(
         &self,
         session_transcript: &SessionTranscript,
         time: &impl Generator<DateTime<Utc>>,
-        trust_anchors: &[TrustAnchor],
+        trust_anchors: &TrustAnchors,
     ) -> Result<Option<BorrowingCertificate>> {
         // If reader authentication is present, verify it and return the certificate.
         self.reader_auth
@@ -47,12 +52,30 @@ impl DocRequest {
 
                 // Perform verification and return the `Certificate`.
                 let cose = reader_auth.clone_with_payload(serialization::cbor_serialize(&reader_auth_payload)?);
-                cose.verify_against_trust_anchors(CertificateUsage::ReaderAuth, time, trust_anchors)?;
-                let cert = cose.signing_cert()?;
+                cose.verify_against_trust_anchors(trust_anchors, time, None)?;
+                let cert = cose.x5chain()?.into_first();
 
                 Ok(cert)
             })
             .transpose()
+    }
+
+    pub async fn verify_with_crl(
+        &self,
+        session_transcript: &SessionTranscript,
+        time: &impl Generator<DateTime<Utc>>,
+        trust_anchors: &TrustAnchors,
+        crl_verifier: &CertificateCrlVerifier<impl CrlFetcher>,
+    ) -> Result<BorrowingCertificate> {
+        let reader_auth = self.reader_auth.as_ref().ok_or(Error::MissingReaderAuthentication)?;
+
+        let reader_auth_payload = ReaderAuthenticationKeyed::new(session_transcript, &self.items_request);
+        let reader_auth_payload = TaggedBytes(CborSeq(reader_auth_payload));
+        let cose = reader_auth.clone_with_payload(serialization::cbor_serialize(&reader_auth_payload)?);
+
+        cose.verify_against_trust_anchors_with_crl(trust_anchors, crl_verifier, time, None)
+            .await?;
+        Ok(cose.x5chain()?.into_first())
     }
 }
 
@@ -62,13 +85,11 @@ impl From<ItemsRequest> for Vec<VecNonEmpty<ClaimPath>> {
             .name_spaces
             .into_iter()
             .flat_map(|(name_space, attributes)| {
-                let attribute_count = attributes.len();
+                let attribute_count = attributes.as_ref().len();
 
-                itertools::repeat_n(name_space, attribute_count).zip(attributes).map(
+                std::iter::repeat_n(name_space, attribute_count).zip(attributes).map(
                     |(name_space, (attribute, _intent_to_retain))| {
-                        vec![ClaimPath::SelectByKey(name_space), ClaimPath::SelectByKey(attribute)]
-                            .try_into()
-                            .unwrap()
+                        vec_nonempty![ClaimPath::SelectByKey(name_space), ClaimPath::SelectByKey(attribute)]
                     },
                 )
             })
@@ -76,41 +97,41 @@ impl From<ItemsRequest> for Vec<VecNonEmpty<ClaimPath>> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use assert_matches::assert_matches;
-
+#[cfg(any(test, feature = "test"))]
+pub mod test {
+    use coset::CoseSign1;
     use crypto::server_keys::KeyPair;
-    use crypto::server_keys::generate::Ca;
-    use utils::generator::TimeGenerator;
-
-    use crate::errors::Error;
-    use crate::iso::device_retrieval::ReaderAuthenticationBytes;
-    use crate::utils::cose;
-    use crate::utils::cose::MdocCose;
 
     use super::*;
+    use crate::iso::device_retrieval::ReaderAuthenticationBytes;
+    use crate::utils::cose::TypedCose;
 
     /// Create a `DocRequest` including reader authentication,
     /// based on a `SessionTranscript` and `KeyPair`.
     pub async fn create_doc_request(
         items_request: ItemsRequest,
         session_transcript: &SessionTranscript,
-        private_key: &KeyPair,
+        key_pair: &KeyPair,
     ) -> DocRequest {
-        // Generate the reader authentication signature, without payload.
+        // Generate the reader authentication signature
         let items_request = items_request.into();
         let reader_auth_keyed = ReaderAuthenticationKeyed::new(session_transcript, &items_request);
 
-        let cose = MdocCose::<_, ReaderAuthenticationBytes>::sign(
+        let cose = TypedCose::<_, ReaderAuthenticationBytes>::sign_with_certificate(
             &TaggedBytes(CborSeq(reader_auth_keyed)),
-            cose::new_certificate_header(private_key.certificate()),
-            private_key,
-            false,
+            key_pair,
         )
         .await
         .unwrap();
-        let reader_auth = Some(cose.0.into());
+
+        // Remove the payload from the COSE sign1 message
+        let cose: TypedCose<_, ReaderAuthenticationBytes> = CoseSign1 {
+            payload: None,
+            ..cose.into_inner()
+        }
+        .into();
+
+        let reader_auth = Some(cose.into_inner().into());
 
         // Create and encrypt the `DeviceRequest`.
         DocRequest {
@@ -118,28 +139,43 @@ mod tests {
             reader_auth,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use crypto::server_keys::generate::Ca;
+    use crypto::x509::crl::CertificateCrlVerificationError;
+    use crypto::x509::crl::mock::MockCertificateCrlVerifier;
+    use utils::generator::TimeGenerator;
+
+    use super::*;
+    use crate::errors::Error;
+    use crate::holder::disclosure::device_retrieval::test::create_doc_request;
+
     #[tokio::test]
     async fn test_doc_request_verify() {
         // Create a CA, certificate and private key and trust anchors.
-        let ca = Ca::generate_reader_mock_ca().unwrap();
-        let private_key = ca.generate_reader_mock().unwrap();
-        let trust_anchors = &[ca.to_trust_anchor()];
+        let ca = Ca::generate_wrpac_mock_ca().unwrap();
+        let key_pair = ca.generate_wrpac_verifier_mock().unwrap();
+        let trust_anchors = ca.to_trust_anchors();
 
         // Create a basic session transcript, item request and a `DocRequest`.
         let session_transcript = SessionTranscript::new_mock();
-        let items_request = ItemsRequest::new_example_empty();
-        let doc_request = create_doc_request(items_request.clone(), &session_transcript, &private_key).await;
+        let items_request = ItemsRequest::new_example();
+        let doc_request = create_doc_request(items_request.clone(), &session_transcript, &key_pair).await;
 
         // Verification of the `DocRequest` should succeed and return the certificate contained within it.
         let certificate = doc_request
-            .verify(&session_transcript, &TimeGenerator, trust_anchors)
+            .verify(&session_transcript, &TimeGenerator, &trust_anchors)
             .expect("Could not verify DeviceRequest");
 
-        assert_matches!(certificate, Some(cert) if cert == private_key.into());
+        assert_matches!(certificate, Some(cert) if cert == key_pair.into());
 
-        let other_ca = Ca::generate_reader_mock_ca().unwrap();
+        let other_ca = Ca::generate_wrpac_mock_ca().unwrap();
         let error = doc_request
-            .verify(&session_transcript, &TimeGenerator, &[other_ca.to_trust_anchor()])
+            .verify(&session_transcript, &TimeGenerator, &other_ca.to_trust_anchors())
             .expect_err("Verifying DeviceRequest should have resulted in an error");
 
         assert_matches!(error, Error::Cose(_));
@@ -151,9 +187,64 @@ mod tests {
         };
 
         let no_certificate = doc_request
-            .verify(&session_transcript, &TimeGenerator, trust_anchors)
+            .verify(&session_transcript, &TimeGenerator, &trust_anchors)
             .expect("Could not verify DeviceRequest");
 
         assert!(no_certificate.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_doc_request_verify_with_crl() {
+        let ca = Ca::generate_wrpac_mock_ca().unwrap();
+        let key_pair = ca.generate_wrpac_verifier_mock_with_crl().unwrap();
+        let trust_anchors = ca.to_trust_anchors();
+        let crl_verifier = MockCertificateCrlVerifier::new_for_ca(&ca);
+        let session_transcript = SessionTranscript::new_mock();
+        let items_request = ItemsRequest::new_example();
+        let doc_request = create_doc_request(items_request.clone(), &session_transcript, &key_pair).await;
+
+        let certificate = doc_request
+            .verify_with_crl(&session_transcript, &TimeGenerator, &trust_anchors, &crl_verifier)
+            .await
+            .expect("Could not verify DeviceRequest");
+
+        assert_eq!(certificate, key_pair.into());
+
+        let doc_request = DocRequest {
+            items_request: items_request.into(),
+            reader_auth: None,
+        };
+        let error = doc_request
+            .verify_with_crl(&session_transcript, &TimeGenerator, &trust_anchors, &crl_verifier)
+            .await
+            .expect_err("Verifying DeviceRequest should have resulted in an error");
+
+        assert_matches!(error, Error::MissingReaderAuthentication);
+    }
+
+    #[tokio::test]
+    async fn test_doc_request_verify_with_crl_requires_distribution_point() {
+        let ca = Ca::generate_wrpac_mock_ca().unwrap();
+        let key_pair = ca.generate_wrpac_verifier_mock().unwrap();
+        let crl_verifier = MockCertificateCrlVerifier::new_for_ca(&ca);
+        let session_transcript = SessionTranscript::new_mock();
+        let doc_request = create_doc_request(ItemsRequest::new_example(), &session_transcript, &key_pair).await;
+
+        let error = doc_request
+            .verify_with_crl(
+                &session_transcript,
+                &TimeGenerator,
+                &ca.to_trust_anchors(),
+                &crl_verifier,
+            )
+            .await
+            .expect_err("Verifying DeviceRequest should have resulted in an error");
+
+        assert_matches!(
+            error,
+            Error::Cose(cose::CoseError::CertificateCrl(
+                CertificateCrlVerificationError::NoCrlDistributionPoint
+            ))
+        );
     }
 }

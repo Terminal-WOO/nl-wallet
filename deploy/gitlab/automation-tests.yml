@@ -1,330 +1,39 @@
-automation-compile-check:
-  rules: !reference [.merge-request, rules]
-  script:
-    - java -version
-    - cd uiautomation
-    - ./gradlew --no-daemon compileTestKotlin
-
-scheduled-automation-tests-trigger:
-  rules:
-    - !reference [.default-or-release, rules]
-  needs:
-    - job: deploy-apps-ont
-      artifacts: false
-      optional: true
-  trigger:
-    include:
-      - local: .gitlab-ci.yml
-  variables:
-    SCHEDULED: automation
-  when: manual
-  allow_failure: true
-
-.run-automation-tests-base:
-  extends: .env-k8s
-  before_script:
-    - BROWSERSTACK_USER=$(kubectl get secret nl-wallet-browserstack -o jsonpath='{.data.user}' | base64 --decode)
-    - export BROWSERSTACK_USER
-    - BROWSERSTACK_KEY=$(kubectl get secret nl-wallet-browserstack -o jsonpath='{.data.key}' | base64 --decode)
-    - export BROWSERSTACK_KEY
-    - java -version
-    - cd uiautomation
-    - set -euxo pipefail
-  variables:
-    APP_IDENTIFIER: "nl.ictu.edi.wallet.latest"
-    ENABLE_BROWSERSTACK_A11Y_CHECKS: false
-
-.run-automation-tests-common-setup:
-  resource_group: automation-tests
-  extends: .run-automation-tests-base
-  artifacts:
-    name: uiautomation
-    when: always
-    paths:
-      - uiautomation/build/test-results/**/*.xml
-      - uiautomation/build/allure-results
-      - uiautomation/build/reports
-    reports:
-      junit: uiautomation/build/test-results/**/*.xml
-
-.run-automation-tests-default:
-  extends: .run-automation-tests-common-setup
-  script:
-    - mv browserstack-config/browserstack-oneplus12r-14-NL.yml ./browserstack.yml
-    - ./gradlew --no-daemon --info --stacktrace test --tests $TESTS
-      -Dtest.config.remote=true
-      -Dfile.encoding=UTF-8 || true
-    # Allow failure in tests and pass when there are test results (Quality Time should report on failed test)
-    - compgen -G "build/test-results/test/*.xml"
-  rules:
-    - !reference [.on-schedule-automation, rules]
-
-run-automation-tests-publish-results:
-  rules: !reference [.run-automation-tests-default, rules]
-  needs:
-    - { job: run-automation-card-and-history-tests }
-    - { job: run-automation-disclosure-tests }
-    - { job: run-automation-introduction-tests }
-    - { job: run-automation-issuance-tests }
-    - { job: run-automation-menu-and-settings-tests }
-    - { job: run-automation-open-app-tests }
-    - { job: run-automation-security-tests }
-  script:
-    - deploy/bin/store-artifact-zip.sh qt/quality-time/junit-results/e2e.zip uiautomation/build/test-results/test/*.xml
-    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/e2e.zip uiautomation/build/allure-results/*
-
-run-automation-card-and-history-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.CardsAndHistoryTestSuite"
-
-run-automation-disclosure-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.DisclosureTestSuite"
-
-run-automation-introduction-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.IntroductionTestSuite"
-
-run-automation-issuance-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.IssuanceTestSuite"
-
-run-automation-menu-and-settings-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.MenuAndSettingsTestSuite"
-
-run-automation-open-app-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.OpenAppTestSuite"
-
-run-automation-security-tests:
-  extends: .run-automation-tests-default
-  variables:
-    TESTS: "suite.SecurityTestSuite"
-
-run-automation-english-tests:
-  extends: .run-automation-tests-common-setup
-  script:
-    - mv browserstack-config/browserstack-oneplus12r-14-EN.yml ./browserstack.yml
-    - ./gradlew --no-daemon --info --stacktrace testEnglish
-      -Dtest.config.remote=true
-      -Dfile.encoding=UTF-8 || true
-    # Allow failure in tests and pass when there are test results (Quality Time should report on failed test)
-    - compgen -G "build/test-results/testEnglish/*.xml"
-  rules:
-    - !reference [.on-schedule-automation, rules]
-
-run-automation-a11y-batch1-tests:
-  extends: .run-automation-tests-common-setup
-  script:
-    - mv browserstack-config/browserstack-oneplus12r-14-EN.yml ./browserstack.yml
-    - ./gradlew --no-daemon --info --stacktrace testA11yBatch1
-      -Dtest.config.remote=true
-      -Dfile.encoding=UTF-8 || true
-  rules:
-    - !reference [.on-schedule-automation, rules]
-  variables:
-    ENABLE_BROWSERSTACK_A11Y_CHECKS: true
-
-run-automation-a11y-batch2-tests:
-  extends: .run-automation-tests-common-setup
-  script:
-    - mv browserstack-config/browserstack-oneplus12r-14-EN.yml ./browserstack.yml
-    - ./gradlew --no-daemon --info --stacktrace testA11yBatch2
-      -Dtest.config.remote=true
-      -Dfile.encoding=UTF-8 || true
-  rules:
-    - !reference [.on-schedule-automation, rules]
-  variables:
-    ENABLE_BROWSERSTACK_A11Y_CHECKS: true
-
-browserstack-a11y-merge:
-  extends: .run-automation-tests-base
-  needs:
-    - { job: run-automation-a11y-batch1-tests }
-    - { job: run-automation-a11y-batch2-tests }
-  rules:
-    - !reference [.on-schedule-automation, rules]
-  variables:
-    BROWSERSTACK_API_BASE: "https://api-app-accessibility.browserstack.com/automate/api/v1"
-  script:
-    - BROWSERSTACK_PROJECT_ID=$(kubectl get secret nl-wallet-browserstack -o jsonpath='{.data.project_id}' | base64 --decode)
-    # Get the last 2 builds for this project whose name == CI_PIPELINE_ID
-    - |
-      echo "Fetching builds for project ${BROWSERSTACK_PROJECT_ID}…"
-      curl -sfS "${BROWSERSTACK_API_BASE}/project/${BROWSERSTACK_PROJECT_ID}/build?page_size=50&page=1" \
-        -u "${BROWSERSTACK_USER}:${BROWSERSTACK_KEY}" \
-        -o builds_raw.json
-
-      echo "Filtering builds with name == CI_PIPELINE_ID (${CI_PIPELINE_ID}) and selecting the last 2…"
-      jq --arg pipeline_id "$CI_PIPELINE_ID" '
-        {
-          success,
-          info,
-          filters,
-          builds: (
-            [ .builds[]
-              | select(.name == $pipeline_id)
-            ]
-            | sort_by(.created_at)  # oldest → newest
-            | reverse               # newest → oldest
-            | .[:2]                 # take the last 2
-          )
-        }
-      ' builds_raw.json > builds.json
-
-      echo "Checking we have at least 2 matching builds…"
-      jq -e '
-        .success == true
-        and (.builds | length >= 2)
-      ' builds.json > /dev/null || {
-        echo "ERROR: Need at least 2 builds with name == \"${CI_PIPELINE_ID}\". Got:"
-        jq '{builds: [.builds[] | {id, th_build_id, name, created_at}]}' builds.json
-        exit 1
-      }
-
-    # Create a combined summary
-    - |
-      echo "Creating combined summary…"
-      jq -n --slurpfile r builds.json '
-      def to_num:
-        if type=="number" then .
-        elif type=="string" then (tonumber? // 0)
-        else 0 end;
-
-      # severity_count can be: object, array of objects, null → return numeric for key
-      def sev_get(o; k):
-        if o == null then 0
-        elif (o|type)=="object" then ((o[k] // 0) | to_num)
-        elif (o|type)=="array"  then ((o | map(. [k] // 0 | to_num) | add) // 0)
-        else 0 end;
-
-      # sum a severity key across all builds
-      def sev_sum(k):
-        ([$r[0].builds[]
-          | .issue_summary
-          | if . == null then {} else . end
-          | .severity_count
-          | sev_get(.; k)
-        ] | add) // 0;
-
-      {
-        project_id: ($r[0].builds[0].project_id // $r[0].project_id),
-        generated_at: (now | strflocaltime("%Y-%m-%dT%H:%M:%SZ")),
-        source: { page: $r[0].info.page, page_size: $r[0].info.page_size, count: $r[0].info.count },
-        builds: [
-          $r[0].builds[] |
-          { id, th_build_id, name, created_at, started_at, status, issue_summary }
-        ],
-        summary: {
-          build_count: ($r[0].builds | length),
-          statuses: (
-            reduce ($r[0].builds[] | .status) as $s ({}; .[$s] = ((.[$s] // 0) + 1) )
-          ),
-          totals: {
-            total_issues: ([$r[0].builds[].issue_summary.total] | map((. // 0) | to_num) | add),
-            scan_count:   ([$r[0].builds[].issue_summary.scan_count] | map((. // 0) | to_num) | add),
-            severity_count: {
-              minor:            sev_sum("minor"),
-              moderate:         sev_sum("moderate"),
-              serious:          sev_sum("serious"),
-              critical:         sev_sum("critical"),
-              failed_issues:    sev_sum("failed_issues"),
-              needs_review:     sev_sum("needs_review"),
-              confirmed:        sev_sum("confirmed"),
-              hidden_issues:    sev_sum("hidden_issues"),
-              duplicate_issues: sev_sum("duplicate_issues")
-            }
-          }
-        }
-      }' > combined_summary.json
-
-    # Verify summary
-    - |
-      jq -e '
-        (.builds | length == 2)
-        and (.summary.build_count == 2)
-        and (.summary.totals.total_issues | type == "number")
-      ' combined_summary.json > /dev/null || {
-        echo "ERROR: combined_summary.json sanity check failed"
-        cat combined_summary.json || true
-        exit 1
-      }
-  after_script:
-    - deploy/bin/store-artifact-zip.sh qt/quality-time/a11y-results/a11y.zip uiautomation/combined_summary.json
-  artifacts:
-    name: browserstack-a11y
-    when: always
-    paths:
-      - uiautomation/combined_summary.json
-
-run-automation-smoke-test-ont:
-  extends: .run-automation-tests-common-setup
-  rules: !reference [.default-branch, rules]
-  needs:
-    - job: upload-browserstack-android-app
-      artifacts: false
-    - job: deploy-apps-ont
-      artifacts: false
-  script:
-    - mv browserstack-config/browserstack-oneplus12r-14-NL.yml ./browserstack.yml
-    - ./gradlew --no-daemon --info --stacktrace smokeTest
-      -Dtest.config.remote=true
-      -Dfile.encoding=UTF-8
-
-run-automation-smoke-test-ios-ont:
-  extends: .run-automation-tests-common-setup
-  rules: !reference [.default-branch, rules]
-  needs:
-    - job: upload-browserstack-ios-app
-      artifacts: false
-    - job: deploy-apps-ont
-      artifacts: false
-  script:
-    - mv browserstack-config/browserstack-Iphone16Pro-18-NL.yml ./browserstack.yml
-    - ./gradlew --no-daemon --info --stacktrace smokeTestIOS
-      -Dtest.config.remote=true
-      -Dfile.encoding=UTF-8
-
 browsertests-format-lint:
+  stage: build
   rules: !reference [.default-or-merge-request, rules]
+  needs: []
   image: "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/nl-wallet-app-builder-ci-node:${BUILD_TAG}"
   script:
     - cd browsertests
-    - npm ci
-    - npm run format-check
-    - npm run lint
+    - pnpm install --frozen-lockfile
+    - pnpm run format-check
+    - pnpm run lint
 
 .run-browsertest-common:
   image: "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/nl-wallet-app-builder-ci-playwright:${BUILD_TAG}"
   extends: .env-k8s
-  needs:
-    - job: build-env-ont
-      artifacts: true
-
-run-wallet-web-browsertest-test-ont:
-  extends: .run-browsertest-common
+  stage: qa
   rules:
     - !reference [.default-branch, rules]
   needs:
-    - !reference [.run-browsertest-common, needs]
+    - job: build-env-ont
+      artifacts: true
     - job: deploy-apps-ont
       artifacts: false
-  script: |
-    cd browsertests
-    npm ci
-    cd packages/wallet-web
-    npx playwright install chromium webkit
-    npm run test:ci
+  before_script:
+    - cd browsertests
+    - pnpm install --frozen-lockfile
+
+run-wallet-web-browsertest-test-ont:
+  extends: .run-browsertest-common
+  script:
+    - cd packages/wallet-web
+    - pnpm run test:ci
   after_script:
-    - deploy/bin/store-artifact.sh browsertests/packages/wallet-web/test-results/results.xml qt/quality-time/junit-results/browsertest-wallet-web.xml
-    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/browsertest-wallet-web.zip browsertests/packages/wallet-web/allure-results/*
+    - deploy/bin/store-artifact.sh browsertests/packages/wallet-web/test-results/results.xml
+      qt/quality-time/junit-results/browsertest-wallet-web.xml
+    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/browsertest-wallet-web.zip
+      browsertests/packages/wallet-web/allure-results/*
   artifacts:
     name: browsertest-wallet-web
     when: always
@@ -336,21 +45,14 @@ run-wallet-web-browsertest-test-ont:
 
 run-fallback-pages-browsertest-test-ont:
   extends: .run-browsertest-common
-  rules:
-    - !reference [.default-branch, rules]
-  needs:
-    - !reference [.run-browsertest-common, needs]
-    - job: deploy-apps-ont
-      artifacts: false
-  script: |
-    cd browsertests
-    npm ci
-    cd packages/fallback-pages
-    npx playwright install chromium webkit
-    npm run test:ci
+  script:
+    - cd packages/fallback-pages
+    - pnpm run test:ci
   after_script:
-    - deploy/bin/store-artifact.sh browsertests/packages/fallback-pages/test-results/results.xml qt/quality-time/junit-results/browsertest-fallback-pages.xml
-    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/browsertest-fallback-pages.zip browsertests/packages/fallback-pages/allure-results/*
+    - deploy/bin/store-artifact.sh browsertests/packages/fallback-pages/test-results/results.xml
+      qt/quality-time/junit-results/browsertest-fallback-pages.xml
+    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/browsertest-fallback-pages.zip
+      browsertests/packages/fallback-pages/allure-results/*
   artifacts:
     name: browsertest-fallback-page
     when: always
@@ -360,13 +62,188 @@ run-fallback-pages-browsertest-test-ont:
     reports:
       junit: browsertests/packages/fallback-pages/test-results/*.xml
 
-run-performance-test-ont:
+run-revocation-portal-browsertest-test-ont:
+  extends: .run-browsertest-common
+  script:
+    - cd packages/revocation-portal
+    - pnpm run test:ci
+  after_script:
+    - deploy/bin/store-artifact.sh browsertests/packages/revocation-portal/test-results/results.xml
+      qt/quality-time/junit-results/browsertest-revocation-portal.xml
+    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/browsertest-revocation-portal.zip
+      browsertests/packages/revocation-portal/allure-results/*
+  artifacts:
+    name: browsertest-revocation-portal
+    when: always
+    paths:
+      - browsertests/packages/revocation-portal/test-results/
+      - browsertests/packages/revocation-portal/allure-results/
+    reports:
+      junit: browsertests/packages/revocation-portal/test-results/*.xml
+
+run-admin-portal-browsertest-test-ont:
+  extends: .run-browsertest-common
+  before_script:
+    - !reference [.run-browsertest-common, before_script]
+    - export AP_OPERATOR1_PASSWORD="$(kubectl get secret nl-wallet-keycloak-passwords  --output=jsonpath='{.data.operator1}' | base64 --decode)"
+    - export AP_TEAMLEAD1_PASSWORD="$(kubectl get secret nl-wallet-keycloak-passwords --output=jsonpath='{.data.teamlead1}' | base64 --decode)"
+    - export AP_SUPERUSER1_PASSWORD="$(kubectl get secret nl-wallet-keycloak-passwords --output=jsonpath='{.data.superuser1}' | base64 --decode)"
+  script:
+    - cd packages/admin-portal
+    - pnpm run test:ci
+  after_script:
+    - deploy/bin/store-artifact.sh browsertests/packages/admin-portal/test-results/results.xml
+      qt/quality-time/junit-results/browsertest-admin-portal.xml
+    - deploy/bin/store-artifact-zip.sh qt/quality-time/allure-results/browsertest-admin-portal.zip
+      browsertests/packages/admin-portal/allure-results/*
+  artifacts:
+    name: browsertest-admin-portal
+    when: always
+    paths:
+      - browsertests/packages/admin-portal/test-results/
+      - browsertests/packages/admin-portal/allure-results/
+    reports:
+      junit: browsertests/packages/admin-portal/test-results/*.xml
+
+run-digid-bridge-test-ont:
+  extends:
+    - .test-rust
+    - .env-k8s
+  stage: qa
+  rules: !reference [.default-or-merge-request-manual, rules]
+  needs:
+    - job: build-env-ont
+      artifacts: true
+  variables:
+    SKIP_DIGID_CONNECTOR: "true"
+    SKIP_WALLET_WEB: "true"
+    SKIP_KEYCLOAK: "true"
+    DB_HOST: "postgres"
+  services:
+    - name: "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/nl-wallet-app-builder-postgres:${BUILD_TAG}"
+      alias: postgres
+      command: [
+          "postgres",
+          # Allow for more connections with larger shared buffers
+          "-N",
+          "768",
+          "-c",
+          "shared_buffers=128MB",
+          # Use non-durable settings: https://www.postgresql.org/docs/current/non-durability.html
+          "-c",
+          "fsync=off",
+          "-c",
+          "synchronous_commit=off",
+          "-c",
+          "full_page_writes=off",
+          # Minimal WAL
+          "-c",
+          "wal_level=minimal",
+          "-c",
+          "max_wal_senders=0",
+        ]
+      variables:
+        POSTGRES_USER: "postgres"
+        POSTGRES_PASSWORD: "postgres"
+  before_script:
+    - set -euo pipefail
+    - PID_ISSUER__DIGID__BSN_PRIVKEY="$(kubectl get secret nl-wallet-pid-issuer-digid-bsn-privkey --output=jsonpath='{.data.bsn_privkey}' | base64 --decode)"
+    - export PID_ISSUER__DIGID__BSN_PRIVKEY
+    - PID_ISSUER__DIGID__CLIENT_SETTINGS__TRUST_ANCHORS="$(kubectl get configmap nl-wallet-pid-issuer-digid-http-trust-anchors --output=jsonpath='{.data.trust_anchors}')"
+    - export PID_ISSUER__DIGID__CLIENT_SETTINGS__TRUST_ANCHORS
+    - PID_ISSUER__DIGID__CLIENT_SETTINGS__OIDC_IDENTIFIER="$DIGID_BASE_URL"
+    - export PID_ISSUER__DIGID__CLIENT_SETTINGS__OIDC_IDENTIFIER
+    - PID_ISSUER__DIGID__CLIENT_ID="$DIGID_CLIENT_ID"
+    - export PID_ISSUER__DIGID__CLIENT_ID
+    # Port-forward brpproxy (internal-only in the cluster) to localhost for the in-process pid_issuer.
+    - kubectl port-forward service/brpproxy 5001:80 &
+    - export PID_ISSUER__BRP_SERVER="http://localhost:5001/"
+  script:
+    - ./scripts/setup-devenv.sh
+    - cd wallet_core
+    - RUST_BACKTRACE=1 CONFIG_ENV=dev cargo nextest run --package tests_integration --test digid_issuance --features
+      digid_test --locked
+
+.run-performance-test-ont-base:
   extends: .env-k8s
-  rules: !reference [.default-branch, rules]
+  stage: qa
+  script:
+    - START_TIME=$(date -u -d "-1 minute" "+%Y-%m-%d %H:%M:%S")
+    - echo "Performance test starting, query range begins at $START_TIME"
+    # Effectively disabling performance test due to instability of SP
+    - wallet_core/tests_integration/run_performance_test.sh --skip-build 1
+    - END_TIME=$(date -u -d "+1 minute" "+%Y-%m-%d %H:%M:%S")
+    - echo "Performance test completed, query range ends at $END_TIME"
+    - echo "START_TIME=$START_TIME" > perf-test-timeframe.txt
+    - echo "END_TIME=$END_TIME" >> perf-test-timeframe.txt
+  artifacts:
+    paths:
+      - perf-test-timeframe.txt
+    when: on_success
+
+run-performance-test-ont-pipeline-deploy:
+  extends: .run-performance-test-ont-base
+  rules:
+    - !reference [.default-branch, rules]
   needs:
     - job: build-performance-test
       artifacts: true
     - job: deploy-apps-ont
       artifacts: false
-  script: wallet_core/tests_integration/run_performance_test.sh --skip-build
+  allow_failure: false
+
+run-performance-test-ont-existing-deploy:
+  extends: .run-performance-test-ont-base
+  rules:
+    - !reference [.on-schedule-nightly-performance-test, rules]
+    - !reference [.default-manual-or-merge-request-manual, rules]
+  needs:
+    - job: build-performance-test
+      artifacts: true
   allow_failure: true
+
+retrieve-performance-test-results-ont:
+  extends: .env-k8s
+  stage: qa
+  rules:
+    - !reference [.on-schedule-nightly-performance-test, rules]
+  needs:
+    - job: run-performance-test-ont-existing-deploy
+      artifacts: true
+  before_script:
+    - python3 -m venv venv
+    - source venv/bin/activate
+    - pip3 install --no-cache-dir --upgrade pip
+    - pip3 install --uploaded-prior-to P3D certifi==2026.10.19 # Exception to the standard 7D rule
+    - pip3 install --no-cache-dir -r deploy/qa-util/requirements.txt
+  script:
+    - START_TIME=$(grep START_TIME perf-test-timeframe.txt | cut -d'=' -f2-)
+    - END_TIME=$(grep END_TIME perf-test-timeframe.txt | cut -d'=' -f2-)
+    - echo "Using START_TIME=${START_TIME} and END_TIME=${END_TIME}"
+    - |
+      python3 deploy/qa-util/generate-k6-summary-from-grafana.py \
+        --grafana-url "${SP_GRAFANA_TEST_API_URL}" \
+        --api-token "${SP_GRAFANA_TEST_API_KEY}" \
+        --start-time "$START_TIME" \
+        --end-time "$END_TIME" \
+        --output-file k6-summary.json
+  after_script:
+    - deploy/bin/store-artifact.sh k6-summary.json qt/quality-time/performance-results/k6-summary.json
+  artifacts:
+    paths:
+      - k6-summary.json
+    when: on_success
+  variables:
+    TESTS:
+
+extract-manual-test-set:
+  stage: qa
+  rules: !reference [.default-branch-manual, rules]
+  needs: []
+  script:
+    - ./deploy/qa-util/extract-manual-test-set.py wallet_docs/functional-design/logical-test-cases.md manual-test-set.md
+  artifacts:
+    name: manual-test-set
+    when: always
+    paths:
+      - manual-test-set.md

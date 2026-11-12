@@ -1,16 +1,21 @@
-use base64::DecodeError;
-use jsonwebtoken::jwk::EllipticCurve;
-use p256::ecdsa::VerifyingKey;
-use p256::ecdsa::signature;
-
-use crypto::x509::CertificateError;
+use crypto::keys::PublicKey;
+use crypto::keys::PublicKeyError;
+use crypto::x509::CertificateParseError;
+use crypto::x509::CertificateVerifyError;
+use crypto::x509::crl::CertificateCrlVerificationError;
 use error_category::ErrorCategory;
+pub use jsonwebtoken::errors::ErrorKind as ValidationErrorKind;
+use jsonwebtoken::jwk::AlgorithmParameters;
+use jsonwebtoken::jwk::EllipticCurve;
+use rsa::signature;
+
+use crate::InvalidNumberOfAlgorithmFamiliesError;
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
-pub enum JwtError {
+pub enum JwtParseError {
     #[error("JSON parsing error: {0}")]
     #[category(pd)]
-    JsonParsing(#[from] serde_json::Error),
+    JsonParsing(#[source] serde_json::Error),
 
     #[error("error validating JWT: {0}")]
     #[category(critical)]
@@ -26,11 +31,11 @@ pub enum JwtError {
 
     #[error("failed to decode Base64: {0}")]
     #[category(pd)]
-    Base64Error(#[from] base64::DecodeError),
+    Base64Error(#[source] base64::DecodeError),
 
     #[error("JWT conversion error: {0}")]
     #[category(defer)]
-    Jwk(#[from] JwkConversionError),
+    Jwk(#[source] JwkConversionError),
 
     #[error("cannot construct JSON-serialized JWT: received differing payloads: {0}, {1}")]
     #[category(pd)]
@@ -39,10 +44,6 @@ pub enum JwtError {
     #[error("header conversion failed: {0}")]
     #[category(critical)]
     HeaderConversion(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
-
-    #[error("unexpected type: expected {0}, found {1:?}")]
-    #[category(critical)]
-    UnexpectedTyp(String, Option<String>),
 
     #[error("missing jwk field in JWT header")]
     #[category(critical)]
@@ -56,48 +57,139 @@ pub enum JwtError {
     #[category(critical)]
     MissingTyp,
 
+    #[error("missing kid field in JWT header")]
+    #[category(critical)]
+    MissingKid,
+
+    #[error("error converting iat: {0}")]
+    #[category(critical)]
+    InvalidIat(#[source] jsonwebtoken::errors::Error),
+
+    #[error("iat out of range: {0}")]
+    #[category(critical)]
+    IatOutOfRange(i64),
+
+    #[error("missing X.509 certificate(s) in JWT header to validate JWT against")]
+    #[category(critical)]
+    MissingCertificates,
+}
+
+#[derive(Debug, thiserror::Error, ErrorCategory)]
+pub enum JwtVerifyError {
+    #[error("JWt parsing error: {0}")]
+    #[category(pd)]
+    ParseError(#[source] JwtParseError),
+
+    #[error("error validating JWT: {0}")]
+    #[category(critical)]
+    Validation(#[source] jsonwebtoken::errors::Error),
+
     #[error("JWK in JWT header does not match expected public key: expected {0:?}, found {1:?}")]
     #[category(critical)]
-    IncorrectJwkPublicKey(Box<VerifyingKey>, Box<VerifyingKey>),
+    IncorrectJwkPublicKey(Box<PublicKey>, Box<PublicKey>),
+
+    #[error("key not found in JWK set: {0}")]
+    #[category(critical)]
+    KeyNotFound(String),
+
+    #[error("unexpected type: expected {0}, found {1:?}")]
+    #[category(critical)]
+    UnexpectedTyp(String, Option<String>),
+
+    #[error("error converting JWK: {0}")]
+    #[category(critical)]
+    JwkConversion(#[source] jsonwebtoken::errors::Error),
+
+    #[error(transparent)]
+    #[category(critical)]
+    MultipleAlgorithms(#[from] InvalidNumberOfAlgorithmFamiliesError),
+
+    #[error("error retrieving key by kid: {0}")]
+    #[category(critical)]
+    PublicKeyByKid(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+}
+
+#[derive(Debug, thiserror::Error, ErrorCategory)]
+pub enum JwtSignError {
+    #[error("JSON serializing error: {0}")]
+    #[category(pd)]
+    JsonSerializing(#[source] serde_json::Error),
+
+    #[error("JWT conversion error: {0}")]
+    #[category(defer)]
+    Jwk(#[source] JwkConversionError),
+
+    #[error("error signing JWT: {0}")]
+    #[category(critical)]
+    Signing(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("incorrect number of signature received from WSCD, expected: {expected}, received: {received}")]
+    #[category(pd)]
+    IncorrectSignatureCount { expected: usize, received: usize },
+
+    #[error("expected only a single signature per payload from WSCD, received: {received}")]
+    #[category(critical)]
+    IncorrectPayloadSignatureCount { received: usize },
+
+    #[error("verifying key error: {0}")]
+    #[category(critical)]
+    VerifyingKey(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(pd)]
 pub enum JwkConversionError {
-    #[error("unsupported JWK EC curve: expected P256, found {found:?}")]
+    #[error("unsupported JWK EC curve: {0:?}")]
     #[category(critical)]
-    UnsupportedJwkEcCurve { found: EllipticCurve },
-    #[error("unsupported JWK algorithm")]
+    UnsupportedJwkEcCurve(EllipticCurve),
+
+    #[error("unsupported JWK algorithm: {0:?}")]
     #[category(critical)]
-    UnsupportedJwkAlgorithm,
+    UnsupportedJwkAlgorithm(AlgorithmParameters),
+
     #[error("base64 decoding failed: {0}")]
-    Base64Error(#[from] base64::DecodeError),
+    Base64Error(#[source] base64::DecodeError),
+
     #[error("failed to construct verifying key: {0}")]
-    VerifyingKeyConstruction(#[from] signature::Error),
+    VerifyingKeyConstruction(#[source] signature::Error),
+
     #[error("missing coordinate in conversion to P256 public key")]
     #[category(critical)]
     MissingCoordinate,
+
     #[error("failed to get public key: {0}")]
     VerifyingKeyFromPrivateKey(#[source] Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("unsupported JWK RSA key size: {0}")]
+    #[category(critical)]
+    UnsupportedJwkRsaKeySize(PublicKeyError),
+
+    #[error("invalid RSA key: {0}")]
+    InvalidRsaKey(rsa::errors::Error),
+
+    #[error("invalid EC key: {0}")]
+    InvalidEcKey(ecdsa::Error),
+
+    #[error("invalid EC coordinate: {0}")]
+    InvalidCoordinate(#[source] std::array::TryFromSliceError),
 }
 
 #[derive(Debug, thiserror::Error, ErrorCategory)]
 #[category(defer)]
-pub enum JwtX5cError {
+pub enum JwtX5cVerifyError {
     #[error("error validating JWT: {0}")]
-    Jwt(#[from] JwtError),
-
-    #[error("missing X.509 certificate(s) in JWT header to validate JWT against")]
-    #[category(critical)]
-    MissingCertificates,
+    JwtVerify(#[from] JwtVerifyError),
 
     #[error("error base64-decoding certificate: {0}")]
     #[category(critical)]
-    CertificateBase64(#[source] DecodeError),
+    CertificateBase64(#[source] base64::DecodeError),
 
     #[error("error parsing certificate: {0}")]
-    CertificateParsing(#[source] CertificateError),
+    CertificateParsing(#[source] CertificateParseError),
 
     #[error("error verifying certificate: {0}")]
-    CertificateValidation(#[source] CertificateError),
+    CertificateValidation(#[source] CertificateVerifyError),
+
+    #[error("error verifying certificate with CRLs: {0}")]
+    CertificateCrlValidation(#[source] CertificateCrlVerificationError),
 }

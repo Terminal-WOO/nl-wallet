@@ -1,10 +1,9 @@
 use std::error::Error;
 use std::net::SocketAddr;
 
+use hsm::service::Pkcs11Hsm;
 use tokio::net::TcpListener;
 use tracing::info;
-
-use hsm::service::Pkcs11Hsm;
 use utils::built_info::version_string;
 use wallet_provider_service::account_server::GoogleCrlProvider;
 use wallet_provider_service::account_server::IntegrityTokenDecoder;
@@ -44,15 +43,21 @@ where
     let listener = listener.into_std()?;
 
     let tls_config = settings.tls_config.clone();
+    let revoke_solution_enabled = settings.revoke_solution_enabled;
+    let admin_portal = settings.admin_portal.clone();
     let router_state = RouterState::new_from_settings(settings, hsm, google_crl_client, play_integrity_client).await?;
-    let app = router::router(router_state);
+    let app = router::router(router_state, revoke_solution_enabled, admin_portal)?;
 
     if let Some(tls_config) = tls_config {
-        axum_server::from_tcp_rustls(listener, tls_config.into_rustls_config().await?)
+        axum_server::from_tcp_rustls(listener, tls_config.into_rustls_config()?)
+            .expect("TCP listener should not be in blocking mode")
             .serve(app.into_make_service())
             .await?;
     } else {
-        axum_server::from_tcp(listener).serve(app.into_make_service()).await?;
+        axum_server::from_tcp(listener)
+            .expect("TCP listener should not be in blocking mode")
+            .serve(app.into_make_service())
+            .await?;
     }
 
     Ok(())

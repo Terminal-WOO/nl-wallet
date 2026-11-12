@@ -1,37 +1,17 @@
 use itertools::Itertools;
 use url::Url;
-
+use wallet::AttributesNotAvailable;
+use wallet::CloseProximityDisclosureUpdate;
 use wallet::DisclosureAttestationOptions;
 use wallet::DisclosureProposalPresentation;
-use wallet::attestation_data::ReaderRegistration;
 use wallet::errors::DisclosureError;
 use wallet::openid4vc::SessionType;
 
 use super::attestation::AttestationPresentation;
-use super::image::Image;
 use super::instruction::WalletInstructionError;
 use super::localize::LocalizedString;
-
-pub struct Organization {
-    pub legal_name: Vec<LocalizedString>,
-    pub display_name: Vec<LocalizedString>,
-    pub description: Vec<LocalizedString>,
-    pub image: Option<Image>,
-    pub web_url: Option<String>,
-    pub privacy_policy_url: Option<String>,
-    pub kvk: Option<String>,
-    pub city: Option<Vec<LocalizedString>>,
-    pub category: Vec<LocalizedString>,
-    pub department: Option<Vec<LocalizedString>>,
-    pub country_code: Option<String>,
-}
-
-pub struct RequestPolicy {
-    pub data_storage_duration_in_minutes: Option<u64>,
-    pub data_shared_with_third_parties: bool,
-    pub data_deletion_possible: bool,
-    pub policy_url: String,
-}
+use super::organization::Organization;
+use crate::errors::FlutterApiError;
 
 pub struct MissingAttribute {
     pub labels: Vec<LocalizedString>,
@@ -45,6 +25,28 @@ pub enum DisclosureType {
 pub enum DisclosureSessionType {
     SameDevice,
     CrossDevice,
+    CloseProximity,
+}
+
+pub enum CloseProximityDisclosureFlutterUpdate {
+    Connected,
+    DeviceRequestReceived,
+    Disconnected,
+    // the error is serialized as JSON
+    Errored { error: String },
+}
+
+impl From<CloseProximityDisclosureUpdate> for CloseProximityDisclosureFlutterUpdate {
+    fn from(source: CloseProximityDisclosureUpdate) -> Self {
+        match source {
+            CloseProximityDisclosureUpdate::Connected => Self::Connected,
+            CloseProximityDisclosureUpdate::DeviceRequestReceived => Self::DeviceRequestReceived,
+            CloseProximityDisclosureUpdate::Disconnected => Self::Disconnected,
+            CloseProximityDisclosureUpdate::Errored(error) => Self::Errored {
+                error: FlutterApiError::from(error).to_json(),
+            },
+        }
+    }
 }
 
 impl From<SessionType> for DisclosureSessionType {
@@ -59,12 +61,10 @@ impl From<SessionType> for DisclosureSessionType {
 pub enum StartDisclosureResult {
     Request {
         relying_party: Organization,
-        policy: RequestPolicy,
         disclosure_options: Vec<DisclosureOptions>,
         shared_data_with_relying_party_before: bool,
         session_type: DisclosureSessionType,
         request_purpose: Vec<LocalizedString>,
-        request_origin_base_url: String,
         request_type: DisclosureType,
     },
     RequestAttributesMissing {
@@ -73,7 +73,6 @@ pub enum StartDisclosureResult {
         shared_data_with_relying_party_before: bool,
         session_type: DisclosureSessionType,
         request_purpose: Vec<LocalizedString>,
-        request_origin_base_url: String,
     },
 }
 
@@ -84,70 +83,6 @@ pub enum AcceptDisclosureResult {
     InstructionError { error: WalletInstructionError },
 }
 
-pub struct RPLocalizedStrings(pub wallet::attestation_data::LocalizedStrings);
-
-impl From<RPLocalizedStrings> for Vec<LocalizedString> {
-    fn from(value: RPLocalizedStrings) -> Self {
-        let RPLocalizedStrings(wallet::attestation_data::LocalizedStrings(localized_strings)) = value;
-        localized_strings
-            .iter()
-            .map(|(language, value)| LocalizedString {
-                language: language.to_owned(),
-                value: value.to_owned(),
-            })
-            .collect()
-    }
-}
-
-impl From<wallet::attestation_data::Image> for Image {
-    fn from(value: wallet::attestation_data::Image) -> Self {
-        match value {
-            wallet::attestation_data::Image::Svg(xml) => Image::Svg { xml },
-            wallet::attestation_data::Image::Png(data) => Image::Png { data },
-            wallet::attestation_data::Image::Jpeg(data) => Image::Jpeg { data },
-        }
-    }
-}
-
-impl From<Box<wallet::attestation_data::Organization>> for Organization {
-    fn from(value: Box<wallet::attestation_data::Organization>) -> Self {
-        Organization {
-            legal_name: RPLocalizedStrings(value.legal_name).into(),
-            display_name: RPLocalizedStrings(value.display_name).into(),
-            description: RPLocalizedStrings(value.description).into(),
-            image: value.logo.map(|logo| logo.into()),
-            kvk: value.kvk,
-            city: value.city.map(|city| RPLocalizedStrings(city).into()),
-            category: RPLocalizedStrings(value.category).into(),
-            department: value.department.map(|department| RPLocalizedStrings(department).into()),
-            country_code: value.country_code,
-            web_url: value.web_url.map(|url| url.to_string()),
-            privacy_policy_url: value.privacy_policy_url.map(|url| url.to_string()),
-        }
-    }
-}
-
-impl From<&ReaderRegistration> for RequestPolicy {
-    fn from(value: &ReaderRegistration) -> Self {
-        let data_storage_duration_in_minutes = value
-            .retention_policy
-            .intent_to_retain
-            .then_some(value.retention_policy.max_duration_in_minutes)
-            .flatten();
-        RequestPolicy {
-            data_storage_duration_in_minutes,
-            data_shared_with_third_parties: value.sharing_policy.intent_to_share,
-            data_deletion_possible: value.deletion_policy.deleteable,
-            policy_url: value
-                .organization
-                .privacy_policy_url
-                .as_ref()
-                .map(|url| url.to_string())
-                .unwrap_or_default(),
-        }
-    }
-}
-
 // TODO (PVW-3813): Actually translate the missing attributes using the TAS cache.
 impl From<String> for MissingAttribute {
     fn from(value: String) -> Self {
@@ -155,7 +90,7 @@ impl From<String> for MissingAttribute {
 
         let labels = LANGUAGES
             .iter()
-            .zip(itertools::repeat_n(value, LANGUAGES.len()))
+            .zip(std::iter::repeat_n(value, LANGUAGES.len()))
             .map(|(language, value)| LocalizedString {
                 language: language.to_string(),
                 value,
@@ -175,63 +110,68 @@ impl From<wallet::attestation_data::DisclosureType> for DisclosureType {
     }
 }
 
+pub(super) fn request_purpose(organization: &wallet::attestation_data::Organization) -> Vec<LocalizedString> {
+    organization
+        .purpose
+        .iter()
+        .flatten()
+        .map(|translation| LocalizedString {
+            language: translation.lang.clone(),
+            value: translation.value.clone(),
+        })
+        .collect()
+}
+
+impl From<DisclosureProposalPresentation> for StartDisclosureResult {
+    fn from(proposal: DisclosureProposalPresentation) -> Self {
+        StartDisclosureResult::Request {
+            request_purpose: request_purpose(&proposal.organization),
+            relying_party: proposal.organization.into(),
+            disclosure_options: proposal
+                .attestation_options
+                .into_iter()
+                .map(DisclosureOptions::from)
+                .collect(),
+            shared_data_with_relying_party_before: proposal.shared_data_with_relying_party_before,
+            session_type: proposal.session_type.into(),
+            request_type: proposal.disclosure_type.into(),
+        }
+    }
+}
+
+impl From<AttributesNotAvailable> for StartDisclosureResult {
+    fn from(value: AttributesNotAvailable) -> Self {
+        // TODO (PVW-4525): Have the UI actually display these as requested attributes,
+        //                  not as missing attributes.
+        let missing_attributes = value
+            .requested_attributes
+            .into_iter()
+            // Sort the attribute paths alphabetically to make the display order deterministic.
+            // TODO (PVW-4525): Do any sort of sorting in the UI instead.
+            .sorted()
+            .map(MissingAttribute::from)
+            .collect();
+
+        StartDisclosureResult::RequestAttributesMissing {
+            request_purpose: request_purpose(&value.organization),
+            relying_party: (*value.organization).into(),
+            missing_attributes,
+            shared_data_with_relying_party_before: value.shared_data_with_relying_party_before,
+            session_type: value.session_type.into(),
+        }
+    }
+}
+
 impl TryFrom<Result<DisclosureProposalPresentation, DisclosureError>> for StartDisclosureResult {
     type Error = DisclosureError;
 
     fn try_from(value: Result<DisclosureProposalPresentation, DisclosureError>) -> Result<Self, Self::Error> {
         match value {
-            Ok(proposal) => {
-                let policy: RequestPolicy = (&proposal.reader_registration).into();
-                let request_purpose: Vec<LocalizedString> =
-                    RPLocalizedStrings(proposal.reader_registration.purpose_statement).into();
-                let result = StartDisclosureResult::Request {
-                    relying_party: proposal.reader_registration.organization.into(),
-                    policy,
-                    disclosure_options: proposal
-                        .attestation_options
-                        .into_iter()
-                        .map(DisclosureOptions::from)
-                        .collect(),
-                    shared_data_with_relying_party_before: proposal.shared_data_with_relying_party_before,
-                    session_type: proposal.session_type.into(),
-                    request_purpose,
-                    request_origin_base_url: proposal.reader_registration.request_origin_base_url.into(),
-                    request_type: proposal.disclosure_type.into(),
-                };
-
-                Ok(result)
+            Ok(proposal) => Ok(proposal.into()),
+            Err(DisclosureError::AttributesNotAvailable(attributes_not_available)) => {
+                Ok(attributes_not_available.into())
             }
-            Err(error) => match error {
-                DisclosureError::AttributesNotAvailable {
-                    reader_registration,
-                    requested_attributes,
-                    shared_data_with_relying_party_before,
-                    session_type,
-                } => {
-                    let request_purpose: Vec<LocalizedString> =
-                        RPLocalizedStrings(reader_registration.purpose_statement).into();
-                    // TODO (PVW-4525): Have the UI actually display these as requested attributes,
-                    //                  not as missing attributes.
-                    let missing_attributes = requested_attributes
-                        .into_iter()
-                        // Sort the attribute paths alphabetically to make the display order deterministic.
-                        // TODO (PVW-4525): Do any sort of sorting in the UI instead.
-                        .sorted()
-                        .map(MissingAttribute::from)
-                        .collect();
-                    let result = StartDisclosureResult::RequestAttributesMissing {
-                        relying_party: reader_registration.organization.into(),
-                        missing_attributes,
-                        shared_data_with_relying_party_before,
-                        session_type: session_type.into(),
-                        request_purpose,
-                        request_origin_base_url: reader_registration.request_origin_base_url.into(),
-                    };
-
-                    Ok(result)
-                }
-                _ => Err(error),
-            },
+            Err(error) => Err(error),
         }
     }
 }

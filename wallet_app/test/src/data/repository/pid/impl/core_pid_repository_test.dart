@@ -5,9 +5,12 @@ import 'package:wallet/src/data/repository/pid/pid_repository.dart';
 import 'package:wallet/src/util/mapper/card/attribute/card_attribute_mapper.dart';
 import 'package:wallet/src/util/mapper/card/attribute/card_attribute_value_mapper.dart';
 import 'package:wallet/src/util/mapper/card/attribute/claim_display_metadata_mapper.dart';
-import 'package:wallet/src/util/mapper/card/attribute/localized_labels_mapper.dart';
 import 'package:wallet/src/util/mapper/card/card_mapper.dart';
 import 'package:wallet/src/util/mapper/card/metadata_mapper.dart';
+import 'package:wallet/src/util/mapper/card/status/card_status_mapper.dart';
+import 'package:wallet/src/util/mapper/configuration/flutter_app_configuration_mapper.dart';
+import 'package:wallet/src/util/mapper/configuration/maintenance_window_mapper.dart';
+import 'package:wallet/src/util/mapper/configuration/pid_attestation_mapper.dart';
 import 'package:wallet/src/util/mapper/image/image_mapper.dart';
 import 'package:wallet/src/util/mapper/organization/organization_mapper.dart';
 import 'package:wallet/src/wallet_core/typed/typed_wallet_core.dart';
@@ -17,21 +20,27 @@ import '../../../../mocks/core_mock_data.dart';
 import '../../../../mocks/wallet_mocks.dart';
 
 void main() {
-  late TypedWalletCore core;
+  late MockTypedWalletCore core;
   late PidRepository pidRepository;
   late CardMapper cardMapper;
+  late FlutterAppConfigurationMapper configMapper;
 
   const kMockPidRenewalUrl = 'mock_pid_renewal_url';
 
   setUp(() {
-    core = Mocks.create();
+    core = Mocks.create<TypedWalletCore>() as MockTypedWalletCore;
+    when(core.observeConfig()).thenAnswer((_) => Stream.value(CoreMockData.flutterConfiguration));
     cardMapper = CardMapper(
-      CardAttributeMapper(CardAttributeValueMapper(), ClaimDisplayMetadataMapper()),
-      OrganizationMapper(LocalizedLabelsMapper(), ImageMapper()),
+      CardAttributeMapper(CardAttributeValueMapper(ImageMapper()), ClaimDisplayMetadataMapper()),
+      OrganizationMapper(),
       DisplayMetadataMapper(ImageMapper()),
+      CardStatusMapper(),
     );
-    pidRepository = CorePidRepository(core, cardMapper);
+    configMapper = FlutterAppConfigurationMapper(MaintenanceWindowMapper(), PidAttestationMapper());
+    pidRepository = CorePidRepository(core, cardMapper, configMapper);
   });
+
+  tearDown(() => reset(core));
 
   group('Pid issuance', () {
     test('auth url should be fetched through the wallet_core', () async {
@@ -44,20 +53,18 @@ void main() {
       final testAttestation = AttestationPresentation(
         identity: const AttestationIdentity_Ephemeral(),
         attestationType: 'pid',
+        format: .SdJwt,
         displayMetadata: [CoreMockData.enDisplayMetadata],
         issuer: CoreMockData.organization,
         attributes: CoreMockData.attestation.attributes,
+        validityStatus: const ValidityStatus_Valid(validUntil: null),
       );
       final expectedAttributes = cardMapper.map(testAttestation).attributes;
 
-      when(core.continuePidIssuance(mockContinueUri)).thenAnswer((realInvocation) async => [testAttestation]);
+      when(core.continueIssuance(mockContinueUri))
+          .thenAnswer((realInvocation) async => IssuanceContinueResult.previews([testAttestation]));
       expect(await pidRepository.continuePidIssuance(mockContinueUri), expectedAttributes);
-      verify(core.continuePidIssuance(mockContinueUri));
-    });
-
-    test('cancel pid issuance should be propagated to the core', () async {
-      await pidRepository.cancelIssuance();
-      verify(core.cancelIssuance());
+      verify(core.continueIssuance(mockContinueUri));
     });
 
     test('accept offered pid should be propagated to the core', () async {
@@ -82,16 +89,6 @@ void main() {
       when(core.createPidRenewalRedirectUri()).thenAnswer((_) async => kMockPidRenewalUrl);
       expect(await pidRepository.getPidRenewalUrl(), kMockPidRenewalUrl);
       verify(core.createPidRenewalRedirectUri());
-    });
-
-    test('hasActiveIssuanceSession should check through the wallet_core', () async {
-      when(core.hasActiveIssuanceSession()).thenAnswer((_) async => true);
-      expect(await pidRepository.hasActiveIssuanceSession(), true);
-      verify(core.hasActiveIssuanceSession());
-
-      when(core.hasActiveIssuanceSession()).thenAnswer((_) async => false);
-      expect(await pidRepository.hasActiveIssuanceSession(), false);
-      verify(core.hasActiveIssuanceSession());
     });
   });
 }

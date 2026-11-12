@@ -1,584 +1,764 @@
+import 'dart:async';
+
 import 'package:bloc_test/bloc_test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:test/test.dart';
 import 'package:wallet/src/data/repository/disclosure/disclosure_repository.dart';
+import 'package:wallet/src/domain/model/close_proximity/ble_connection_event.dart';
 import 'package:wallet/src/domain/model/disclosure/disclose_card_request.dart';
 import 'package:wallet/src/domain/model/disclosure/disclosure_session_type.dart';
 import 'package:wallet/src/domain/model/disclosure/disclosure_type.dart';
+import 'package:wallet/src/domain/model/disclosure/start_disclosure_request.dart';
 import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/domain/model/result/result.dart';
 import 'package:wallet/src/feature/disclosure/bloc/disclosure_bloc.dart';
 import 'package:wallet/src/feature/report_issue/reporting_option.dart';
 import 'package:wallet/src/util/extension/core_error_extension.dart';
 import 'package:wallet/src/util/extension/string_extension.dart';
-import 'package:wallet/src/wallet_core/error/core_error.dart';
+import 'package:wallet/src/wallet_core/error/core_error.dart' hide SessionType;
 
 import '../../../mocks/wallet_mock_data.dart';
 import '../../../mocks/wallet_mocks.dart';
 
 void main() {
   late MockStartDisclosureUseCase startDisclosureUseCase;
-  late MockCancelDisclosureUseCase cancelDisclosureUseCase;
-  late MockGetMostRecentWalletEventUseCase getMostRecentWalletEventUsecase;
+  late MockCancelSessionUseCase cancelActiveSessionUseCase;
+  late MockGetMostRecentWalletEventUseCase getMostRecentWalletEventUseCase;
+  late MockObserveCloseProximityConnectionUseCase observeCloseProximityConnectionUseCase;
 
   /// Create a new [DisclosureBloc] configured with the (mocked) usecases
-  DisclosureBloc create() =>
-      DisclosureBloc(startDisclosureUseCase, cancelDisclosureUseCase, getMostRecentWalletEventUsecase);
+  DisclosureBloc create() => DisclosureBloc(
+    startDisclosureUseCase,
+    cancelActiveSessionUseCase,
+    getMostRecentWalletEventUseCase,
+    observeCloseProximityConnectionUseCase,
+  );
 
   setUp(() {
     startDisclosureUseCase = MockStartDisclosureUseCase();
-    cancelDisclosureUseCase = MockCancelDisclosureUseCase();
-    getMostRecentWalletEventUsecase = MockGetMostRecentWalletEventUseCase();
+    cancelActiveSessionUseCase = MockCancelSessionUseCase();
+    getMostRecentWalletEventUseCase = MockGetMostRecentWalletEventUseCase();
+    observeCloseProximityConnectionUseCase = MockObserveCloseProximityConnectionUseCase();
+    when(observeCloseProximityConnectionUseCase.invoke()).thenAnswer((_) => const Stream.empty());
   });
 
   test('initial state is correct', () {
     expect(create().state, const DisclosureInitial());
   });
 
-  blocTest(
-    'when startDisclosure fails, emit generic error',
-    setUp: () => when(
-      startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode')),
-    ).thenAnswer((_) async => const Result.error(GenericError('', sourceError: 'test'))),
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [
-      isA<DisclosureLoadInProgress>(),
-      isA<DisclosureGenericError>(),
-    ],
-  );
+  group('Start Disclosure', () {
+    group('Same device', () {
+      blocTest(
+        'when startDisclosure returns StartDisclosureReadyToDisclose for regular disclosure, the bloc emits DisclosureConfirmDataAttributes',
+        setUp: () {
+          when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+            return Result.success(emptyRequest(sessionType: .sameDevice, type: .regular));
+          });
+        },
+        build: create,
+        act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+        expect: () => [isA<DisclosureConfirmDataAttributes>()],
+      );
 
-  blocTest(
-    'when startDisclosure fails with network issue, emit DisclosureNetworkError(hasInternet: true)',
-    setUp: () => when(
-      startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode')),
-    ).thenAnswer((_) async => const Result.error(NetworkError(hasInternet: true, sourceError: 'test'))),
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('')),
-    verify: (bloc) {
-      expect(bloc.state, isA<DisclosureNetworkError>());
-      expect((bloc.state as DisclosureNetworkError).hasInternet, isTrue);
-      expect((bloc.state as DisclosureNetworkError).error, isA<NetworkError>());
-    },
-  );
+      blocTest(
+        'when startDisclosure returns StartDisclosureReadyToDisclose for login type disclosure, the bloc emits DisclosureCheckOrganizationForLogin',
+        setUp: () {
+          when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+            return Result.success(emptyRequest(sessionType: .sameDevice, type: .login));
+          });
+        },
+        build: create,
+        act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+        expect: () => [isA<DisclosureCheckOrganizationForLogin>()],
+      );
+    });
 
-  blocTest(
-    'when startDisclosure fails with network issue and there is no internet, emit DisclosureNetworkError(hasInternet: false)',
-    setUp: () {
-      when(
-        startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode')),
-      ).thenAnswer((_) async => const Result.error(NetworkError(hasInternet: false, sourceError: 'test')));
-      when(CoreErrorExtension.networkRepository.hasInternet()).thenAnswer((realInvocation) async {
-        await Future.delayed(const Duration(milliseconds: 100));
-        return false;
-      });
-    },
-    wait: const Duration(milliseconds: 150),
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('')),
-    verify: (bloc) {
-      expect(bloc.state, isA<DisclosureNetworkError>());
-      expect((bloc.state as DisclosureNetworkError).hasInternet, isFalse);
-      expect((bloc.state as DisclosureNetworkError).error, isA<NetworkError>());
-    },
-  );
+    group('Cross device', () {
+      blocTest(
+        'when startDisclosure returns StartDisclosureReadyToDisclose for regular disclosure, the bloc emits DisclosureCheckUrl',
+        setUp: () {
+          when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+            return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+          });
+        },
+        build: create,
+        act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan(''))),
+        expect: () => [isA<DisclosureCheckUrl>()],
+      );
 
-  blocTest(
-    'when startDisclosure returns StartDisclosureReadyToDisclose for regular disclosure, the bloc emits DisclosureCheckOrganization',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-            cardRequests: [],
+      blocTest(
+        'when startDisclosure returns StartDisclosureReadyToDisclose for login type disclosure, the bloc emits DisclosureCheckUrl',
+        setUp: () {
+          when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+            return Result.success(emptyRequest(sessionType: .crossDevice, type: .login));
+          });
+        },
+        build: create,
+        act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan(''))),
+        expect: () => [isA<DisclosureCheckUrl>()],
+      );
+    });
+
+    blocTest(
+      'when startDisclosure returns StartDisclosureMissingAttributes, the bloc emits DisclosureMissingAttributes',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(missingAttributesRequest(sessionType: .crossDevice));
+        });
+      },
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [isA<DisclosureMissingAttributes>()],
+    );
+
+    blocTest(
+      'startDisclosure is called with isQrCode set to true',
+      setUp: () => when(
+        startDisclosureUseCase.invoke(any),
+      ).thenAnswer((_) async => const Result.error(GenericError('', sourceError: 'test'))),
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('http://true'))),
+      verify: (_) =>
+          verify(startDisclosureUseCase.invoke(const StartDisclosureRequest.qrScan('http://true'))).called(1),
+    );
+
+    blocTest(
+      'startDisclosure is called with isQrCode set to false',
+      setUp: () => when(
+        startDisclosureUseCase.invoke(any),
+      ).thenAnswer((_) async => const Result.error(GenericError('', sourceError: 'test'))),
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('http://false'))),
+      verify: (_) =>
+          verify(startDisclosureUseCase.invoke(const StartDisclosureRequest.deeplink('http://false'))).called(1),
+    );
+  });
+
+  group('Navigation & Flow', () {
+    blocTest(
+      'when the user continues regular disclosure after checking the organization based on StartDisclosureReadyToDisclose, the bloc emits DisclosureConfirmDataAttributes',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureUrlApproved());
+      },
+      expect: () => [isA<DisclosureCheckUrl>(), isA<DisclosureConfirmDataAttributes>()],
+    );
+
+    blocTest(
+      'when the user continues login type disclosure after checking the organization based on StartDisclosureReadyToDisclose, the bloc emits DisclosureConfirmPin',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .sameDevice, type: .login));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+      },
+      expect: () => [
+        isA<DisclosureCheckOrganizationForLogin>(),
+        isA<DisclosureConfirmPin>(),
+      ],
+    );
+
+    blocTest(
+      'when the user opts to share the requested attributes, the bloc emits DisclosureConfirmPin',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureUrlApproved());
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+      },
+      skip: 2,
+      expect: () => [isA<DisclosureConfirmPin>()],
+    );
+
+    blocTest(
+      'when the user confirms the pin, the bloc emits DisclosureSuccess (regular)',
+      setUp: () {
+        when(getMostRecentWalletEventUseCase.invoke()).thenAnswer((_) async => WalletMockData.disclosureEvent);
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureUrlApproved());
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosurePinConfirmed());
+      },
+      skip: 3,
+      expect: () => [
+        isA<DisclosureSuccess>().having(
+          (it) => it.style,
+          'regular type success',
+          SuccessStyle.regular,
+        ),
+      ],
+    );
+
+    blocTest(
+      'when the user confirms the pin, the bloc emits DisclosureSuccess (login)',
+      setUp: () {
+        when(getMostRecentWalletEventUseCase.invoke()).thenAnswer((_) async => WalletMockData.disclosureEvent);
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .sameDevice, type: .login));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosurePinConfirmed(returnUrl: 'https://example.org'));
+      },
+      skip: 2,
+      expect: () => [
+        isA<DisclosureSuccess>().having((it) => it.style, 'login type success', SuccessStyle.login),
+      ],
+    );
+
+    blocTest(
+      'when the user confirms the pin for same device without a return url, the bloc emits DisclosureSuccess (same device - no return url)',
+      setUp: () {
+        when(getMostRecentWalletEventUseCase.invoke()).thenAnswer((_) async => WalletMockData.disclosureEvent);
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .sameDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosurePinConfirmed(returnUrl: null));
+      },
+      skip: 2,
+      expect: () => [
+        isA<DisclosureSuccess>().having(
+          (it) => it.style,
+          'same_device_no_return_url type success',
+          SuccessStyle.sameDeviceNoReturnUrl,
+        ),
+      ],
+    );
+
+    blocTest(
+      'when the user confirms the pin, the bloc emits DisclosureSuccess (close_proximity)',
+      setUp: () {
+        when(getMostRecentWalletEventUseCase.invoke()).thenAnswer((_) async => WalletMockData.disclosureEvent);
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .closeProximity, type: .login));
+        });
+        when(observeCloseProximityConnectionUseCase.invoke()).thenAnswer((_) => const Stream.empty());
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.closeProximity()));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosurePinConfirmed());
+      },
+      expect: () => [
+        isA<DisclosureCheckOrganizationForLogin>(),
+        isA<DisclosureConfirmPin>(),
+        isA<DisclosureSuccess>().having(
+          (it) => it.style,
+          'close proximity type success',
+          SuccessStyle.closeProximity,
+        ),
+      ],
+    );
+
+    blocTest(
+      'when user presses back from the DisclosureConfirmDataAttributes state, the bloc emits DisclosureCheckUrl ',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureUrlApproved());
+        bloc.add(const DisclosureBackPressed());
+      },
+      expect: () => [
+        isA<DisclosureCheckUrl>(),
+        isA<DisclosureConfirmDataAttributes>(),
+        isA<DisclosureCheckUrl>().having(
+          (it) => it.afterBackPressed,
+          'backPressed flag should be true after navigating back',
+          isTrue,
+        ),
+      ],
+    );
+
+    blocTest(
+      'when user presses back from the DisclosureConfirmPin state, the bloc emits DisclosureConfirmDataAttributes ',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureUrlApproved());
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosureBackPressed());
+      },
+      skip: 1,
+      expect: () => [
+        isA<DisclosureConfirmDataAttributes>(),
+        isA<DisclosureConfirmPin>(),
+        isA<DisclosureConfirmDataAttributes>().having(
+          (it) => it.afterBackPressed,
+          'backPressed flag should be true after navigating back',
+          isTrue,
+        ),
+      ],
+    );
+
+    blocTest(
+      'when user presses back from the DisclosureConfirmPin state for login type disclosure, the bloc emits DisclosureCheckOrganizationForLogin',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .sameDevice, type: .login));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosureBackPressed());
+      },
+      expect: () => [
+        isA<DisclosureCheckOrganizationForLogin>(),
+        isA<DisclosureConfirmPin>(),
+        isA<DisclosureCheckOrganizationForLogin>().having(
+          (it) => it.afterBackPressed,
+          'backPressed flag should be true after navigating back',
+          isTrue,
+        ),
+      ],
+    );
+  });
+
+  group('Card Selection', () {
+    blocTest(
+      'card selection state is maintained when navigating back and forth between CheckUrl and ConfirmDataAttributes',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(
+            StartDisclosureReadyToDisclose(
+              relyingParty: WalletMockData.organization,
+              requestPurpose: 'testPurpose'.untranslated,
+              sessionType: DisclosureSessionType.crossDevice,
+              type: DisclosureType.regular,
+              sharedDataWithOrganizationBefore: false,
+              cardRequests: [
+                WalletMockData.discloseCardRequestSingleCard,
+                WalletMockData.discloseCardRequestMultiCard,
+              ],
+            ),
+          );
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        // 1. Start session → CheckUrl
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        await Future.delayed(const Duration(milliseconds: 25));
+
+        // 2. Approve URL → ConfirmDataAttributes (initial state with default selection)
+        bloc.add(const DisclosureUrlApproved());
+        await Future.delayed(const Duration(milliseconds: 25));
+
+        // 3. Update selection of "disclosureCardRequestMultiCard"
+        expect(
+          WalletMockData.discloseCardRequestMultiCard.hasAlternatives,
+          isTrue,
+          reason: 'Sanity check to verify we are working with compatible request',
+        );
+        bloc.add(
+          DisclosureAlternativeCardSelected(
+            WalletMockData.discloseCardRequestMultiCard.select(
+              WalletMockData.discloseCardRequestMultiCard.alternatives.first,
+            ),
           ),
         );
-      });
-    },
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [isA<DisclosureCheckUrl>()],
-  );
+        await Future.delayed(const Duration(milliseconds: 25));
 
-  blocTest(
-    'when startDisclosure returns StartDisclosureReadyToDisclose for login type disclosure, the bloc emits DisclosureCheckOrganizationForLogin',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.sameDevice,
-            type: DisclosureType.login,
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-            cardRequests: [],
+        // 4. Press back → CheckUrl
+        bloc.add(const DisclosureBackPressed());
+        await Future.delayed(const Duration(milliseconds: 25));
+
+        // 5. Approve URL again → ConfirmDataAttributes (should preserve selection)
+        bloc.add(const DisclosureUrlApproved());
+      },
+      expect: () {
+        return [
+          isA<DisclosureCheckUrl>(),
+          isA<DisclosureConfirmDataAttributes>().having(
+            (state) => state.cardRequests.selectedIndices,
+            'initial selection is all 0',
+            [0, 0],
+          ),
+          isA<DisclosureConfirmDataAttributes>().having(
+            (state) => state.cardRequests.selectedIndices,
+            'update selection of second request',
+            [0, 1],
+          ),
+          isA<DisclosureCheckUrl>(),
+          isA<DisclosureConfirmDataAttributes>().having(
+            (state) => state.cardRequests.selectedIndices,
+            'updated selection should be maintained',
+            [0, 1],
+          ),
+        ];
+      },
+    );
+
+    blocTest(
+      'card selection state is maintained when navigating back from ConfirmPin to ConfirmDataAttributes',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(
+            StartDisclosureReadyToDisclose(
+              relyingParty: WalletMockData.organization,
+              requestPurpose: 'testPurpose'.untranslated,
+              sessionType: DisclosureSessionType.crossDevice,
+              type: DisclosureType.regular,
+              sharedDataWithOrganizationBefore: false,
+              cardRequests: [
+                WalletMockData.discloseCardRequestSingleCard,
+                WalletMockData.discloseCardRequestMultiCard,
+              ],
+            ),
+          );
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        // 1. Start session → CheckUrl
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        await Future.delayed(const Duration(milliseconds: 25));
+
+        // 2. Approve URL → ConfirmDataAttributes (initial state with default selection)
+        bloc.add(const DisclosureUrlApproved());
+        await Future.delayed(const Duration(milliseconds: 25));
+
+        // 3. Update selection of "disclosureCardRequestMultiCard"
+        expect(
+          WalletMockData.discloseCardRequestMultiCard.hasAlternatives,
+          isTrue,
+          reason: 'Sanity check to verify we are working with compatible request',
+        );
+        bloc.add(
+          DisclosureAlternativeCardSelected(
+            WalletMockData.discloseCardRequestMultiCard.select(
+              WalletMockData.discloseCardRequestMultiCard.alternatives.first,
+            ),
           ),
         );
-      });
-    },
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [isA<DisclosureCheckOrganizationForLogin>()],
-  );
+        await Future.delayed(const Duration(milliseconds: 25));
 
-  blocTest(
-    'when startDisclosure returns StartDisclosureMissingAttributes, the bloc emits DisclosureMissingAttributes',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureMissingAttributes(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            sharedDataWithOrganizationBefore: false,
-            missingAttributes: [],
+        // 4. Proceed to ConfirmPin
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        await Future.delayed(const Duration(milliseconds: 25));
+
+        // 5. Press back → ConfirmDataAttributes
+        bloc.add(const DisclosureBackPressed());
+        await Future.delayed(const Duration(milliseconds: 25));
+      },
+      expect: () {
+        return [
+          isA<DisclosureCheckUrl>(),
+          isA<DisclosureConfirmDataAttributes>().having(
+            (state) => state.cardRequests.selectedIndices,
+            'initial selection is all 0',
+            [0, 0],
           ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [isA<DisclosureMissingAttributes>()],
-  );
-
-  blocTest(
-    'when the user stops disclosure while checking the organization for ready to disclose, the bloc emits DisclosureStopped and cancels disclosure',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
+          isA<DisclosureConfirmDataAttributes>().having(
+            (state) => state.cardRequests.selectedIndices,
+            'update selection of second request',
+            [0, 1],
           ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureStopRequested());
-    },
-    expect: () => [isA<DisclosureCheckUrl>(), isA<DisclosureLoadInProgress>(), isA<DisclosureStopped>()],
-    verify: (bloc) => verify(cancelDisclosureUseCase.invoke()).called(greaterThan(0)),
-  );
-
-  blocTest(
-    'when the user stops disclosure while checking the organization for missing attributes, the bloc emits DisclosureStopped and cancels disclosure',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureMissingAttributes(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            missingAttributes: [],
-            sharedDataWithOrganizationBefore: false,
+          isA<DisclosureConfirmPin>(),
+          isA<DisclosureConfirmDataAttributes>().having(
+            (state) => state.cardRequests.selectedIndices,
+            'updated selection should be maintained after returning from ConfirmPin',
+            [0, 1],
           ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureStopRequested());
-    },
-    expect: () => [
-      isA<DisclosureMissingAttributes>(),
-      isA<DisclosureLoadInProgress>(),
-      isA<DisclosureStopped>(),
-    ],
-    verify: (bloc) => verify(cancelDisclosureUseCase.invoke()).called(greaterThan(0)),
-  );
+        ];
+      },
+    );
+  });
 
-  blocTest(
-    'when the user continues regular disclosure after checking the organization based on StartDisclosureReadyToDisclose, the bloc emits DisclosureConfirmDataAttributes',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
+  group('Stopping & Cancelling', () {
+    blocTest(
+      'when the user stops disclosure while checking the organization for ready to disclose, the bloc emits DisclosureStopped and cancels disclosure',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureStopRequested());
+      },
+      expect: () => [isA<DisclosureCheckUrl>(), isA<DisclosureLoadInProgress>(), isA<DisclosureStopped>()],
+      verify: (bloc) => verify(cancelActiveSessionUseCase.invoke()).called(greaterThan(0)),
+    );
+
+    blocTest(
+      'when BLoC receives DisclosureCancelRequested event, the active session is cancelled',
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureCancelRequested()),
+      verify: (bloc) => verify(cancelActiveSessionUseCase.invoke()).called(1),
+    );
+
+    blocTest(
+      'when the user stops disclosure while checking the organization for missing attributes, the bloc emits DisclosureStopped and cancels disclosure',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(missingAttributesRequest(sessionType: .crossDevice));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureStopRequested());
+      },
+      expect: () => [
+        isA<DisclosureMissingAttributes>(),
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureStopped>(),
+      ],
+      verify: (bloc) => verify(cancelActiveSessionUseCase.invoke()).called(greaterThan(0)),
+    );
+
+    blocTest(
+      'when the user leaves feedback when stopping, the bloc emits DisclosureLeftFeedback and disclosure is cancelled',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.qrScan('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureReportPressed(option: ReportingOption.impersonatingOrganization));
+      },
+      verify: (bloc) => verify(cancelActiveSessionUseCase.invoke()).called(greaterThan(0)),
+      expect: () => [
+        isA<DisclosureCheckUrl>(),
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureLeftFeedback>(),
+      ],
+    );
+
+    blocTest(
+      'when disclosure is stopped and a returnUrl is provided, this returnUrl is available inside the stopped state',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .sameDevice, type: .login));
+        });
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success('http://example.org'));
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureStopRequested());
+      },
+      expect: () => [
+        isA<DisclosureCheckOrganizationForLogin>(),
+        isA<DisclosureLoadInProgress>(),
+        DisclosureStopped(
+          organization: WalletMockData.organization,
+          isLoginFlow: true,
+          returnUrl: 'http://example.org',
+        ),
+      ],
+    );
+  });
+
+  group('Error Handling', () {
+    blocTest(
+      'when startDisclosure fails, emit generic error',
+      setUp: () => when(
+        startDisclosureUseCase.invoke(any),
+      ).thenAnswer((_) async => const Result.error(GenericError('', sourceError: 'test'))),
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureError>(),
+      ],
+    );
+
+    blocTest(
+      'when startDisclosure fails with network issue, emit DisclosureNetworkError(hasInternet: true)',
+      setUp: () => when(
+        startDisclosureUseCase.invoke(any),
+      ).thenAnswer((_) async => const Result.error(NetworkError(hasInternet: true, sourceError: 'test'))),
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      verify: (bloc) {
+        expect(bloc.state, isA<DisclosureError>());
+        expect((bloc.state as DisclosureError).error, isA<NetworkError>());
+        expect((((bloc.state as DisclosureError).error) as NetworkError).hasInternet, isTrue);
+      },
+    );
+
+    blocTest(
+      'when startDisclosure fails with network issue and there is no internet, emit DisclosureNetworkError(hasInternet: false)',
+      setUp: () {
+        when(
+          startDisclosureUseCase.invoke(any),
+        ).thenAnswer((_) async => const Result.error(NetworkError(hasInternet: false, sourceError: 'test')));
+        when(CoreErrorExtension.networkRepository.hasInternet()).thenAnswer((realInvocation) async {
+          await Future.delayed(const Duration(milliseconds: 100));
+          return false;
+        });
+      },
+      wait: const Duration(milliseconds: 150),
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      verify: (bloc) {
+        expect(bloc.state, isA<DisclosureError>());
+        expect((bloc.state as DisclosureError).error, isA<NetworkError>());
+        expect((((bloc.state as DisclosureError).error) as NetworkError).hasInternet, isFalse);
+      },
+    );
+
+    blocTest(
+      'when a network error occurs while the user confirms the pin, the bloc emits DisclosureNetworkError',
+      setUp: () {
+        when(CoreErrorExtension.networkRepository.hasInternet()).thenAnswer((realInvocation) async {
+          await Future.delayed(const Duration(milliseconds: 100));
+          return false;
+        });
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .crossDevice, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        // Give the bloc 25ms to process the previous event
+        await Future.delayed(const Duration(milliseconds: 25));
+        bloc.add(const DisclosureUrlApproved());
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        bloc.add(const DisclosureConfirmPinFailed(error: NetworkError(hasInternet: false, sourceError: 'test')));
+      },
+      wait: const Duration(milliseconds: 150),
+      skip: 4,
+      expect: () => [isA<DisclosureError>().having((it) => it.error, 'Network error', isA<NetworkError>())],
+    );
+
+    blocTest(
+      'when a CoreDisclosureSourceMismatchError(isCrossDevice=true) is thrown, emit the DisclosureExternalScannerError',
+      setUp: () => when(startDisclosureUseCase.invoke(any)).thenAnswer(
+        (_) async => const Result.error(
+          ExternalScannerError(
+            sourceError: CoreDisclosureSourceMismatchError('description', isCrossDevice: true),
           ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureUrlApproved());
-    },
-    expect: () => [isA<DisclosureCheckUrl>(), isA<DisclosureConfirmDataAttributes>()],
-  );
-
-  blocTest(
-    'when the user continues login type disclosure after checking the organization based on StartDisclosureReadyToDisclose, the bloc emits DisclosureConfirmPin',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.sameDevice,
-            type: DisclosureType.login,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-    },
-    expect: () => [
-      isA<DisclosureCheckOrganizationForLogin>(),
-      isA<DisclosureConfirmPin>(),
-    ],
-  );
-
-  blocTest(
-    'when the user opts to share the requested attributes, the bloc emits DisclosureConfirmPin',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureUrlApproved());
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-    },
-    skip: 2,
-    expect: () => [isA<DisclosureConfirmPin>()],
-  );
-
-  blocTest(
-    'when the user confirms the pin, the bloc emits DisclosureSuccess',
-    setUp: () {
-      when(getMostRecentWalletEventUsecase.invoke()).thenAnswer((_) async => WalletMockData.disclosureEvent);
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureUrlApproved());
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-      bloc.add(const DisclosurePinConfirmed());
-    },
-    skip: 3,
-    expect: () => [isA<DisclosureSuccess>()],
-  );
-
-  blocTest(
-    'when the user leaves feedback when stopping, the bloc emits DisclosureLeftFeedback and disclosure is cancelled',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureReportPressed(option: ReportingOption.impersonatingOrganization));
-    },
-    verify: (bloc) => verify(cancelDisclosureUseCase.invoke()).called(greaterThan(0)),
-    expect: () => [
-      isA<DisclosureCheckUrl>(),
-      isA<DisclosureLoadInProgress>(),
-      isA<DisclosureLeftFeedback>(),
-    ],
-  );
-
-  blocTest(
-    'when user presses back from the DisclosureConfirmDataAttributes state, the bloc emits DisclosureCheckOrganization ',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureUrlApproved());
-      bloc.add(const DisclosureBackPressed());
-    },
-    expect: () => [
-      isA<DisclosureCheckUrl>(),
-      isA<DisclosureConfirmDataAttributes>(),
-      isA<DisclosureCheckUrl>(),
-    ],
-  );
-
-  blocTest(
-    'when a network error occurs while the user confirms the pin, the bloc emits DisclosureNetworkError',
-    setUp: () {
-      when(CoreErrorExtension.networkRepository.hasInternet()).thenAnswer((realInvocation) async {
-        await Future.delayed(const Duration(milliseconds: 100));
-        return false;
-      });
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureUrlApproved());
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-      bloc.add(const DisclosureConfirmPinFailed(error: NetworkError(hasInternet: false, sourceError: 'test')));
-    },
-    wait: const Duration(milliseconds: 150),
-    skip: 4,
-    expect: () => [isA<DisclosureNetworkError>()],
-  );
-
-  blocTest(
-    'when user presses back from the DisclosureConfirmPin state, the bloc emits DisclosureConfirmDataAttributes ',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureUrlApproved());
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-      bloc.add(const DisclosureBackPressed());
-    },
-    skip: 1,
-    expect: () => [
-      isA<DisclosureConfirmDataAttributes>(),
-      isA<DisclosureConfirmPin>(),
-      isA<DisclosureConfirmDataAttributes>(),
-    ],
-  );
-
-  blocTest(
-    'when user presses back from the DisclosureConfirmPin state for login type disclosure, the bloc emits DisclosureCheckOrganizationForLogin',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.sameDevice,
-            type: DisclosureType.login,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      // Give the bloc 25ms to process the previous event
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-      bloc.add(const DisclosureBackPressed());
-    },
-    skip: 1,
-    expect: () => [
-      isA<DisclosureConfirmPin>(),
-      isA<DisclosureCheckOrganizationForLogin>(),
-    ],
-  );
-
-  blocTest(
-    'startDisclosure is called with isQrCode set to true',
-    setUp: () => when(
-      startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode')),
-    ).thenAnswer((_) async => const Result.error(GenericError('', sourceError: 'test'))),
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('http://true', isQrCode: true)),
-    verify: (_) => verify(startDisclosureUseCase.invoke('http://true', isQrCode: true)).called(1),
-  );
-
-  blocTest(
-    'startDisclosure is called with isQrCode set to false',
-    setUp: () => when(
-      startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode')),
-    ).thenAnswer((_) async => const Result.error(GenericError('', sourceError: 'test'))),
-    build: create,
-    act: (bloc) => bloc.add(const DisclosureSessionStarted('http://false', isQrCode: false)),
-    verify: (_) => verify(startDisclosureUseCase.invoke('http://false', isQrCode: false)).called(1),
-  );
-
-  blocTest(
-    'when a CoreDisclosureSourceMismatchError(isCrossDevice=true) is thrown, emit the DisclosureExternalScannerError',
-    setUp: () => when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer(
-      (_) async => const Result.error(
-        ExternalScannerError(
-          sourceError: CoreDisclosureSourceMismatchError('description', isCrossDevice: true),
         ),
       ),
-    ),
-    build: create,
-    act: (bloc) async => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [
-      isA<DisclosureLoadInProgress>(),
-      isA<DisclosureExternalScannerError>(),
-    ],
-  );
+      build: create,
+      act: (bloc) async => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureExternalScannerError>(),
+      ],
+    );
 
-  blocTest(
-    'when a CoreExpiredSessionError is thrown when starting disclosure, emit DisclosureSessionExpired',
-    setUp: () => when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer(
-      (_) async => const Result.error(
-        SessionError(state: SessionState.expired, canRetry: true, sourceError: 'test'),
-      ),
-    ),
-    build: create,
-    act: (bloc) async => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [
-      isA<DisclosureLoadInProgress>(),
-      isA<DisclosureSessionExpired>()
-          .having((error) => error.canRetry, 'canRetry', true)
-          .having((error) => error.isCrossDevice, 'isCrossDevice', false),
-    ],
-  );
-
-  blocTest(
-    'when a CoreExpiredSessionError is thrown when accepting disclosure, emit DisclosureSessionExpired',
-    setUp: () => when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer(
-      (_) async => Result.success(
-        StartDisclosureReadyToDisclose(
-          relyingParty: WalletMockData.organization,
-          originUrl: 'originUrl',
-          requestPurpose: ''.untranslated,
-          sessionType: DisclosureSessionType.crossDevice,
-          type: DisclosureType.regular,
-          cardRequests: [],
-          policy: WalletMockData.policy,
-          sharedDataWithOrganizationBefore: false,
+    blocTest(
+      'when a CoreExpiredSessionError is thrown when starting disclosure, emit DisclosureSessionExpired',
+      setUp: () => when(startDisclosureUseCase.invoke(any)).thenAnswer(
+        (_) async => const Result.error(
+          SessionError(state: SessionState.expired, canRetry: true, sourceError: 'test'),
         ),
       ),
-    ),
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      await Future.delayed(const Duration(milliseconds: 20));
-      bloc.add(const DisclosureUrlApproved());
-      await Future.delayed(const Duration(milliseconds: 20));
-      bloc.add(
-        const DisclosureConfirmPinFailed(
+      build: create,
+      act: (bloc) async => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureSessionExpired>()
+            .having((error) => error.canRetry, 'canRetry', true)
+            .having((error) => error.isCrossDevice, 'isCrossDevice', false),
+      ],
+    );
+
+    blocTest(
+      'when a CoreExpiredSessionError is thrown when accepting disclosure, emit DisclosureSessionExpired',
+      setUp: () => when(startDisclosureUseCase.invoke(any)).thenAnswer(
+        (_) async => Result.success(emptyRequest(sessionType: .crossDevice, type: .regular)),
+      ),
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        await Future.delayed(const Duration(milliseconds: 20));
+        bloc.add(const DisclosureUrlApproved());
+        await Future.delayed(const Duration(milliseconds: 20));
+        bloc.add(
+          const DisclosureConfirmPinFailed(
+            error: SessionError(
+              state: SessionState.expired,
+              canRetry: false,
+              crossDevice: SessionType.sameDevice,
+              sourceError: 'test',
+            ),
+          ),
+        );
+      },
+      expect: () => [
+        isA<DisclosureCheckUrl>(),
+        isA<DisclosureConfirmDataAttributes>(),
+        isA<DisclosureLoadInProgress>(),
+        const DisclosureSessionExpired(
+          canRetry: false,
+          isCrossDevice: true,
           error: SessionError(
             state: SessionState.expired,
             canRetry: false,
@@ -586,279 +766,277 @@ void main() {
             sourceError: 'test',
           ),
         ),
-      );
-    },
-    expect: () => [
-      isA<DisclosureCheckUrl>(),
-      isA<DisclosureConfirmDataAttributes>(),
-      isA<DisclosureLoadInProgress>(),
-      const DisclosureSessionExpired(
-        canRetry: false,
-        isCrossDevice: true,
-        error: SessionError(
-          state: SessionState.expired,
-          canRetry: false,
-          crossDevice: SessionType.sameDevice,
-          sourceError: 'test',
-        ),
-      ),
-    ],
-  );
+      ],
+    );
 
-  blocTest(
-    'when a CoreGenericError with a returnUrl is thrown, the bloc emits a GenericError that contains this returnUrl',
-    setUp: () {
-      return when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer(
-        (_) async => const Result.error(
-          GenericError('', redirectUrl: 'https://example.org', sourceError: 'test'),
-        ),
-      );
-    },
-    build: create,
-    act: (bloc) async => bloc.add(const DisclosureSessionStarted('')),
-    expect: () => [
-      isA<DisclosureLoadInProgress>(),
-      isA<DisclosureGenericError>().having(
-        (error) => error.returnUrl,
-        'return url matches that of the error',
-        'https://example.org',
-      ),
-    ],
-  );
-
-  blocTest(
-    'when disclosure is stopped and a returnUrl is provided, this returnUrl is available inside the stopped state',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'requestPurpose'.untranslated,
-            sessionType: DisclosureSessionType.sameDevice,
-            type: DisclosureType.login,
-            cardRequests: [],
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
+    blocTest(
+      'when a CoreGenericError with a returnUrl is thrown, the bloc emits a GenericError that contains this returnUrl',
+      setUp: () {
+        return when(startDisclosureUseCase.invoke(any)).thenAnswer(
+          (_) async => const Result.error(
+            GenericError('', redirectUrl: 'https://example.org', sourceError: 'test'),
           ),
         );
-      });
-      when(cancelDisclosureUseCase.invoke()).thenAnswer((_) async => const Result.success('http://example.org'));
-    },
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      await Future.delayed(const Duration(milliseconds: 25));
-      bloc.add(const DisclosureStopRequested());
-    },
-    expect: () => [
-      isA<DisclosureCheckOrganizationForLogin>(),
-      isA<DisclosureLoadInProgress>(),
-      DisclosureStopped(
-        organization: WalletMockData.organization,
-        isLoginFlow: true,
-        returnUrl: 'http://example.org',
-      ),
-    ],
-  );
-
-  blocTest(
-    'when a CoreSessionCancelledError is thrown when accepting disclosure, emit DisclosureCancelledSessionError',
-    setUp: () => when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer(
-      (_) async => Result.success(
-        StartDisclosureReadyToDisclose(
-          relyingParty: WalletMockData.organization,
-          originUrl: 'originUrl',
-          requestPurpose: ''.untranslated,
-          sessionType: DisclosureSessionType.crossDevice,
-          type: DisclosureType.regular,
-          cardRequests: [],
-          policy: WalletMockData.policy,
-          sharedDataWithOrganizationBefore: false,
+      },
+      build: create,
+      act: (bloc) async => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureError>().having(
+          (error) => error.returnUrl,
+          'return url matches that of the error',
+          'https://example.org',
         ),
+      ],
+    );
+
+    blocTest(
+      'when a CoreSessionCancelledError is thrown when accepting disclosure, emit DisclosureCancelledSessionError',
+      setUp: () => when(startDisclosureUseCase.invoke(any)).thenAnswer(
+        (_) async => Result.success(emptyRequest(sessionType: .crossDevice, type: .regular)),
       ),
-    ),
-    build: create,
-    act: (bloc) async {
-      bloc.add(const DisclosureSessionStarted(''));
-      await Future.delayed(const Duration(milliseconds: 20));
-      bloc.add(const DisclosureUrlApproved());
-      await Future.delayed(const Duration(milliseconds: 20));
-      bloc.add(
-        const DisclosureConfirmPinFailed(
-          error: SessionError(
-            state: SessionState.cancelled,
-            crossDevice: SessionType.crossDevice,
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        await Future.delayed(const Duration(milliseconds: 20));
+        bloc.add(const DisclosureUrlApproved());
+        await Future.delayed(const Duration(milliseconds: 20));
+        bloc.add(
+          const DisclosureConfirmPinFailed(
+            error: SessionError(
+              state: SessionState.cancelled,
+              crossDevice: SessionType.crossDevice,
+              sourceError: 'test',
+            ),
+          ),
+        );
+      },
+      expect: () => [
+        isA<DisclosureCheckUrl>(),
+        isA<DisclosureConfirmDataAttributes>(),
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureError>().having(
+          (it) => it.error,
+          'Has correct SessionError',
+          equals(
+            const SessionError(
+              state: SessionState.cancelled,
+              crossDevice: SessionType.crossDevice,
+              sourceError: 'test',
+            ),
+          ),
+        ),
+      ],
+    );
+
+    blocTest(
+      'when a RelyingPartyError is thrown, emit DisclosureRelyingPartyError',
+      setUp: () => when(startDisclosureUseCase.invoke(any)).thenAnswer(
+        (_) async => const Result.error(
+          RelyingPartyError(
+            organizationName: 'organizationName',
             sourceError: 'test',
           ),
         ),
-      );
-    },
-    expect: () => [
-      isA<DisclosureCheckUrl>(),
-      isA<DisclosureConfirmDataAttributes>(),
-      isA<DisclosureLoadInProgress>(),
-      DisclosureSessionCancelled(
-        error: const SessionError(
-          state: SessionState.cancelled,
-          crossDevice: SessionType.crossDevice,
-          sourceError: 'test',
-        ),
-        relyingParty: WalletMockData.organization,
       ),
-    ],
-  );
+      build: create,
+      act: (bloc) async => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureError>().having((it) => it.error, 'RP Error', isA<RelyingPartyError>()),
+      ],
+    );
+  });
 
-  blocTest(
-    'card selection state is maintained when navigating back and forth between CheckUrl and ConfirmDataAttributes',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'testPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-            cardRequests: [
-              WalletMockData.discloseCardRequestSingleCard,
-              WalletMockData.discloseCardRequestMultiCard,
-            ],
+  group('Close Proximity', () {
+    late StreamController<BleConnectionEvent> bleEventController;
+
+    setUp(() {
+      bleEventController = StreamController<BleConnectionEvent>.broadcast();
+      when(observeCloseProximityConnectionUseCase.invoke()).thenAnswer((_) => bleEventController.stream);
+    });
+
+    tearDown(() {
+      bleEventController.close();
+    });
+
+    blocTest(
+      'when session started with closeProximity, it observes ble events and emits DisclosureConfirmDataAttributes',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(
+            StartDisclosureReadyToDisclose(
+              relyingParty: WalletMockData.organization,
+              requestPurpose: 'requestPurpose'.untranslated,
+              sessionType: DisclosureSessionType.closeProximity,
+              type: DisclosureType.regular,
+              cardRequests: [],
+              sharedDataWithOrganizationBefore: false,
+            ),
+          );
+        });
+      },
+      build: create,
+      act: (bloc) => bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink(''))),
+      expect: () => [isA<DisclosureConfirmDataAttributes>()],
+      verify: (bloc) => verify(observeCloseProximityConnectionUseCase.invoke()).called(1),
+    );
+
+    blocTest(
+      'when ble disconnected, emits DisclosureCloseProximityDisconnected',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(
+            StartDisclosureReadyToDisclose(
+              relyingParty: WalletMockData.organization,
+              requestPurpose: 'requestPurpose'.untranslated,
+              sessionType: DisclosureSessionType.closeProximity,
+              type: DisclosureType.regular,
+              cardRequests: [],
+              sharedDataWithOrganizationBefore: false,
+            ),
+          );
+        });
+        when(cancelActiveSessionUseCase.invoke()).thenAnswer((_) async => const Result.success(''));
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        await Future.delayed(Duration.zero);
+        bleEventController.add(const BleDisconnected());
+      },
+      expect: () => [
+        isA<DisclosureConfirmDataAttributes>(),
+        const DisclosureCloseProximityDisconnected(isLoginFlow: false),
+      ],
+      verify: (bloc) => verify(cancelActiveSessionUseCase.invoke()).called(1),
+    );
+
+    blocTest(
+      'when ble error occurs, handles as application error',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(
+            StartDisclosureReadyToDisclose(
+              relyingParty: WalletMockData.organization,
+              requestPurpose: 'requestPurpose'.untranslated,
+              sessionType: DisclosureSessionType.closeProximity,
+              type: DisclosureType.regular,
+              cardRequests: [],
+              sharedDataWithOrganizationBefore: false,
+            ),
+          );
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.deeplink('')));
+        await Future.delayed(Duration.zero);
+        bleEventController.add(const BleError(CoreGenericError('test')));
+      },
+      expect: () => [
+        isA<DisclosureConfirmDataAttributes>(),
+        isA<DisclosureLoadInProgress>(),
+        isA<DisclosureError>(),
+      ],
+    );
+
+    blocTest(
+      'when close proximity disconnected error occurs, emits DisclosureCloseProximityDisconnected',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .closeProximity, type: .regular));
+        });
+      },
+      build: create,
+      act: (bloc) async {
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.closeProximity()));
+        await Future.delayed(Duration.zero);
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        await Future.delayed(Duration.zero);
+        bloc.add(
+          const DisclosureConfirmPinFailed(
+            error: CloseProximityDisconnectedError(
+              sourceError: CoreCloseProximityDisconnectedError('disconnected'),
+            ),
           ),
         );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      // 1. Start session → CheckUrl
-      bloc.add(const DisclosureSessionStarted(''));
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 2. Approve URL → ConfirmDataAttributes (initial state with default selection)
-      bloc.add(const DisclosureUrlApproved());
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 3. Update selection of "disclosureCardRequestMultiCard"
-      expect(
-        WalletMockData.discloseCardRequestMultiCard.hasAlternatives,
-        isTrue,
-        reason: 'Sanity check to verify we are working with compatible request',
-      );
-      bloc.add(
-        DisclosureAlternativeCardSelected(
-          WalletMockData.discloseCardRequestMultiCard.select(
-            WalletMockData.discloseCardRequestMultiCard.alternatives.first,
-          ),
-        ),
-      );
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 4. Press back → CheckUrl
-      bloc.add(const DisclosureBackPressed());
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 5. Approve URL again → ConfirmDataAttributes (should preserve selection)
-      bloc.add(const DisclosureUrlApproved());
-    },
-    expect: () {
-      return [
-        isA<DisclosureCheckUrl>(),
-        isA<DisclosureConfirmDataAttributes>().having(
-          (state) => state.cardRequests.selectedIndices,
-          'initial selection is all 0',
-          [0, 0],
-        ),
-        isA<DisclosureConfirmDataAttributes>().having(
-          (state) => state.cardRequests.selectedIndices,
-          'update selection of second request',
-          [0, 1],
-        ),
-        isA<DisclosureCheckUrl>(),
-        isA<DisclosureConfirmDataAttributes>().having(
-          (state) => state.cardRequests.selectedIndices,
-          'updated selection should be maintained',
-          [0, 1],
-        ),
-      ];
-    },
-  );
-
-  blocTest(
-    'card selection state is maintained when navigating back from ConfirmPin to ConfirmDataAttributes',
-    setUp: () {
-      when(startDisclosureUseCase.invoke(any, isQrCode: anyNamed('isQrCode'))).thenAnswer((_) async {
-        return Result.success(
-          StartDisclosureReadyToDisclose(
-            relyingParty: WalletMockData.organization,
-            originUrl: 'http://origin.org',
-            requestPurpose: 'testPurpose'.untranslated,
-            sessionType: DisclosureSessionType.crossDevice,
-            type: DisclosureType.regular,
-            policy: WalletMockData.policy,
-            sharedDataWithOrganizationBefore: false,
-            cardRequests: [
-              WalletMockData.discloseCardRequestSingleCard,
-              WalletMockData.discloseCardRequestMultiCard,
-            ],
-          ),
-        );
-      });
-    },
-    build: create,
-    act: (bloc) async {
-      // 1. Start session → CheckUrl
-      bloc.add(const DisclosureSessionStarted(''));
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 2. Approve URL → ConfirmDataAttributes (initial state with default selection)
-      bloc.add(const DisclosureUrlApproved());
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 3. Update selection of "disclosureCardRequestMultiCard"
-      expect(
-        WalletMockData.discloseCardRequestMultiCard.hasAlternatives,
-        isTrue,
-        reason: 'Sanity check to verify we are working with compatible request',
-      );
-      bloc.add(
-        DisclosureAlternativeCardSelected(
-          WalletMockData.discloseCardRequestMultiCard.select(
-            WalletMockData.discloseCardRequestMultiCard.alternatives.first,
-          ),
-        ),
-      );
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 4. Proceed to ConfirmPin
-      bloc.add(const DisclosureShareRequestedCardsApproved());
-      await Future.delayed(const Duration(milliseconds: 25));
-
-      // 5. Press back → ConfirmDataAttributes
-      bloc.add(const DisclosureBackPressed());
-      await Future.delayed(const Duration(milliseconds: 25));
-    },
-    expect: () {
-      return [
-        isA<DisclosureCheckUrl>(),
-        isA<DisclosureConfirmDataAttributes>().having(
-          (state) => state.cardRequests.selectedIndices,
-          'initial selection is all 0',
-          [0, 0],
-        ),
-        isA<DisclosureConfirmDataAttributes>().having(
-          (state) => state.cardRequests.selectedIndices,
-          'update selection of second request',
-          [0, 1],
-        ),
+      },
+      expect: () => [
+        isA<DisclosureConfirmDataAttributes>(),
         isA<DisclosureConfirmPin>(),
-        isA<DisclosureConfirmDataAttributes>().having(
-          (state) => state.cardRequests.selectedIndices,
-          'updated selection should be maintained after returning from ConfirmPin',
-          [0, 1],
-        ),
-      ];
-    },
-  );
+        const DisclosureCloseProximityDisconnected(isLoginFlow: false),
+      ],
+      verify: (bloc) => verifyNever(cancelActiveSessionUseCase.invoke()),
+    );
+
+    blocTest(
+      'proximity events are ignored when state is DisclosureSuccess',
+      build: create,
+      seed: () => DisclosureSuccess(relyingParty: WalletMockData.organization, isCrossDevice: false),
+      act: (bloc) => bloc.add(const DisclosureCloseProximityEventReceived(BleDisconnected())),
+      expect: () => [],
+      verify: (bloc) => verifyNever(cancelActiveSessionUseCase.invoke()),
+    );
+
+    blocTest(
+      'proximity events are ignored when state is an ErrorState',
+      build: create,
+      seed: () => const DisclosureError(error: GenericError('test', sourceError: 'test')),
+      act: (bloc) => bloc.add(const DisclosureCloseProximityEventReceived(BleDisconnected())),
+      expect: () => [],
+      verify: (bloc) => verifyNever(cancelActiveSessionUseCase.invoke()),
+    );
+
+    blocTest(
+      'proximity events are ignored after pin validation started',
+      setUp: () {
+        when(startDisclosureUseCase.invoke(any)).thenAnswer((_) async {
+          return Result.success(emptyRequest(sessionType: .closeProximity, type: .regular));
+        });
+        when(getMostRecentWalletEventUseCase.invoke()).thenAnswer((_) async => WalletMockData.disclosureEvent);
+      },
+      build: create,
+      act: (bloc) async {
+        // Trigger session start
+        bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.closeProximity()));
+        await Future.delayed(Duration.zero);
+        // Move to confirm pin page
+        bloc.add(const DisclosureShareRequestedCardsApproved());
+        await Future.delayed(Duration.zero);
+        // Pretend user has entered a PIN
+        bloc.add(const DisclosurePinValidationStarted());
+        await Future.delayed(Duration.zero);
+        // Trigger a disconnect event (should be ignored as user already entered PIN)
+        bleEventController.add(const BleDisconnected());
+        await Future.delayed(Duration.zero);
+        // Notify BLoC about pin confirmation, triggering final success state
+        bloc.add(const DisclosurePinConfirmed());
+      },
+      expect: () => [isA<DisclosureConfirmDataAttributes>(), isA<DisclosureConfirmPin>(), isA<DisclosureSuccess>()],
+      verify: (bloc) => verifyNever(cancelActiveSessionUseCase.invoke()),
+    );
+  });
 }
+
+// Helper method, creates an empty StartDisclosureReadyToDisclose event
+StartDisclosureReadyToDisclose emptyRequest({
+  required DisclosureSessionType sessionType,
+  required DisclosureType type,
+}) => StartDisclosureReadyToDisclose(
+  relyingParty: WalletMockData.organization,
+  requestPurpose: 'requestPurpose'.untranslated,
+  sessionType: sessionType,
+  type: type,
+  sharedDataWithOrganizationBefore: false,
+  cardRequests: [],
+);
+
+// Helper method, creates an empty StartDisclosureMissingAttributes event
+StartDisclosureMissingAttributes missingAttributesRequest({
+  required DisclosureSessionType sessionType,
+}) => StartDisclosureMissingAttributes(
+  relyingParty: WalletMockData.organization,
+  sessionType: sessionType,
+  missingAttributes: [],
+);

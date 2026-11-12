@@ -8,8 +8,8 @@ import '../../data/service/announcement_service.dart';
 import '../../navigation/wallet_routes.dart';
 import '../../util/extension/build_context_extension.dart';
 import '../../util/extension/string_extension.dart';
+import '../../util/launch_util.dart';
 import '../../wallet_constants.dart';
-import '../common/screen/placeholder_screen.dart';
 import '../common/widget/button/bottom_back_button.dart';
 import '../common/widget/button/icon/back_icon_button.dart';
 import '../common/widget/button/secondary_button.dart';
@@ -68,7 +68,11 @@ class MenuScreen extends StatelessWidget {
     // to the 'logout' button for example. This might be fixable by using a combination of [SliverEnsureSemantics]
     // and CustomScrollViews with fixedScrollExtend, but seeing as this is a relatively short list, this seems like
     // the cleaner and (much) simpler solution. As fixedScrollExtend might also conflict with font scaling.
+    //
+    // Items are spread directly into this ListView, not a nested (shrinkWrap) one: a nested viewport gives
+    // off-screen items stale semantic rects that break VoiceOver focus/activation.
     return ListView(
+      scrollCacheExtent: context.screenReaderListCacheExtent,
       children: [
         Padding(
           padding: kDefaultTitlePadding,
@@ -76,13 +80,10 @@ class MenuScreen extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         const Divider(),
-        ListView.separated(
-          physics: const NeverScrollableScrollPhysics(),
-          itemBuilder: (c, i) => menuItems[i],
-          separatorBuilder: (c, i) => const Divider(),
-          itemCount: menuItems.length,
-          shrinkWrap: true,
-        ),
+        for (int i = 0; i < menuItems.length; i++) ...[
+          if (i > 0) const Divider(),
+          menuItems[i],
+        ],
         const Divider(),
         const SizedBox(height: 40),
         Center(
@@ -102,19 +103,14 @@ class MenuScreen extends StatelessWidget {
   List<Widget> _buildMenuItems(BuildContext context) {
     final defaultMenuItems = [
       MenuItem(
-        label: Text.rich(context.l10n.menuScreenTourCta.toTextSpan(context)),
-        leftIcon: const Icon(Icons.play_arrow),
-        onPressed: () => Navigator.restorablePushNamed(context, WalletRoutes.tourOverviewRoute),
-      ),
-      MenuItem(
         label: Text.rich(context.l10n.menuScreenHelpCta.toTextSpan(context)),
         leftIcon: const Icon(Icons.help_outline),
-        onPressed: () => Navigator.restorablePushNamed(context, WalletRoutes.needHelpRoute),
+        onPressed: () => Navigator.restorablePushNamed(context, WalletRoutes.helpOverviewRoute),
       ),
       MenuItem(
         label: Text.rich(context.l10n.menuScreenScanQrCta.toTextSpan(context)),
         leftIcon: const Icon(Icons.qr_code_rounded),
-        onPressed: () => Navigator.restorablePushNamed(context, WalletRoutes.qrRoute),
+        onPressed: () => Navigator.restorablePushNamed(context, WalletRoutes.qrScanRoute),
       ),
       MenuItem(
         label: Text.rich(context.l10n.menuScreenHistoryCta.toTextSpan(context)),
@@ -129,7 +125,8 @@ class MenuScreen extends StatelessWidget {
       MenuItem(
         label: Text.rich(context.l10n.menuScreenFeedbackCta.toTextSpan(context)),
         leftIcon: const Icon(Icons.comment_outlined),
-        onPressed: () => PlaceholderScreen.showGeneric(context),
+        rightIcon: const Icon(Icons.north_east_outlined),
+        onPressed: () => launchUrlStringCatching(_feedbackFormUrl(context), mode: LaunchMode.externalApplication),
       ),
       MenuItem(
         label: Text.rich(context.l10n.menuScreenAboutCta.toTextSpan(context)),
@@ -145,15 +142,17 @@ class MenuScreen extends StatelessWidget {
       );
       defaultMenuItems.add(designSystemItem);
     }
-    if (Environment.demoRelyingPartyUrl.isNotEmpty) {
+    if (Environment.demoIndexUrl.isNotEmpty) {
       final browserTestItem = MenuItem(
         label: Text.rich(context.l10n.menuScreenBrowserCta.toTextSpan(context)),
-        leftIcon: const Icon(Icons.web),
-        onPressed: () => launchUrlString(Environment.demoRelyingPartyUrl, mode: LaunchMode.externalApplication),
-        subtitle: Text('Open url: ${Environment.demoRelyingPartyUrl}'),
+        leftIcon: const Icon(Icons.devices_rounded),
+        onPressed: () => launchUrlString(Environment.demoIndexUrl, mode: LaunchMode.externalApplication),
       );
       defaultMenuItems.add(browserTestItem);
     }
     return defaultMenuItems;
   }
+
+  String _feedbackFormUrl(BuildContext context) =>
+      context.activeLocale.languageCode == 'nl' ? kFeedbackFormUrlNl : kFeedbackFormUrlEn;
 }

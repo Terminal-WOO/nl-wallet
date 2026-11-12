@@ -1,23 +1,31 @@
-use uuid::Uuid;
-
 use attestation_data::attributes::Attributes;
-use attestation_data::auth::Organization;
-use attestation_data::auth::issuer_auth::IssuerRegistration;
 use attestation_data::credential_payload::PreviewableCredentialPayload;
+use attestation_data::organization::Organization;
+use attestation_data::validity::ValidityWindow;
 use attestation_types::claim_path::ClaimPath;
-use crypto::x509::BorrowingCertificateExtension;
+use attestation_types::credential_format::Format;
+use crypto::x509::KeyIdentifier;
 use mdoc::IssuerSigned;
 use mdoc::holder::Mdoc;
 use mdoc::holder::disclosure::MissingAttributesError;
 use mdoc::holder::disclosure::PartialMdoc;
+use openid4vc::metadata::issuer_metadata::CredentialMetadata;
+use openid4vc::wallet_issuance::issuer_registration::IssuerRegistration;
+use sd_jwt::claims::ObjectClaims;
+use sd_jwt::sd_jwt::DecodedSdJwt;
 use sd_jwt::sd_jwt::UnsignedSdJwtPresentation;
-use sd_jwt::sd_jwt::VerifiedSdJwt;
 use sd_jwt_vc_metadata::NormalizedTypeMetadata;
+use token_status_list::verification::verifier::RevocationStatus;
+use utils::vec_at_least::NonEmptyIterator;
 use utils::vec_at_least::VecNonEmpty;
+use uuid::Uuid;
 
 use crate::AttestationIdentity;
 use crate::AttestationPresentation;
 use crate::attestation::AttestationPresentationConfig;
+use crate::attestation::AttestationValidity;
+use crate::attestation::metadata::AttestationDisplay;
+use crate::attestation::metadata::PresentationComponents;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PartialAttestationError {
@@ -28,6 +36,13 @@ pub enum PartialAttestationError {
     SdJwt(#[from] sd_jwt::error::ClaimError),
 }
 
+/// A wrapper that associates the WSCD key identifier with a (partial) attestation, regardless of its format.
+#[derive(Debug, Clone)]
+pub struct WithKeyIdentifier<T> {
+    pub key_identifier: String,
+    pub data: T,
+}
+
 /// An attestation that is present in the wallet database, part of [`StoredAttestationCopy`].
 #[derive(Debug, Clone)]
 #[expect(
@@ -35,39 +50,49 @@ pub enum PartialAttestationError {
     reason = "in practice, variants are less different in size"
 )]
 pub enum StoredAttestation {
-    MsoMdoc {
-        mdoc: Mdoc,
-    },
-    SdJwt {
-        // Note that the WSCD key identifier is returned here, in case
-        // (part of) the attestation will be disclosed to a verifier
-        key_identifier: String,
-        sd_jwt: VerifiedSdJwt,
-    },
+    MsoMdoc(Mdoc),
+    SdJwt(DecodedSdJwt),
+}
+
+/// The persisted metadata provided by the issuer that describes a stored attestation, in the form usable by the wallet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredAttestationMetadata {
+    TypeMetadata(NormalizedTypeMetadata),
+    CredentialMetadata(CredentialMetadata),
+}
+
+impl AttestationDisplay for StoredAttestationMetadata {
+    fn into_presentation_components(self) -> PresentationComponents {
+        match self {
+            StoredAttestationMetadata::TypeMetadata(type_metadata) => type_metadata.into_presentation_components(),
+            StoredAttestationMetadata::CredentialMetadata(credential_metadata) => {
+                credential_metadata.into_presentation_components()
+            }
+        }
+    }
 }
 
 /// An instance of an attestation copy as it is contained in the wallet database, which contains both the column id for
 /// that particular copy and the foreign key id for its attestation parent.
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(derive_more::Constructor))]
+#[cfg_attr(test, allow(clippy::allow_attributes, clippy::too_many_arguments))]
 pub struct StoredAttestationCopy {
     pub(super) attestation_id: Uuid,
     pub(super) attestation_copy_id: Uuid,
-    pub(super) attestation: StoredAttestation,
-    pub(super) normalized_metadata: NormalizedTypeMetadata,
+    pub(super) validity_window: ValidityWindow,
+    pub(super) attestation: WithKeyIdentifier<StoredAttestation>,
+    pub(super) metadata: StoredAttestationMetadata,
+    pub(super) revocation_status: Option<RevocationStatus>,
+    pub(super) issuer_registration: IssuerRegistration,
 }
 
 /// A subset of the attributes of an attestation that is present in the wallet database. In this sense it represents a
 /// partial version of [`DisclosedAttestation`].
 #[derive(Debug, Clone)]
 pub enum PartialAttestation {
-    MsoMdoc {
-        partial_mdoc: Box<PartialMdoc>,
-    },
-    SdJwt {
-        key_identifier: String,
-        sd_jwt: Box<UnsignedSdJwtPresentation>,
-    },
+    MsoMdoc(Box<PartialMdoc>),
+    SdJwt(Box<UnsignedSdJwtPresentation>),
 }
 
 /// A version of an attestation in the wallet database which contains a subset of its original attributes and whose
@@ -76,68 +101,103 @@ pub enum PartialAttestation {
 /// user for approval. This type is always derived from [`StoredAttestationCopy`].
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(derive_more::Constructor))]
-pub struct DisclosableAttestation {
+pub struct DisclosableAttestation<P> {
     attestation_copy_id: Uuid,
-    partial_attestation: PartialAttestation,
+    partial_attestation: P,
     presentation: AttestationPresentation,
 }
 
+#[expect(clippy::too_many_arguments, reason = "internal constructor")]
 fn attestation_presentation_from_issuer_signed(
     issuer_signed: IssuerSigned,
     attestation_id: Uuid,
-    normalized_metadata: NormalizedTypeMetadata,
+    attestation_type: String,
+    metadata: impl AttestationDisplay,
     issuer_organization: Box<Organization>,
+    validity: AttestationValidity,
     config: &impl AttestationPresentationConfig,
 ) -> AttestationPresentation {
     AttestationPresentation::create_from_mdoc(
         AttestationIdentity::Fixed { id: attestation_id },
-        normalized_metadata,
+        attestation_type,
+        metadata,
         issuer_organization,
+        validity,
         issuer_signed.into_entries_by_namespace(),
         config,
     )
     .expect("a stored mdoc attestation should convert to AttestationPresentation without errors")
 }
 
+#[expect(clippy::too_many_arguments, reason = "internal constructor")]
 fn attestation_presentation_from_sd_jwt(
-    sd_jwt: &VerifiedSdJwt,
+    decoded_claims: ObjectClaims,
     attestation_id: Uuid,
-    normalized_metadata: NormalizedTypeMetadata,
+    attestation_type: String,
+    metadata: impl AttestationDisplay,
     issuer_organization: Box<Organization>,
+    validity: AttestationValidity,
     config: &impl AttestationPresentationConfig,
 ) -> AttestationPresentation {
     AttestationPresentation::create_from_sd_jwt_claims(
         AttestationIdentity::Fixed { id: attestation_id },
-        normalized_metadata,
+        attestation_type,
+        metadata,
         issuer_organization,
-        sd_jwt
-            .decoded_claims()
-            .expect("a stored SD-JWT attestation should have decoded claims"),
+        validity,
+        decoded_claims,
         config,
     )
     .expect("a stored SD-JWT attestation should convert to AttestationPresentation without errors")
 }
 
 impl StoredAttestation {
-    /// Extract the [`IssuerRegistration`] from a stored attestation by parsing it from the issuer certificate.
-    fn issuer_registration(&self) -> IssuerRegistration {
-        let issuer_certificate = match self {
-            Self::MsoMdoc { mdoc } => &mdoc
-                .issuer_certificate()
-                .expect("a stored mdoc attestation should always contain an issuer certificate"),
-            Self::SdJwt { sd_jwt, .. } => sd_jwt.issuer_certificate(),
-        };
-
-        // Note that this means that an `IssuerRegistration` should ALWAYS be backwards compatible.
-        IssuerRegistration::from_certificate(issuer_certificate)
-            .expect("a stored attestation should always contain a valid IssuerRegistration")
-            .expect("a stored attestation should always contain an IssuerRegistration")
+    /// The type of the attestation, which is contained in the attestation itself and covered by the issuer signature.
+    fn attestation_type(&self) -> &str {
+        match self {
+            Self::MsoMdoc(mdoc) => mdoc.doc_type(),
+            Self::SdJwt(sd_jwt) => &sd_jwt.sd_jwt().claims().vct,
+        }
     }
 }
 
 impl StoredAttestationCopy {
+    fn issuer_organization(&self) -> Box<Organization> {
+        Box::new(self.issuer_registration.organization().clone())
+    }
+
     pub fn attestation_id(&self) -> Uuid {
         self.attestation_id
+    }
+
+    pub fn attestation_copy_id(&self) -> Uuid {
+        self.attestation_copy_id
+    }
+
+    pub fn format(&self) -> Format {
+        match self.attestation.data {
+            StoredAttestation::MsoMdoc(..) => Format::MsoMdoc,
+            StoredAttestation::SdJwt(..) => Format::SdJwt,
+        }
+    }
+
+    /// Returns true if `aki` is empty, and otherwise returns whether any of the attestation's issuer certificates
+    /// match any of the specified AKIs.
+    ///
+    /// (Note that if an AKI is checked against a certificate that has no AKI, this is not a match.)
+    pub fn matches_any_aki(&self, aki: &[KeyIdentifier]) -> bool {
+        let certificate_chain = match &self.attestation.data {
+            StoredAttestation::MsoMdoc(mdoc) => mdoc.issuer_certificate_chain(),
+            StoredAttestation::SdJwt(sd_jwt) => sd_jwt.sd_jwt().issuer_certificate_chain(),
+        };
+
+        aki.is_empty()
+            || aki.iter().any(|key_id| {
+                certificate_chain.nonempty_iter().any(|cert| {
+                    cert.authority_key_id()
+                        .is_some_and(|cert_key_id| cert_key_id == *key_id)
+                })
+            })
     }
 
     /// Checks if the stored attestation matches a list of claim paths.
@@ -145,18 +205,16 @@ impl StoredAttestationCopy {
         &'a self,
         claim_paths: impl IntoIterator<Item = &'b VecNonEmpty<ClaimPath>>,
     ) -> bool {
-        match &self.attestation {
-            StoredAttestation::MsoMdoc { mdoc } => {
-                mdoc.issuer_signed().matches_requested_attributes(claim_paths).is_ok()
-            }
-            StoredAttestation::SdJwt { sd_jwt, .. } => {
+        match &self.attestation.data {
+            StoredAttestation::MsoMdoc(mdoc) => mdoc.issuer_signed().matches_requested_attributes(claim_paths).is_ok(),
+            StoredAttestation::SdJwt(sd_jwt) => {
                 // TODO VerifiedSdJwt should have a way to directly check if paths are present (PVW-4998)
                 // Convert to Attributes to check if the paths are all present.
                 let attributes: Attributes = sd_jwt
                     .decoded_claims()
-                    .expect("a stored SD-JWT attestation should have decoded claims")
+                    .clone()
                     .try_into()
-                    .expect("a stored SD-JWT attestation should have decoded claims");
+                    .expect("a stored SD-JWT attestation should convert to Attributes without errors");
 
                 attributes.has_claim_paths(claim_paths)
             }
@@ -164,34 +222,27 @@ impl StoredAttestationCopy {
     }
 
     pub fn attestation_type(&self) -> &str {
-        self.normalized_metadata.vct()
+        self.attestation.data.attestation_type()
     }
 
     pub fn into_attributes(self) -> Attributes {
-        match self.attestation {
-            StoredAttestation::MsoMdoc { mdoc } => Attributes::from_mdoc_attributes(
-                &self.normalized_metadata,
-                mdoc.into_issuer_signed().into_entries_by_namespace(),
-            )
-            .expect("a stored mdoc attestation should convert to Attributes without errors"),
-            StoredAttestation::SdJwt { sd_jwt, .. } => Attributes::try_from(
-                sd_jwt
-                    .decoded_claims()
-                    .expect("a stored SD-JWT attestation should decode to its claims without errors"),
-            )
-            .expect("a stored SD-JWT attestation should convert to Attributes without errors"),
+        match self.attestation.data {
+            StoredAttestation::MsoMdoc(mdoc) => {
+                Attributes::from_mdoc_attributes(mdoc.into_issuer_signed().into_entries_by_namespace())
+                    .expect("a stored mdoc attestation should convert to Attributes without errors")
+            }
+            StoredAttestation::SdJwt(sd_jwt) => Attributes::try_from(sd_jwt.into_decoded_claims())
+                .expect("a stored SD-JWT attestation should convert to Attributes without errors"),
         }
     }
 
     /// Convert the stored attestation into a [`PreivewableCredentialPayload`], to be able to compare it to a received
     /// preview.
     pub fn into_previewable_credential_payload(self) -> PreviewableCredentialPayload {
-        match self.attestation {
-            StoredAttestation::MsoMdoc { mdoc } => {
-                PreviewableCredentialPayload::from_mdoc(mdoc, &self.normalized_metadata)
-                    .expect("a stored mdoc attestation should convert to CredentialPayload without errors")
-            }
-            StoredAttestation::SdJwt { sd_jwt, .. } => PreviewableCredentialPayload::from_sd_jwt(sd_jwt)
+        match self.attestation.data {
+            StoredAttestation::MsoMdoc(mdoc) => PreviewableCredentialPayload::from_mdoc(mdoc)
+                .expect("a stored mdoc attestation should convert to CredentialPayload without errors"),
+            StoredAttestation::SdJwt(sd_jwt) => PreviewableCredentialPayload::from_sd_jwt(sd_jwt)
                 .expect("a stored SD-JWT attestation should convert to CredentialPayload without errors"),
         }
     }
@@ -199,21 +250,32 @@ impl StoredAttestationCopy {
     /// Convert the stored attestation (which may contain a subset of the attributes)
     /// to an [`AttestationPresentation`] that can be displayed to the user.
     pub fn into_attestation_presentation(self, config: &impl AttestationPresentationConfig) -> AttestationPresentation {
-        let issuer_registration = self.attestation.issuer_registration();
+        let issuer_organization = self.issuer_organization();
+        let attestation_type = self.attestation.data.attestation_type().to_string();
 
-        match self.attestation {
-            StoredAttestation::MsoMdoc { mdoc } => attestation_presentation_from_issuer_signed(
+        match self.attestation.data {
+            StoredAttestation::MsoMdoc(mdoc) => attestation_presentation_from_issuer_signed(
                 mdoc.into_issuer_signed(),
                 self.attestation_id,
-                self.normalized_metadata,
-                issuer_registration.organization,
+                attestation_type,
+                self.metadata,
+                issuer_organization,
+                AttestationValidity {
+                    revocation_status: self.revocation_status,
+                    validity_window: self.validity_window,
+                },
                 config,
             ),
-            StoredAttestation::SdJwt { sd_jwt, .. } => attestation_presentation_from_sd_jwt(
-                &sd_jwt,
+            StoredAttestation::SdJwt(sd_jwt) => attestation_presentation_from_sd_jwt(
+                sd_jwt.into_decoded_claims(),
                 self.attestation_id,
-                self.normalized_metadata,
-                issuer_registration.organization,
+                attestation_type,
+                self.metadata,
+                issuer_organization,
+                AttestationValidity {
+                    revocation_status: self.revocation_status,
+                    validity_window: self.validity_window,
+                },
                 config,
             ),
         }
@@ -226,25 +288,21 @@ impl PartialAttestation {
         claim_paths: impl IntoIterator<Item = &'a VecNonEmpty<ClaimPath>>,
     ) -> Result<Self, PartialAttestationError> {
         let partial_attestation = match attestation {
-            StoredAttestation::MsoMdoc { mdoc } => {
+            StoredAttestation::MsoMdoc(mdoc) => {
                 let partial_mdoc = PartialMdoc::try_new(mdoc, claim_paths)?;
 
-                PartialAttestation::MsoMdoc {
-                    partial_mdoc: Box::new(partial_mdoc),
-                }
+                PartialAttestation::MsoMdoc(Box::new(partial_mdoc))
             }
-            StoredAttestation::SdJwt { key_identifier, sd_jwt } => {
+            StoredAttestation::SdJwt(sd_jwt) => {
                 let unsigned_presentation = claim_paths
                     .into_iter()
-                    .try_fold(sd_jwt.into_presentation_builder(), |builder, claim_path| {
-                        builder.disclose(claim_path)
-                    })?
+                    .try_fold(
+                        sd_jwt.into_sd_jwt().into_presentation_builder(),
+                        |builder, claim_path| builder.disclose(claim_path),
+                    )?
                     .finish();
 
-                PartialAttestation::SdJwt {
-                    key_identifier,
-                    sd_jwt: Box::new(unsigned_presentation),
-                }
+                PartialAttestation::SdJwt(Box::new(unsigned_presentation))
             }
         };
 
@@ -252,58 +310,123 @@ impl PartialAttestation {
     }
 }
 
-impl DisclosableAttestation {
+impl DisclosableAttestation<WithKeyIdentifier<PartialAttestation>> {
     pub fn try_new<'a>(
         attestation_copy: StoredAttestationCopy,
         claim_paths: impl IntoIterator<Item = &'a VecNonEmpty<ClaimPath>>,
         presentation_config: &impl AttestationPresentationConfig,
     ) -> Result<Self, PartialAttestationError> {
+        let issuer_organization = attestation_copy.issuer_organization();
         let StoredAttestationCopy {
             attestation_id,
             attestation_copy_id,
-            attestation,
-            normalized_metadata,
+            attestation:
+                WithKeyIdentifier {
+                    key_identifier,
+                    data: attestation,
+                },
+            metadata,
+            revocation_status,
+            validity_window,
+            ..
         } = attestation_copy;
 
-        let issuer_registration = attestation.issuer_registration();
+        let attestation_type = attestation.attestation_type().to_string();
         let partial_attestation = PartialAttestation::try_new(attestation, claim_paths)?;
 
         let presentation = match &partial_attestation {
-            PartialAttestation::MsoMdoc { partial_mdoc } => attestation_presentation_from_issuer_signed(
+            PartialAttestation::MsoMdoc(partial_mdoc) => attestation_presentation_from_issuer_signed(
                 partial_mdoc.issuer_signed().clone(),
                 attestation_id,
-                normalized_metadata,
-                issuer_registration.organization,
+                attestation_type,
+                metadata,
+                issuer_organization,
+                AttestationValidity {
+                    revocation_status,
+                    validity_window,
+                },
                 presentation_config,
             ),
-            PartialAttestation::SdJwt { sd_jwt, .. } => attestation_presentation_from_sd_jwt(
-                sd_jwt.as_ref().as_ref(),
+            PartialAttestation::SdJwt(sd_jwt) => attestation_presentation_from_sd_jwt(
+                // A presentation discloses a subset of the disclosures of the stored SD-JWT, the claims of which could
+                // be decoded, so its claims can be decoded as well.
+                sd_jwt
+                    .as_ref()
+                    .as_ref()
+                    .decoded_claims()
+                    .expect("a presentation of a stored SD-JWT attestation should have decoded claims"),
                 attestation_id,
-                normalized_metadata,
-                issuer_registration.organization,
+                attestation_type,
+                metadata,
+                issuer_organization,
+                AttestationValidity {
+                    revocation_status,
+                    validity_window,
+                },
                 presentation_config,
             ),
         };
 
         let disclosable_attestation = Self {
             attestation_copy_id,
-            partial_attestation,
+            partial_attestation: WithKeyIdentifier {
+                key_identifier,
+                data: partial_attestation,
+            },
             presentation,
         };
 
         Ok(disclosable_attestation)
     }
+}
 
+impl<P> DisclosableAttestation<P> {
     pub fn attestation_copy_id(&self) -> Uuid {
         self.attestation_copy_id
     }
 
-    pub fn partial_attestation(&self) -> &PartialAttestation {
+    pub fn partial_attestation(&self) -> &P {
         &self.partial_attestation
+    }
+
+    pub fn into_partial_attestation(self) -> P {
+        self.partial_attestation
+    }
+
+    pub(crate) fn try_map_partial_attestation<T, E>(
+        self,
+        map: impl FnOnce(P) -> Result<T, E>,
+    ) -> Result<DisclosableAttestation<T>, E> {
+        Ok(DisclosableAttestation {
+            attestation_copy_id: self.attestation_copy_id,
+            partial_attestation: map(self.partial_attestation)?,
+            presentation: self.presentation,
+        })
     }
 
     pub fn presentation(&self) -> &AttestationPresentation {
         &self.presentation
+    }
+
+    pub fn into_presentation(self) -> AttestationPresentation {
+        self.presentation
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    impl StoredAttestationCopy {
+        pub fn private_key_id(&self) -> &str {
+            self.attestation.key_identifier.as_str()
+        }
+    }
+
+    impl WithKeyIdentifier<PartialAttestation> {
+        pub fn private_key_id(&self) -> &str {
+            self.key_identifier.as_str()
+        }
     }
 }
 
@@ -311,48 +434,54 @@ impl DisclosableAttestation {
 mod tests {
     use std::sync::LazyLock;
 
-    use chrono::Utc;
-    use futures::FutureExt;
-    use itertools::Itertools;
-    use p256::ecdsa::SigningKey;
-    use rand_core::OsRng;
-    use ssri::Integrity;
-    use uuid::Uuid;
-
-    use attestation_data::auth::issuer_auth::IssuerRegistration;
     use attestation_data::credential_payload::CredentialPayload;
     use attestation_data::credential_payload::PreviewableCredentialPayload;
-    use attestation_data::x509::generate::mock::generate_issuer_mock_with_registration;
+    use attestation_data::validity::ValidityWindow;
     use attestation_types::claim_path::ClaimPath;
+    use attestation_types::credential_format::Format;
     use attestation_types::pid_constants::PID_ATTESTATION_TYPE;
     use attestation_types::pid_constants::PID_BSN;
-    use attestation_types::status_claim::StatusClaim;
+    use attestation_types::pid_constants::PID_MDOC_DOCTYPE;
+    use attestation_types::status_claim::StatusListClaim;
+    use chrono::Utc;
+    use crypto::keys::PublicKeyRef;
     use crypto::server_keys::KeyPair;
     use crypto::server_keys::generate::Ca;
+    use futures::FutureExt;
+    use itertools::Itertools;
     use mdoc::holder::Mdoc;
+    use openid4vc::metadata::issuer_metadata::CredentialMetadata;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::Generate;
+    use sd_jwt::sd_jwt::DecodedSdJwt;
     use sd_jwt_vc_metadata::NormalizedTypeMetadata;
     use utils::generator::mock::MockTimeGenerator;
     use utils::vec_at_least::VecNonEmpty;
-
-    use crate::config::default_wallet_config;
+    use utils::vec_nonempty;
+    use uuid::Uuid;
 
     use super::DisclosableAttestation;
+    use super::IssuerRegistration;
     use super::PartialAttestation;
     use super::StoredAttestation;
     use super::StoredAttestationCopy;
+    use super::WithKeyIdentifier;
+    use crate::attestation::AttestationAttribute;
+    use crate::config::test_wallet_config;
+    use crate::storage::StoredAttestationMetadata;
 
     static ATTESTATION_ID: LazyLock<Uuid> = LazyLock::new(Uuid::new_v4);
 
     fn mdoc_stored_attestation_copy(issuer_keypair: &KeyPair) -> (StoredAttestationCopy, VecNonEmpty<ClaimPath>) {
-        let payload_preview = PreviewableCredentialPayload::nl_pid_example(&MockTimeGenerator::default());
+        let payload_preview = PreviewableCredentialPayload::nl_pid_mdoc_example(&MockTimeGenerator::default());
 
-        let holder_privkey = SigningKey::random(&mut OsRng);
+        let holder_privkey = SigningKey::generate();
         let (issuer_signed, mso) = CredentialPayload::from_previewable_credential_payload_unvalidated(
             payload_preview,
             Utc::now(),
-            holder_privkey.verifying_key(),
-            Integrity::from(""),
-            StatusClaim::new_mock(),
+            &PublicKeyRef::from(holder_privkey.verifying_key()),
+            None,
+            Some(StatusListClaim::new_mock()),
         )
         .unwrap()
         .into_signed_mdoc(issuer_keypair)
@@ -360,28 +489,39 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        let mdoc = Mdoc::new_unverified(mso, "mdoc_key_id".to_string(), issuer_signed);
+        let mdoc = Mdoc::new_unverified(mso, issuer_signed);
         let copy = StoredAttestationCopy {
             attestation_id: *ATTESTATION_ID,
             attestation_copy_id: Uuid::new_v4(),
-            attestation: StoredAttestation::MsoMdoc { mdoc },
-            normalized_metadata: NormalizedTypeMetadata::nl_pid_example(),
+            attestation: WithKeyIdentifier {
+                key_identifier: "mdoc_key_id".to_string(),
+                data: StoredAttestation::MsoMdoc(mdoc),
+            },
+            // Derive the Credential Metadata from the Type Metadata that `sd_jwt_stored_attestation_copy()` uses,
+            // so that both formats describe the same claims in the same order.
+            metadata: StoredAttestationMetadata::CredentialMetadata(
+                CredentialMetadata::new_mdoc_example_from_type_metadata(
+                    PID_MDOC_DOCTYPE,
+                    &NormalizedTypeMetadata::nl_pid_example(),
+                ),
+            ),
+            issuer_registration: IssuerRegistration::new_mock(),
+            revocation_status: None,
+            validity_window: ValidityWindow::new_valid_mock(),
         };
 
-        let bsn_path = vec![
-            ClaimPath::SelectByKey(PID_ATTESTATION_TYPE.to_string()),
+        let bsn_path = vec_nonempty![
+            ClaimPath::SelectByKey(PID_MDOC_DOCTYPE.to_string()),
             ClaimPath::SelectByKey(PID_BSN.to_string()),
-        ]
-        .try_into()
-        .unwrap();
+        ];
 
         (copy, bsn_path)
     }
 
     fn sd_jwt_stored_attestation_copy(issuer_keypair: &KeyPair) -> (StoredAttestationCopy, VecNonEmpty<ClaimPath>) {
-        let credential_payload = CredentialPayload::nl_pid_example(&MockTimeGenerator::default());
+        let (credential_payload, _) = CredentialPayload::nl_pid_example(&MockTimeGenerator::default());
         let sd_jwt = credential_payload
-            .into_signed_sd_jwt(&NormalizedTypeMetadata::nl_pid_example(), issuer_keypair)
+            .into_signed_sd_jwt(Some(&NormalizedTypeMetadata::nl_pid_example()), issuer_keypair)
             .now_or_never()
             .unwrap()
             .unwrap();
@@ -389,24 +529,26 @@ mod tests {
         let copy = StoredAttestationCopy {
             attestation_id: *ATTESTATION_ID,
             attestation_copy_id: Uuid::new_v4(),
-            attestation: StoredAttestation::SdJwt {
+            attestation: WithKeyIdentifier {
                 key_identifier: "sd_jwt_key_id".to_string(),
-                sd_jwt: sd_jwt.into_verified(),
+                data: StoredAttestation::SdJwt(DecodedSdJwt::try_from(sd_jwt.into_verified()).unwrap()),
             },
-            normalized_metadata: NormalizedTypeMetadata::nl_pid_example(),
+            metadata: StoredAttestationMetadata::TypeMetadata(NormalizedTypeMetadata::nl_pid_example()),
+            issuer_registration: IssuerRegistration::new_mock(),
+            revocation_status: None,
+            validity_window: ValidityWindow::new_valid_mock(),
         };
 
-        let bsn_path = vec![ClaimPath::SelectByKey(PID_BSN.to_string())].try_into().unwrap();
+        let bsn_path = vec_nonempty![ClaimPath::SelectByKey(PID_BSN.to_string())];
 
         (copy, bsn_path)
     }
 
     #[test]
     fn test_stored_attestation_copy() {
-        let wallet_config = default_wallet_config();
-        let ca = Ca::generate_issuer_mock_ca().unwrap();
-        let issuer_registration = IssuerRegistration::new_mock();
-        let issuer_keypair = generate_issuer_mock_with_registration(&ca, issuer_registration.clone()).unwrap();
+        let wallet_config = test_wallet_config();
+        // Issuer information comes from the WRPRC, not the credential signing certificate.
+        let issuer_keypair = Ca::generate_issuer_mock_ca().unwrap().generate_issuer_mock().unwrap();
 
         let (full_presentations, disclosable_presentations): (Vec<_>, Vec<_>) = [
             mdoc_stored_attestation_copy(&issuer_keypair),
@@ -414,15 +556,13 @@ mod tests {
         ]
         .into_iter()
         .map(|(attestation_copy, bsn_path)| {
-            // The retrieved `IssuerRegistration` matches the input.
-            let full_issuer_registration = attestation_copy.attestation.issuer_registration();
-            assert_eq!(full_issuer_registration, issuer_registration);
+            let issuer_organization = attestation_copy.issuer_registration.organization().clone();
 
             // The attestation should contain the BSN attribute path.
             assert!(attestation_copy.matches_requested_attributes([&bsn_path]));
 
             // The attestation should not contain some incorrect path.
-            let missing_path = vec![ClaimPath::SelectByKey("missing".to_string())].try_into().unwrap();
+            let missing_path = vec_nonempty![ClaimPath::SelectByKey("missing".to_string())];
             assert!(!attestation_copy.matches_requested_attributes([&missing_path]));
 
             // The converted `AttestationPresentation` contains multiple attributes.
@@ -430,6 +570,7 @@ mod tests {
                 .clone()
                 .into_attestation_presentation(&wallet_config.pid_attributes);
             assert_eq!(full_presentation.attributes.len(), 5);
+            assert_eq!(full_presentation.issuer.as_ref(), &issuer_organization);
 
             // Selecting a particular attribute for disclosure should only succeed if the path exists.
             let disclosable_attestation =
@@ -442,9 +583,17 @@ mod tests {
 
             // The `DisclosableAttestation` contains only one attribute.
             assert_eq!(disclosable_attestation.presentation().attributes.len(), 1);
+            assert_eq!(
+                disclosable_attestation.presentation().issuer.as_ref(),
+                &issuer_organization
+            );
 
             // If the format is SD-JWT, the key identifier returned should be the same as the one provided.
-            if let PartialAttestation::SdJwt { key_identifier, .. } = disclosable_attestation.partial_attestation() {
+            if let WithKeyIdentifier {
+                key_identifier,
+                data: PartialAttestation::SdJwt(_),
+            } = disclosable_attestation.partial_attestation()
+            {
                 assert_eq!(key_identifier, "sd_jwt_key_id");
             }
 
@@ -452,8 +601,30 @@ mod tests {
         })
         .unzip();
 
-        // The full and partial `AttestationPresentation`s should be the same for both formats.
-        assert!(full_presentations.iter().all_equal());
-        assert!(disclosable_presentations.iter().all_equal())
+        // The fields for the full and partial `AttestationPresentation`s should be the same for both formats, except
+        // for the `format` and `attestation_type` (mdoc `doctype` vs. SD-JWT `vct`) fields.
+        for presentations in &[full_presentations, disclosable_presentations] {
+            let (mdoc_presentation, sd_jwt_presentation) = presentations.iter().collect_tuple().unwrap();
+
+            assert_eq!(mdoc_presentation.format, Format::MsoMdoc);
+            assert_eq!(sd_jwt_presentation.format, Format::SdJwt);
+
+            assert_eq!(mdoc_presentation.attestation_type, PID_MDOC_DOCTYPE);
+            assert_eq!(sd_jwt_presentation.attestation_type, PID_ATTESTATION_TYPE);
+
+            assert_eq!(mdoc_presentation.identity, sd_jwt_presentation.identity);
+            assert_eq!(mdoc_presentation.issuer, sd_jwt_presentation.issuer);
+            assert_eq!(mdoc_presentation.validity, sd_jwt_presentation.validity);
+
+            // Since both mdoc and sd-jwt fixtures derive their claims from the same Type Metadata, the attribute values
+            // should match exactly.
+            let attribute_values = |attributes: &[AttestationAttribute]| {
+                attributes.iter().map(|attribute| attribute.value.clone()).collect_vec()
+            };
+            assert_eq!(
+                attribute_values(&mdoc_presentation.attributes),
+                attribute_values(&sd_jwt_presentation.attributes)
+            );
+        }
     }
 }

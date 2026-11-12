@@ -1,12 +1,12 @@
 use std::net::IpAddr;
+use std::path::Path;
 
 use config::Config;
 use config::ConfigError;
 use config::Environment;
 use config::File;
+use http_utils::server::TlsServerConfig;
 use serde::Deserialize;
-
-use http_utils::tls::server::TlsServerConfig;
 use utils::path::prefix_local_path;
 
 use crate::config::UpdatePolicyConfig;
@@ -28,7 +28,7 @@ impl Settings {
             .set_default("ip", "0.0.0.0")?
             .set_default("port", 8001)?
             .set_default("structured_logging", false)?
-            .add_source(File::from(prefix_local_path("update_policy_server.toml".as_ref()).as_ref()).required(false))
+            .add_source(File::from(prefix_local_path(Path::new("update_policy_server.toml")).as_ref()).required(false))
             .add_source(
                 Environment::with_prefix("update_policy_server")
                     .separator("__")

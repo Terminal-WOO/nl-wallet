@@ -1,29 +1,22 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
+use attestation_data::registration_certificate::RegistrationCertificateEnvelope;
 use config::Config;
 use config::ConfigError;
 use config::Environment;
 use config::File;
+use dcql::Query;
 use derive_more::AsRef;
 use derive_more::From;
 use derive_more::IntoIterator;
 use futures::future::try_join_all;
-use nutype::nutype;
-use ring::hmac;
-use rustls_pki_types::TrustAnchor;
-use serde::Deserialize;
-use serde_with::base64::Base64;
-use serde_with::hex::Hex;
-use serde_with::serde_as;
-
-use crypto::trust_anchor::BorrowingTrustAnchor;
-use crypto::x509::CertificateUsage;
-use dcql::Query;
 use hsm::service::Pkcs11Hsm;
 use http_utils::urls::BaseUrl;
 use http_utils::urls::CorsOrigin;
 use http_utils::urls::DEFAULT_UNIVERSAL_LINK_BASE;
+use nutype::nutype;
 use openid4vc::return_url::ReturnUrlTemplate;
 use openid4vc::server_state::SessionStore;
 use openid4vc::server_state::SessionStoreTimeouts;
@@ -31,14 +24,20 @@ use openid4vc::verifier::DisclosureData;
 use openid4vc::verifier::RpInitiatedUseCase;
 use openid4vc::verifier::RpInitiatedUseCases;
 use openid4vc::verifier::SessionTypeReturnUrl;
+use openid4vc::verifier::UseCaseData;
+use ring::hmac;
+use serde::Deserialize;
+use serde_with::TryFromIntoRef;
+use serde_with::hex::Hex;
+use serde_with::serde_as;
 use server_utils::keys::PrivateKeyVariant;
-use server_utils::settings::CertificateVerificationError;
 use server_utils::settings::KeyPair;
-use server_utils::settings::NL_WALLET_CLIENT_ID;
-use server_utils::settings::RequesterAuth;
 use server_utils::settings::ServerSettings;
 use server_utils::settings::Settings;
-use server_utils::settings::verify_key_pairs;
+use server_utils::settings::VerifierUseCase;
+use server_utils::settings::VerifierUseCasesValidationError;
+use server_utils::settings::validate_verifier_use_cases;
+use server_utils::status_list_token_cache_settings::StatusListTokenCacheSettings;
 use utils::generator::TimeGenerator;
 use utils::path::prefix_local_path;
 use utils::vec_at_least::VecNonEmpty;
@@ -53,27 +52,17 @@ pub struct VerifierSettings {
     pub ephemeral_id_secret: EphemeralIdSecret,
     pub allow_origins: Option<CorsOrigin>,
 
-    /// Reader trust anchors are used to verify the keys and certificates in the `verifier.usecases` configuration on
-    /// application startup.
-    #[serde_as(as = "Vec<Base64>")]
-    pub reader_trust_anchors: Vec<BorrowingTrustAnchor>,
-
-    // used by the application, SHOULD be reachable only by the application.
-    // if not configured the wallet_server will be used, but an api_key is required in that case
-    // if it conflicts with wallet_server, the application will crash on startup
-    pub requester_server: RequesterAuth,
+    /// Publicly reachable URL used by the wallet during sessions.
+    pub public_url: BaseUrl,
 
     pub universal_link_base_url: BaseUrl,
 
-    /// `client_id` values that this server accepts, identifying the wallet implementation (not individual instances,
-    /// i.e., the `client_id` value of a wallet implementation will be constant across all wallets of that
-    /// implementation).
-    /// The wallet sends this value in the authorization request and as the `iss` claim of its Proof of Possession
-    /// JWTs.
-    pub wallet_client_ids: Vec<String>,
-
     /// Indicate per vct what extending vcts are accepted during disclosure.
     pub extending_vct_values: Option<HashMap<String, VecNonEmpty<String>>>,
+
+    /// Configuration for caching status list tokens.
+    #[serde(default)]
+    pub status_list_token_cache_settings: StatusListTokenCacheSettings,
 
     #[serde(flatten)]
     pub server_settings: Settings,
@@ -85,6 +74,7 @@ pub struct UseCasesSettings(HashMap<String, UseCaseSettings>);
 #[nutype(validate(predicate = |v| v.len() >= MIN_KEY_LENGTH_BYTES), derive(Clone, TryFrom, AsRef, Deserialize))]
 pub struct EphemeralIdSecret(Vec<u8>);
 
+#[serde_as]
 #[derive(Clone, Deserialize)]
 pub struct UseCaseSettings {
     #[serde(default)]
@@ -92,8 +82,18 @@ pub struct UseCaseSettings {
     #[serde(flatten)]
     pub key_pair: KeyPair,
 
+    /// Base64url-encoded Wallet Relying Party Registration Certificate (WRPRC).
+    #[serde_as(as = "TryFromIntoRef<String>")]
+    pub registration_certificate: RegistrationCertificateEnvelope,
+
     pub dcql_query: Option<Query>,
     pub return_url_template: Option<ReturnUrlTemplate>,
+
+    // Override `VerifierSettings::universal_link_base_url` for this specific usecase.
+    pub disclosure_base_deep_link: Option<BaseUrl>,
+
+    #[serde(default)]
+    pub accept_undetermined_revocation_status: bool,
 }
 
 impl UseCasesSettings {
@@ -121,12 +121,17 @@ impl UseCasesSettings {
 
 impl UseCaseSettings {
     pub async fn parse(self, hsm: Option<Pkcs11Hsm>) -> Result<RpInitiatedUseCase<PrivateKeyVariant>, anyhow::Error> {
-        let use_case = RpInitiatedUseCase::try_new(
-            self.key_pair.parse(hsm).await?,
-            self.session_type_return_url,
+        let use_case = RpInitiatedUseCase::new(
+            UseCaseData::new(
+                self.key_pair.parse(hsm).await?,
+                self.session_type_return_url,
+                self.registration_certificate,
+            ),
             self.dcql_query.map(TryInto::try_into).transpose()?,
             self.return_url_template,
-        )?;
+            self.disclosure_base_deep_link,
+            self.accept_undetermined_revocation_status,
+        );
 
         Ok(use_case)
     }
@@ -139,7 +144,7 @@ impl From<&EphemeralIdSecret> for hmac::Key {
 }
 
 impl ServerSettings for VerifierSettings {
-    type ValidationError = CertificateVerificationError;
+    type ValidationError = VerifierUseCasesValidationError;
 
     fn new(config_file: &str, env_prefix: &str) -> Result<Self, ConfigError> {
         let default_store_timeouts = SessionStoreTimeouts::default();
@@ -164,20 +169,20 @@ impl ServerSettings for VerifierSettings {
                 default_store_timeouts.failed_deletion.as_secs() / 60,
             )?
             .set_default("universal_link_base_url", DEFAULT_UNIVERSAL_LINK_BASE)?
-            .set_default("requester_server.ip", "127.0.0.1")?
-            .set_default("requester_server.port", 8002)?
-            .set_default("wallet_client_ids", vec![NL_WALLET_CLIENT_ID.to_string()])?;
+            .set_default("internal_server.ip", "127.0.0.1")?
+            .set_default("internal_server.port", 8002)?;
 
         // Look for a config file that is in the same directory as Cargo.toml if run through cargo,
         // otherwise look in the current working directory.
-        let config_source = prefix_local_path(config_file.as_ref());
+        let config_source = prefix_local_path(Path::new(config_file));
 
         let environment_parser = Environment::with_prefix(env_prefix)
             .separator("__")
             .prefix_separator("__")
             .list_separator(",")
-            .with_list_parse_key("reader_trust_anchors")
             .with_list_parse_key("issuer_trust_anchors")
+            .with_list_parse_key("wrpac_trust_anchors")
+            .with_list_parse_key("wrprc_trust_anchors")
             .try_parsing(true);
 
         let config = config_builder
@@ -190,27 +195,27 @@ impl ServerSettings for VerifierSettings {
         Ok(config)
     }
 
-    fn validate(&self) -> Result<(), CertificateVerificationError> {
+    fn validate(&self) -> Result<(), VerifierUseCasesValidationError> {
         tracing::debug!("verifying verifier.usecases certificates");
 
-        let time = TimeGenerator;
-
-        let trust_anchors: Vec<TrustAnchor<'_>> = self
-            .reader_trust_anchors
-            .iter()
-            .map(BorrowingTrustAnchor::to_owned_trust_anchor)
-            .collect::<Vec<_>>();
-
-        let key_pairs: Vec<(&str, &KeyPair)> = self
+        let use_cases = self
             .usecases
             .as_ref()
             .iter()
-            .map(|(use_case_id, usecase)| (use_case_id.as_ref(), &usecase.key_pair))
-            .collect();
+            .map(|(use_case_id, use_case)| VerifierUseCase {
+                id: use_case_id,
+                key_pair: &use_case.key_pair,
+                registration_certificate: &use_case.registration_certificate,
+                dcql_query: use_case.dcql_query.as_ref(),
+            })
+            .collect::<Vec<_>>();
 
-        verify_key_pairs(&key_pairs, &trust_anchors, CertificateUsage::ReaderAuth, &time)?;
-
-        Ok(())
+        validate_verifier_use_cases(
+            &use_cases,
+            &self.server_settings.wrpac_trust_anchors,
+            &self.server_settings.wrprc_trust_anchors,
+            &TimeGenerator,
+        )
     }
 
     fn server_settings(&self) -> &Settings {

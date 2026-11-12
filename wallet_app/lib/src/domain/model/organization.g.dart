@@ -6,66 +6,43 @@ part of 'organization.dart';
 // JsonSerializableGenerator
 // **************************************************************************
 
-Organization _$OrganizationFromJson(Map<String, dynamic> json) => Organization(
+_Organization _$OrganizationFromJson(Map<String, dynamic> json) => _Organization(
   id: json['id'] as String,
-  legalName: const LocalizedTextConverter().fromJson(
-    json['legalName'] as Map<String, dynamic>,
-  ),
-  displayName: const LocalizedTextConverter().fromJson(
-    json['displayName'] as Map<String, dynamic>,
-  ),
-  category: _$JsonConverterFromJson<Map<String, dynamic>, Map<Locale, String>>(
-    json['category'],
-    const LocalizedTextConverter().fromJson,
-  ),
+  legalName: json['legalName'] as String,
+  displayName: json['displayName'] as String,
+  publicBody: json['publicBody'] as bool?,
+  personType: $enumDecode(_$PersonTypeEnumMap, json['personType']),
   description: _$JsonConverterFromJson<Map<String, dynamic>, Map<Locale, String>>(
     json['description'],
     const LocalizedTextConverter().fromJson,
   ),
-  logo: const AppImageDataConverter().fromJson(
-    json['logo'] as Map<String, dynamic>,
-  ),
-  webUrl: json['webUrl'] as String?,
-  privacyPolicyUrl: json['privacyPolicyUrl'] as String?,
-  countryCode: json['countryCode'] as String?,
-  city: _$JsonConverterFromJson<Map<String, dynamic>, Map<Locale, String>>(
-    json['city'],
-    const LocalizedTextConverter().fromJson,
-  ),
-  department: _$JsonConverterFromJson<Map<String, dynamic>, Map<Locale, String>>(
-    json['department'],
-    const LocalizedTextConverter().fromJson,
-  ),
-  kvk: json['kvk'] as String?,
+  webUri: json['webUri'] as String?,
+  supportUri: json['supportUri'] as String,
+  privacyPolicyUri: json['privacyPolicyUri'] as String?,
+  countryCode: json['countryCode'] as String,
+  organizationId: json['organizationId'] as String,
 );
 
-Map<String, dynamic> _$OrganizationToJson(
-  Organization instance,
-) => <String, dynamic>{
+Map<String, dynamic> _$OrganizationToJson(_Organization instance) => <String, dynamic>{
   'id': instance.id,
-  'legalName': const LocalizedTextConverter().toJson(instance.legalName),
-  'displayName': const LocalizedTextConverter().toJson(instance.displayName),
-  'category': _$JsonConverterToJson<Map<String, dynamic>, Map<Locale, String>>(
-    instance.category,
-    const LocalizedTextConverter().toJson,
-  ),
+  'legalName': instance.legalName,
+  'displayName': instance.displayName,
+  'publicBody': instance.publicBody,
+  'personType': _$PersonTypeEnumMap[instance.personType]!,
   'description': _$JsonConverterToJson<Map<String, dynamic>, Map<Locale, String>>(
     instance.description,
     const LocalizedTextConverter().toJson,
   ),
-  'logo': const AppImageDataConverter().toJson(instance.logo),
-  'webUrl': instance.webUrl,
-  'privacyPolicyUrl': instance.privacyPolicyUrl,
+  'webUri': instance.webUri,
+  'supportUri': instance.supportUri,
+  'privacyPolicyUri': instance.privacyPolicyUri,
   'countryCode': instance.countryCode,
-  'city': _$JsonConverterToJson<Map<String, dynamic>, Map<Locale, String>>(
-    instance.city,
-    const LocalizedTextConverter().toJson,
-  ),
-  'department': _$JsonConverterToJson<Map<String, dynamic>, Map<Locale, String>>(
-    instance.department,
-    const LocalizedTextConverter().toJson,
-  ),
-  'kvk': instance.kvk,
+  'organizationId': instance.organizationId,
+};
+
+const _$PersonTypeEnumMap = {
+  PersonType.legalPerson: 'legalPerson',
+  PersonType.naturalPerson: 'naturalPerson',
 };
 
 Value? _$JsonConverterFromJson<Json, Value>(

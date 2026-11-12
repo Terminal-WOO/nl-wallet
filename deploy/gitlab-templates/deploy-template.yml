@@ -1,9 +1,43 @@
 default:
   interruptible: true
-  image: "${HARBOR_REGISTRY}/docker-hub-proxy/alpine/k8s:1.31.11"
+  image: "${HARBOR_REGISTRY}/docker-hub-proxy/alpine/k8s:${K8S_IMAGE_VERSION}"
 
 variables:
-  HELM_CHARTS_PATH: deploy/kubernetes/helm-charts
+  HELM_CHARTS_PATH: deploy/helm-charts
+
+tag-images-${DEPLOY_ENV}:
+  image: "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/nl-wallet-app-builder-ci-base:${BUILD_TAG}"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
+  script:
+    - set -euo pipefail
+    - |
+      mapfile -t BUILD_IMAGES < deploy/build-images.txt
+
+      errors=()
+
+      tag_images() {
+        local registry="$1"
+        local basic_auth="$2:$(base64 -d <<< "$3")"
+
+        for image in "${BUILD_IMAGES[@]}"; do
+          base="https://${registry}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${image}/artifacts"
+          curl -sS -o /dev/null --user "$basic_auth" -XDELETE "$base/${DEPLOY_ENV}/tags/${DEPLOY_ENV}"
+          if ! curl -fsS --user "$basic_auth" -H "Content-Type: application/json" -d '{"name": "${DEPLOY_ENV}"}' "$base/${DEPLOY_IMAGE_VERSION}/tags"; then
+            errors+=("Could not create tag $image:$DEPLOY_ENV on $registry")
+          fi
+        done
+      }
+
+      tag_images "$HARBOR_GN2_REGISTRY" "$HARBOR_GN2_ROBOT_NAME" "$HARBOR_GN2_ROBOT_SECRET"
+      tag_images "$HARBOR_GN3_REGISTRY" "$HARBOR_GN3_ROBOT_NAME" "$HARBOR_GN3_ROBOT_SECRET"
+
+      if [[ ${#errors[@]} -gt 0 ]]; then
+        for error in "${errors[@]}"; do
+          >&2 echo "ERROR: $error"
+        done
+        exit 1
+      fi
 
 .deploy-base:
   rules:
@@ -21,20 +55,12 @@ variables:
 
 .docker-login:
   script: |
-    mkdir -p /root/.docker
+    mkdir -p ~/.docker
     echo $DOCKER_AUTH_CONFIG > ~/.docker/config.json
 
 .replace-chart-app-version:
   script: |
     yq -i ".appVersion = \"${IMAGE_TAG}\"" ${HELM_CHARTS_PATH}/${CHART_NAME}/Chart.yaml
-
-.check-helm-install-status:
-  script:
-    - |
-      if [ $? -ne 0 ]; then
-        echo "Helm upgrade/install failed"
-        exit 1
-      fi
 
 .parse-config-files:
   script:
@@ -42,18 +68,11 @@ variables:
       IFS=',' read -r -a file_array <<< "$CONFIG_FILES"
       FILE_OPTIONS=""
       for file in "${file_array[@]}"; do
-        FILE_OPTIONS+="-f $file "
+        FILE_OPTIONS+="-f deploy-variables/$file "
       done
 
-db-cluster-${DEPLOY_ENV}:
+.deploy-helm:
   extends: .deploy-base
-  needs:
-    - pipeline: $PARENT_PIPELINE_ID
-      job: create-deployment-${DEPLOY_ENV}
-  variables:
-    CHART_NAME: database-cnpg
-    RELEASE_NAME: db-cluster
-    CONFIG_FILES: "deploy-variables/${DEPLOY_ENV}/db-cluster.yaml"
   script:
     - !reference [.build-helm-dependency, script]
     - !reference [.parse-config-files, script]
@@ -63,7 +82,7 @@ db-cluster-${DEPLOY_ENV}:
       --set global.imageRegistry=${HARBOR_REGISTRY} \
       $FILE_OPTIONS
 
-.deploy-helm:
+.deploy-helm-with-tag:
   extends: .deploy-base
   script:
     - !reference [.build-helm-dependency, script]
@@ -75,10 +94,22 @@ db-cluster-${DEPLOY_ENV}:
       --set global.imageRegistry=${HARBOR_REGISTRY} \
       --set image.tag=${DEPLOY_IMAGE_VERSION} \
       $FILE_OPTIONS
-    - !reference [.check-helm-install-status, script]
+
+db-cluster-${DEPLOY_ENV}:
+  extends: .deploy-helm
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+  script:
+    - !reference [.deploy-helm, script]
+    - kubectl wait --for condition="ready" --timeout=5m cluster/$RELEASE_NAME
+  variables:
+    CHART_NAME: database-cnpg
+    RELEASE_NAME: db-cluster
+    CONFIG_FILES: "${DEPLOY_ENV}/db-cluster.yaml"
 
 wallet-provider-${DEPLOY_ENV}:
-  extends: .deploy-helm
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
@@ -87,10 +118,10 @@ wallet-provider-${DEPLOY_ENV}:
   variables:
     CHART_NAME: wallet-provider
     RELEASE_NAME: wallet-provider
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/wallet-provider.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers.yaml,general/http-route-admin-portal-default-headers.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/wallet-provider.yaml"
 
 pid-issuer-${DEPLOY_ENV}:
-  extends: .deploy-helm
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
@@ -99,10 +130,22 @@ pid-issuer-${DEPLOY_ENV}:
   variables:
     CHART_NAME: pid-issuer
     RELEASE_NAME: pid-issuer
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/pid-issuer.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/pid-issuer.yaml"
+
+acf-demo-issuer-${DEPLOY_ENV}:
+  extends: .deploy-helm-with-tag
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+    - job: db-cluster-${DEPLOY_ENV}
+      artifacts: false
+  variables:
+    CHART_NAME: acf-demo-issuer
+    RELEASE_NAME: acf-demo-issuer
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/acf-demo-issuer.yaml"
 
 demo-rp-verification-server-${DEPLOY_ENV}:
-  extends: .deploy-helm
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
@@ -111,31 +154,20 @@ demo-rp-verification-server-${DEPLOY_ENV}:
   variables:
     CHART_NAME: demo-rp-verification-server
     RELEASE_NAME: demo-rp-verification-server
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/demo-rp-verification-server.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/demo-rp-verification-server.yaml"
 
 demo-relying-party-${DEPLOY_ENV}:
-  extends: .deploy-base
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
   variables:
     CHART_NAME: demo-relying-party
     RELEASE_NAME: demo-relying-party
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/demo-relying-party.yaml"
-  script:
-    - !reference [.build-helm-dependency, script]
-    - !reference [.replace-chart-app-version, script]
-    - !reference [.parse-config-files, script]
-    - PATH_CHART=${HELM_CHARTS_PATH}/${CHART_NAME}
-    - |
-      helm upgrade --install --atomic --timeout 5m ${RELEASE_NAME} ${PATH_CHART} \
-      --set global.imageRegistry=${HARBOR_REGISTRY} \
-      --set image.tag=${DEPLOY_IMAGE_VERSION} \
-       $FILE_OPTIONS
-    - !reference [.check-helm-install-status, script]
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,${DEPLOY_ENV}/demo-relying-party.yaml"
 
 demo-issuer-issuance-server-${DEPLOY_ENV}:
-  extends: .deploy-helm
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
@@ -144,86 +176,89 @@ demo-issuer-issuance-server-${DEPLOY_ENV}:
   variables:
     CHART_NAME: demo-issuer-issuance-server
     RELEASE_NAME: demo-issuer-issuance-server
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/demo-issuer-issuance-server.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/demo-issuer-issuance-server.yaml"
+
+demo-issuer-pacf-issuance-server-${DEPLOY_ENV}:
+  extends: .deploy-helm-with-tag
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+    - job: db-cluster-${DEPLOY_ENV}
+      artifacts: false
+  variables:
+    CHART_NAME: demo-issuer-pacf-issuance-server
+    RELEASE_NAME: demo-issuer-pacf-issuance-server
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/demo-issuer-pacf-issuance-server.yaml"
 
 demo-issuer-${DEPLOY_ENV}:
-  extends: .deploy-base
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
   variables:
     CHART_NAME: demo-issuer
     RELEASE_NAME: demo-issuer
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/demo-issuer.yaml"
-  script:
-    - !reference [.build-helm-dependency, script]
-    - !reference [.replace-chart-app-version, script]
-    - !reference [.parse-config-files, script]
-    - PATH_CHART=${HELM_CHARTS_PATH}/${CHART_NAME}
-    - |
-      helm upgrade --install --atomic --timeout 5m ${RELEASE_NAME} ${PATH_CHART} \
-      --set global.imageRegistry=${HARBOR_REGISTRY} \
-      --set image.tag=${DEPLOY_IMAGE_VERSION} \
-       $FILE_OPTIONS
-    - !reference [.check-helm-install-status, script]
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,general/http-route-internal-default-headers.yaml,${DEPLOY_ENV}/demo-issuer.yaml"
 
 demo-index-${DEPLOY_ENV}:
-  extends: .deploy-helm
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
   variables:
     CHART_NAME: demo-index
     RELEASE_NAME: demo-index
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/demo-index.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,${DEPLOY_ENV}/demo-index.yaml"
+
+revocation-portal-${DEPLOY_ENV}:
+  extends: .deploy-helm-with-tag
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+  variables:
+    CHART_NAME: revocation-portal
+    RELEASE_NAME: revocation-portal
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,${DEPLOY_ENV}/revocation-portal.yaml"
+
+admin-portal-${DEPLOY_ENV}:
+  extends: .deploy-helm-with-tag
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+  variables:
+    CHART_NAME: admin-portal
+    RELEASE_NAME: admin-portal
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers-without-csp.yaml,${DEPLOY_ENV}/admin-portal.yaml"
 
 update-policy-server-${DEPLOY_ENV}:
-  extends: .deploy-helm
+  extends: .deploy-helm-with-tag
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
   variables:
     CHART_NAME: update-policy-server
     RELEASE_NAME: update-policy-server
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/update-policy-server.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers.yaml,${DEPLOY_ENV}/update-policy-server.yaml"
 
 brpproxy-${DEPLOY_ENV}:
-  extends: .deploy-base
+  extends: .deploy-helm
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
   variables:
     CHART_NAME: brpproxy
     RELEASE_NAME: brpproxy
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/brpproxy.yaml"
-  script:
-    - !reference [.build-helm-dependency, script]
-    - !reference [.parse-config-files, script]
-    - PATH_CHART=${HELM_CHARTS_PATH}/${CHART_NAME}
-    - |
-      helm upgrade --install --atomic --timeout 5m ${RELEASE_NAME} ${PATH_CHART} \
-      --set global.imageRegistry=${HARBOR_REGISTRY} \
-       $FILE_OPTIONS
-    - !reference [.check-helm-install-status, script]
+    CONFIG_FILES: "general/global.yaml,${DEPLOY_ENV}/brpproxy.yaml"
 
 gbamock-${DEPLOY_ENV}:
-  extends: .deploy-base
+  extends: .deploy-helm
   needs:
     - pipeline: $PARENT_PIPELINE_ID
       job: create-deployment-${DEPLOY_ENV}
   variables:
     CHART_NAME: gbamock
     RELEASE_NAME: gbamock
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/gbamock.yaml"
-  script:
-    - !reference [.build-helm-dependency, script]
-    - !reference [.parse-config-files, script]
-    - PATH_CHART=${HELM_CHARTS_PATH}/${CHART_NAME}
-    - |
-      helm upgrade --install --atomic --timeout 5m ${RELEASE_NAME} ${PATH_CHART} \
-      --set global.imageRegistry=${HARBOR_REGISTRY} \
-       $FILE_OPTIONS
-    - !reference [.check-helm-install-status, script]
+    CONFIG_FILES: "general/global.yaml,${DEPLOY_ENV}/gbamock.yaml"
 
 gba-hc-converter-${DEPLOY_ENV}:
   extends: .deploy-base
@@ -233,7 +268,7 @@ gba-hc-converter-${DEPLOY_ENV}:
   variables:
     CHART_NAME: gba-hc-converter
     RELEASE_NAME: gba-hc-converter
-    CONFIG_FILES: "deploy-variables/general/global.yaml,deploy-variables/${DEPLOY_ENV}/gba-hc-converter.yaml"
+    CONFIG_FILES: "general/global.yaml,general/http-route-default-headers.yaml,${DEPLOY_ENV}/gba-hc-converter.yaml"
   script:
     - !reference [.build-helm-dependency, script]
     - !reference [.replace-chart-app-version, script]
@@ -241,14 +276,46 @@ gba-hc-converter-${DEPLOY_ENV}:
     - sed -i 's/{{bsn}}/{{`{{bsn}}`}}/g' wallet_core/gba_hc_converter/resources/remote/bsn_zoeken_template.xml
     - scripts/convert-gba-hc-converter-values.sh xmlFiles wallet_core/gba_hc_converter/resources/gba-v-responses > ${PATH_CHART}/xmlFiles.yaml
     - scripts/convert-gba-hc-converter-values.sh zoekXmlFiles wallet_core/gba_hc_converter/resources/remote/bsn_zoeken_template.xml > ${PATH_CHART}/zoekXmlFiles.yaml
-    - export CONFIG_FILES="${CONFIG_FILES},${PATH_CHART}/xmlFiles.yaml,${PATH_CHART}/zoekXmlFiles.yaml"
     - !reference [.parse-config-files, script]
     - |
       helm upgrade --install --atomic --timeout 5m ${RELEASE_NAME} ${PATH_CHART} \
       --set global.imageRegistry=${HARBOR_REGISTRY} \
       --set image.tag=${DEPLOY_IMAGE_VERSION} \
-       $FILE_OPTIONS
-    - !reference [.check-helm-install-status, script]
+      -f ${PATH_CHART}/xmlFiles.yaml \
+      -f ${PATH_CHART}/zoekXmlFiles.yaml \
+      $FILE_OPTIONS
+
+redis-${DEPLOY_ENV}:
+  extends: .deploy-helm
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+  variables:
+    CHART_NAME: redis
+    RELEASE_NAME: redis
+    CONFIG_FILES: "general/global.yaml,general/redis.yaml"
+
+digid-connector-${DEPLOY_ENV}:
+  extends: .deploy-helm
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+    - job: redis-${DEPLOY_ENV}
+      artifacts: false
+  variables:
+    CHART_NAME: rdo-max
+    RELEASE_NAME: digid-connector
+    CONFIG_FILES: "general/global.yaml,general/rdo-max.yaml,${DEPLOY_ENV}/digid-connector.yaml"
+
+keycloak-${DEPLOY_ENV}:
+  extends: .deploy-helm
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: create-deployment-${DEPLOY_ENV}
+  variables:
+    CHART_NAME: keycloak
+    RELEASE_NAME: keycloak
+    CONFIG_FILES: "general/global.yaml,general/keycloak.yaml,${DEPLOY_ENV}/keycloak.yaml"
 
 run-encrypt-gba-v-testdata-${DEPLOY_ENV}:
   extends: .deploy-base
@@ -269,6 +336,20 @@ run-demo-issuer-issuance-server-reset-${DEPLOY_ENV}:
     - kubectl create job --from=cronjob/demo-issuer-issuance-server-reset demo-issuer-issuance-db-reset-$(date +%s)
   allow_failure: true
   when: manual
+  manual_confirmation: >
+    This will launch a reset job that will reset the database using sea-orm-cli.
+
+run-demo-issuer-pacf-issuance-server-reset-${DEPLOY_ENV}:
+  extends: .deploy-base
+  needs:
+    - job: db-cluster-${DEPLOY_ENV}
+      artifacts: false
+  script:
+    - kubectl create job --from=cronjob/demo-issuer-pacf-issuance-server-reset demo-issuer-pacf-issuance-db-reset-$(date +%s)
+  allow_failure: true
+  when: manual
+  manual_confirmation: >
+    This will launch a reset job that will reset the database using sea-orm-cli.
 
 run-demo-rp-verification-server-reset-${DEPLOY_ENV}:
   extends: .deploy-base
@@ -279,6 +360,20 @@ run-demo-rp-verification-server-reset-${DEPLOY_ENV}:
     - kubectl create job --from=cronjob/demo-rp-verification-server-reset demo-rp-verification-db-reset-$(date +%s)
   allow_failure: true
   when: manual
+  manual_confirmation: >
+    This will launch a reset job that will reset the database using sea-orm-cli.
+
+run-acf-demo-issuer-reset-${DEPLOY_ENV}:
+  extends: .deploy-base
+  needs:
+    - job: db-cluster-${DEPLOY_ENV}
+      artifacts: false
+  script:
+    - kubectl create job --from=cronjob/acf-demo-issuer-reset acf-demo-issuer-db-reset-$(date +%s)
+  allow_failure: true
+  when: manual
+  manual_confirmation: >
+    This will launch a reset job that will reset the 'acf_demo_issuer' database using sea-orm-cli.
 
 run-pid-issuer-reset-${DEPLOY_ENV}:
   extends: .deploy-base
@@ -289,6 +384,8 @@ run-pid-issuer-reset-${DEPLOY_ENV}:
     - kubectl create job --from=cronjob/pid-issuer-reset pid-issuer-db-reset-$(date +%s)
   allow_failure: true
   when: manual
+  manual_confirmation: >
+    This will launch a reset job that will reset the database using sea-orm-cli.
 
 run-wallet-provider-reset-${DEPLOY_ENV}:
   extends: .deploy-base
@@ -299,3 +396,16 @@ run-wallet-provider-reset-${DEPLOY_ENV}:
     - kubectl create job --from=cronjob/wallet-provider-reset wallet-provider-db-reset-$(date +%s)
   allow_failure: true
   when: manual
+  manual_confirmation: >
+    This will launch a reset job that will reset the database using sea-orm-cli.
+
+reset-${DEPLOY_ENV}:
+  extends: .deploy-base
+  script:
+    - deploy/bin/reset-env.sh
+  allow_failure: true
+  when: manual
+  manual_confirmation: >
+    This will wipe the complete environment (except HSM and static-server).
+    You need to deploy the environment by restarting the already completed jobs in this pipeline.
+    You also need to encrypt the GBA-V responses via the designated job.

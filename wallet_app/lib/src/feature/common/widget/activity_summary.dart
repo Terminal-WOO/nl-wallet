@@ -4,7 +4,6 @@ import '../../../domain/model/event/wallet_event.dart';
 import '../../../theme/base_wallet_theme.dart';
 import '../../../util/extension/build_context_extension.dart';
 import '../../../util/extension/date_time_extension.dart';
-import '../../../util/extension/localized_text_extension.dart';
 import '../../../util/extension/string_extension.dart';
 import 'default_text_and_focus_style.dart';
 
@@ -136,7 +135,8 @@ class _ActivitySummaryState extends State<ActivitySummary> {
   String _resolveSubtitleForEvents(BuildContext context, List<WalletEvent> events) {
     final List<String?> subtitleLines = [
       _generateCardsAddedLine(context, events),
-      _generateCardsUpdatedLine(context, events),
+      _generateCardsRenewedLine(context, events),
+      _generateCardsDeletedLine(context, events),
       _generatedLoggedInLine(context, events),
       _generateSharedWithLine(context, events),
     ];
@@ -161,14 +161,24 @@ class _ActivitySummaryState extends State<ActivitySummary> {
   }
 
   /// Generate the 'x cards replaced' line, or return null when no cards were updated.
-  String? _generateCardsUpdatedLine(BuildContext context, List<WalletEvent> relevantEvents) {
-    final updatedCardsCount = relevantEvents
+  String? _generateCardsRenewedLine(BuildContext context, List<WalletEvent> relevantEvents) {
+    final renewedCardsCount = relevantEvents
         .whereType<IssuanceEvent>()
         .where((it) => it.status == EventStatus.success)
         .where((it) => it.eventType == IssuanceEventType.cardRenewed)
         .length;
-    if (updatedCardsCount == 0) return null;
-    return context.l10n.activitySummaryCardsUpdated(updatedCardsCount, updatedCardsCount);
+    if (renewedCardsCount == 0) return null;
+    return context.l10n.activitySummaryCardsRenewed(renewedCardsCount, renewedCardsCount);
+  }
+
+  /// Generate the 'x cards deleted' line, or return null when no cards were deleted.
+  String? _generateCardsDeletedLine(BuildContext context, List<WalletEvent> relevantEvents) {
+    final deletedCardsCount = relevantEvents
+        .whereType<DeletionEvent>()
+        .where((it) => it.status == EventStatus.success)
+        .length;
+    if (deletedCardsCount == 0) return null;
+    return context.l10n.activitySummaryCardsDeleted(deletedCardsCount, deletedCardsCount);
   }
 
   String? _generatedLoggedInLine(BuildContext context, List<WalletEvent> relevantEvents) {
@@ -176,7 +186,7 @@ class _ActivitySummaryState extends State<ActivitySummary> {
         .whereType<DisclosureEvent>()
         .where((element) => element.status == EventStatus.success)
         .where((element) => element.type == DisclosureType.login)
-        .map((e) => e.relyingParty.displayName.l10nValue(context))
+        .map((e) => e.relyingParty.displayName)
         .toSet();
 
     if (loggedInWithOrganizationNames.isEmpty) return null;
@@ -218,7 +228,7 @@ class _ActivitySummaryState extends State<ActivitySummary> {
         .whereType<DisclosureEvent>()
         .where((element) => element.status == EventStatus.success)
         .where((element) => element.type == DisclosureType.regular)
-        .map((e) => e.relyingParty.displayName.l10nValue(context))
+        .map((e) => e.relyingParty.displayName)
         .toSet();
 
     if (sharedWithOrganizationNames.isEmpty) return null;

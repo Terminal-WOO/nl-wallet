@@ -1,13 +1,16 @@
 use std::time::Duration;
 
+use attestation_types::claim_path::ClaimPath;
 use chrono::DateTime;
 use chrono::Utc;
+use crypto::keys::PublicKey;
 use itertools::Itertools;
-
-use attestation_types::claim_path::ClaimPath;
 use jwt::error::JwkConversionError;
-use jwt::error::JwtError;
-use jwt::error::JwtX5cError;
+use jwt::error::JwtParseError;
+use jwt::error::JwtSignError;
+use jwt::error::JwtVerifyError;
+use jwt::error::JwtX5cVerifyError;
+use jwt::nonce::Nonce;
 use sd_jwt_vc_metadata::ClaimSelectiveDisclosureMetadata;
 
 use crate::claims::ArrayClaim;
@@ -114,10 +117,13 @@ pub enum DecoderError {
     Jwk(#[from] JwkConversionError),
 
     #[error("error parsing JWT: {0}")]
-    JwtParsing(#[from] JwtError),
+    JwtParsing(#[from] JwtParseError),
 
     #[error("failed to verify SD-JWT: {0}")]
-    JwtVerification(#[from] JwtX5cError),
+    JwtVerification(#[from] JwtVerifyError),
+
+    #[error("failed to verify SD-JWT with x5c: {0}")]
+    JwtX5cVerification(#[from] JwtX5cVerifyError),
 
     #[error("invalid KB-JWT: {0}")]
     KeyBinding(#[from] KeyBindingError),
@@ -132,19 +138,30 @@ pub enum EncoderError {
     ClaimStructure(#[from] ClaimError),
 
     #[error("signing error: {0}")]
-    Signing(#[from] JwtError),
+    Signing(#[from] JwtSignError),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyBindingError {
     #[error("unexpected nonce, got `{0}``")]
-    NonceMismatch(String),
+    NonceMismatch(Nonce),
 
-    #[error("iat ({0}) not in acceptable window with duration `{1:?}`, current time: `{2}`")]
-    InvalidSignatureTimestamp(DateTime<Utc>, Duration, DateTime<Utc>),
+    #[error(
+        "iat ({iat}) not in acceptable window of `{acceptance_window:?}` and leeway of `{leeway:?}`, current time: \
+         `{current_time}`"
+    )]
+    InvalidSignatureTimestamp {
+        iat: DateTime<Utc>,
+        acceptance_window: Duration,
+        leeway: Duration,
+        current_time: DateTime<Utc>,
+    },
 
-    #[error("jwt error: {0}")]
-    Jwt(#[from] JwtError),
+    #[error("jwt verify error: {0}")]
+    JwtVerify(#[from] JwtVerifyError),
+
+    #[error("jwt sign error: {0}")]
+    JwtSign(#[from] JwtSignError),
 
     #[error("unsupported hashing algorithm: {0}")]
     Hasher(#[from] SdAlgHasherNotImplemented),
@@ -156,8 +173,11 @@ pub enum SigningError {
     Jwk(#[from] JwkConversionError),
 
     #[error("error signing: {0}")]
-    Jwt(#[from] JwtError),
+    JwtSign(#[from] JwtSignError),
 
     #[error("invalid KB-JWT: {0}")]
     KeyBinding(#[from] KeyBindingError),
+
+    #[error("unsupported holder public key: {0:?}")]
+    UnsupportedHolderPublicKey(Box<PublicKey>),
 }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use attestation_data::disclosure::DisclosedAttestations;
 use axum::Form;
 use axum::Json;
 use axum::Router;
@@ -11,33 +12,26 @@ use axum::response::IntoResponse;
 use axum::routing::delete;
 use axum::routing::get;
 use axum::routing::post;
+use crypto::keys::EcdsaKeySend;
+use crypto::trust_anchor::TrustAnchors;
+use dcql::unique_id_vec::UniqueIdVec;
 use http::HeaderMap;
 use http::HeaderValue;
 use http::Method;
 use http::StatusCode;
 use http::Uri;
 use http::header;
-use rustls_pki_types::TrustAnchor;
-use serde::Deserialize;
-use serde::Serialize;
-use tower_http::cors::CorsLayer;
-use tracing::info;
-use tracing::warn;
-
-use attestation_data::disclosure::DisclosedAttestations;
-use crypto::keys::EcdsaKeySend;
-use dcql::unique_id_vec::UniqueIdVec;
 use http_utils::error::HttpJsonError;
 use http_utils::urls;
 use http_utils::urls::BaseUrl;
 use http_utils::urls::CorsOrigin;
 use jwt::UnverifiedJwt;
 use jwt::headers::HeaderWithX5c;
-use openid4vc::DisclosureErrorResponse;
-use openid4vc::GetRequestErrorCode;
-use openid4vc::PostAuthResponseErrorCode;
-use openid4vc::VerificationErrorCode;
-use openid4vc::disclosure_session::APPLICATION_OAUTH_AUTHZ_REQ_JWT;
+use oauth::authorization::APPLICATION_OAUTH_AUTHZ_REQ_JWT;
+use openid4vc::errors::DisclosureErrorResponse;
+use openid4vc::errors::GetAuthRequestErrorCode;
+use openid4vc::errors::PostAuthResponseErrorCode;
+use openid4vc::errors::VerificationErrorCode;
 use openid4vc::openid4vp::VpAuthorizationRequest;
 use openid4vc::openid4vp::VpResponse;
 use openid4vc::openid4vp::WalletRequest;
@@ -52,23 +46,27 @@ use openid4vc::verifier::UseCase;
 use openid4vc::verifier::UseCases;
 use openid4vc::verifier::Verifier;
 use openid4vc::verifier::WalletAuthResponse;
+use serde::Deserialize;
+use serde::Serialize;
 use token_status_list::verification::client::StatusListClient;
 use token_status_list::verification::verifier::RevocationVerifier;
+use tower_http::cors::CorsLayer;
+use tracing::info;
+use tracing::warn;
 use utils::generator::TimeGenerator;
 use utils::vec_at_least::VecNonEmpty;
 
 struct ApplicationState<S, US, C> {
     verifier: Verifier<S, US, C>,
     public_url: BaseUrl,
-    universal_link_base_url: BaseUrl,
+    disclosure_base_deep_link: BaseUrl,
 }
 
 pub struct VerifierFactory<US> {
     public_url: BaseUrl,
-    universal_link_base_url: BaseUrl,
+    disclosure_base_deep_link: BaseUrl,
     use_cases: US,
-    issuer_trust_anchors: Vec<TrustAnchor<'static>>,
-    accepted_wallet_client_ids: Vec<String>,
+    issuer_trust_anchors: TrustAnchors,
     extending_vct_values_store: HashMap<String, VecNonEmpty<String>>,
 }
 
@@ -85,18 +83,16 @@ where
 {
     pub fn new(
         public_url: BaseUrl,
-        universal_link_base_url: BaseUrl,
+        disclosure_base_deep_link: BaseUrl,
         use_cases: US,
-        issuer_trust_anchors: Vec<TrustAnchor<'static>>,
-        accepted_wallet_client_ids: Vec<String>,
+        issuer_trust_anchors: TrustAnchors,
         extending_vct_values_store: HashMap<String, VecNonEmpty<String>>,
     ) -> Self {
         Self {
             public_url,
-            universal_link_base_url,
+            disclosure_base_deep_link,
             use_cases,
             issuer_trust_anchors,
-            accepted_wallet_client_ids,
             extending_vct_values_store,
         }
     }
@@ -117,12 +113,11 @@ where
                 sessions,
                 self.issuer_trust_anchors,
                 result_handler,
-                self.accepted_wallet_client_ids,
                 self.extending_vct_values_store,
                 revocation_verifier,
             ),
             public_url: self.public_url,
-            universal_link_base_url: self.universal_link_base_url,
+            disclosure_base_deep_link: self.disclosure_base_deep_link,
         });
 
         // RFC 9101 defines just `GET` for the `request_uri` endpoint, but OpenID4VP extends that with `POST`.
@@ -211,7 +206,7 @@ impl IntoResponse for RequestUriRespone {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
-            HeaderValue::from_static(APPLICATION_OAUTH_AUTHZ_REQ_JWT.as_ref()),
+            HeaderValue::from_static(APPLICATION_OAUTH_AUTHZ_REQ_JWT),
         );
 
         (headers, self.0.to_string()).into_response()
@@ -223,7 +218,7 @@ async fn retrieve_request<S, US, UC, K, C>(
     State(state): State<Arc<ApplicationState<S, US, C>>>,
     Path(identifier): Path<String>,
     Form(wallet_request): Form<WalletRequest>,
-) -> Result<RequestUriRespone, DisclosureErrorResponse<GetRequestErrorCode>>
+) -> Result<RequestUriRespone, DisclosureErrorResponse<GetAuthRequestErrorCode>>
 where
     S: SessionStore<DisclosureData>,
     US: UseCases<Key = K, UseCase = UC>,
@@ -288,12 +283,17 @@ where
     K: EcdsaKeySend,
     C: StatusListClient,
 {
+    let disclosure_base_deep_link = state
+        .verifier
+        .disclosure_usecase_base_deep_link(&session_token)
+        .await
+        .unwrap_or_else(|| state.disclosure_base_deep_link.clone());
     let response = state
         .verifier
         .status_response(
             &session_token,
             query.session_type,
-            &urls::disclosure_base_uri(&state.universal_link_base_url),
+            &urls::disclosure_base_uri(&disclosure_base_deep_link),
             state.public_url.join_base_url(&format!("{session_token}/request_uri")),
             &TimeGenerator,
         )

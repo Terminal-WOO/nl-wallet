@@ -1,37 +1,40 @@
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::num::NonZeroUsize;
+use std::num::NonZeroU8;
 
-use crypto::WithVerifyingKey;
+use crypto::keys::CredentialEcdsaKey;
+use crypto::keys::WithVerifyingKey;
+use crypto::p256_der::DerSignature;
+use crypto::utils::sha256;
+use crypto::wscd::DisclosureWscd;
 use derive_more::Constructor;
+use jwt::nonce::Nonce;
+use p256::ecdsa::Signature;
 use p256::ecdsa::VerifyingKey;
 use p256::ecdsa::signature;
 use parking_lot::Mutex;
-
-use crypto::keys::CredentialEcdsaKey;
-use crypto::keys::WithIdentifier;
-use crypto::p256_der::DerSignature;
-use crypto::wscd::DisclosureResult;
-use crypto::wscd::DisclosureWscd;
-use crypto::wscd::WscdPoa;
-use jwt::UnverifiedJwt;
 use platform_support::attested_key::AppleAttestedKey;
 use platform_support::attested_key::GoogleAttestedKey;
+use utils::vec_at_least::IntoNonEmptyIterator;
+use utils::vec_at_least::NonEmptyIterator;
+use utils::vec_at_least::VecNonEmpty;
+use wallet_account::messages::instructions::IssuanceKeySetRequest;
+use wallet_account::messages::instructions::IssueWia;
 use wallet_account::messages::instructions::PerformIssuance;
-use wallet_account::messages::instructions::PerformIssuanceWithWua;
-use wallet_account::messages::instructions::PerformIssuanceWithWuaResult;
+use wallet_account::messages::instructions::PerformIssuanceResult;
 use wallet_account::messages::instructions::Sign;
 use wallet_account::messages::instructions::StartPinRecovery;
-use wallet_account::messages::registration::WalletCertificateClaims;
-use wscd::Poa;
-use wscd::wscd::IssuanceResult;
-use wscd::wscd::IssuanceWscd;
-
-use crate::account_provider::AccountProviderClient;
-use crate::storage::Storage;
+use wallet_account::messages::registration::WalletCertificate;
+use wscd::issuance::IssuanceKeyResult;
+use wscd::issuance::IssuanceWscd;
+use wscd::payload::wia::WiaDisclosure;
+use wscd::wia::WiaClient;
 
 use super::InstructionClient;
 use super::InstructionError;
+use crate::account_provider::AccountProviderClient;
+use crate::instruction::HwSignedInstructionClient;
+use crate::storage::Storage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteEcdsaKeyError {
@@ -78,7 +81,6 @@ where
 {
     type Key = RemoteEcdsaKey;
     type Error = RemoteEcdsaKeyError;
-    type Poa = Poa;
 
     fn new_key<I: Into<String>>(&self, identifier: I, public_key: VerifyingKey) -> Self::Key {
         RemoteEcdsaKey {
@@ -90,8 +92,7 @@ where
     async fn sign(
         &self,
         messages_and_keys: Vec<(Vec<u8>, Vec<&Self::Key>)>,
-        poa_input: <Self::Poa as WscdPoa>::Input,
-    ) -> Result<DisclosureResult<Self::Poa>, Self::Error> {
+    ) -> Result<Vec<Vec<Signature>>, Self::Error> {
         let sign_result = self
             .instruction_client
             .send(Sign {
@@ -99,11 +100,9 @@ where
                     .into_iter()
                     .map(|(message, keys)| {
                         let identifiers = keys.into_iter().map(|key| key.identifier.clone()).collect();
-                        (message, identifiers)
+                        (sha256(&message), identifiers)
                     })
                     .collect(),
-                poa_aud: poa_input.aud,
-                poa_nonce: poa_input.nonce,
             })
             .await?;
 
@@ -113,8 +112,27 @@ where
             .map(|signatures| signatures.into_iter().map(DerSignature::into_inner).collect())
             .collect();
 
-        Ok(DisclosureResult::new(signatures, sign_result.poa))
+        Ok(signatures)
     }
+}
+
+fn build_perform_issuance_instruction(
+    key_counts_and_nonces: VecNonEmpty<(NonZeroU8, Option<Nonce>)>,
+) -> PerformIssuance {
+    let key_requests = key_counts_and_nonces
+        .into_nonempty_iter()
+        .map(|(key_count, proof_nonce)| IssuanceKeySetRequest { key_count, proof_nonce })
+        .collect();
+
+    PerformIssuance { key_requests }
+}
+
+fn key_results_from_issuance_result(result: PerformIssuanceResult) -> VecNonEmpty<IssuanceKeyResult> {
+    result
+        .key_sets
+        .into_nonempty_iter()
+        .map(|set_result| IssuanceKeyResult::new(set_result.identifiers, set_result.attestation))
+        .collect()
 }
 
 impl<S, AK, GK, A> IssuanceWscd for RemoteEcdsaWscd<S, AK, GK, A>
@@ -125,42 +143,42 @@ where
     A: AccountProviderClient,
 {
     type Error = RemoteEcdsaKeyError;
-    type Poa = Poa;
 
     async fn perform_issuance(
         &self,
-        key_count: NonZeroUsize,
-        aud: String,
-        nonce: Option<String>,
-        include_wua: bool,
-    ) -> Result<IssuanceResult<Self::Poa>, Self::Error> {
-        let issuance_instruction = PerformIssuance { key_count, aud, nonce };
-        let (issuance_result, wua) = if !include_wua {
-            (self.instruction_client.send(issuance_instruction).await?, None)
-        } else {
-            let PerformIssuanceWithWuaResult {
-                issuance_result,
-                wua_disclosure,
-            } = self
-                .instruction_client
-                .send(PerformIssuanceWithWua { issuance_instruction })
-                .await?;
+        key_counts_and_nonces: VecNonEmpty<(NonZeroU8, Option<Nonce>)>,
+    ) -> Result<VecNonEmpty<IssuanceKeyResult>, Self::Error> {
+        let issuance_result = self
+            .instruction_client
+            .send(build_perform_issuance_instruction(key_counts_and_nonces))
+            .await?;
 
-            (issuance_result, Some(wua_disclosure))
-        };
+        let key_results = key_results_from_issuance_result(issuance_result);
 
-        Ok(IssuanceResult::new(
-            issuance_result.key_identifiers,
-            issuance_result.pops,
-            issuance_result.poa,
-            wua,
-        ))
+        Ok(key_results)
     }
 }
 
-impl WithIdentifier for RemoteEcdsaKey {
-    fn identifier(&self) -> &str {
-        &self.identifier
+#[derive(Constructor)]
+pub struct RemoteWiaClient<S, AK, GK, A> {
+    instruction_client: HwSignedInstructionClient<S, AK, GK, A>,
+}
+
+impl<S, AK, GK, A> WiaClient for RemoteWiaClient<S, AK, GK, A>
+where
+    S: Storage,
+    AK: AppleAttestedKey,
+    GK: GoogleAttestedKey,
+    A: AccountProviderClient,
+{
+    type Error = RemoteEcdsaKeyError;
+
+    async fn issue_wia(&self, aud: String, nonce: Option<Nonce>) -> Result<WiaDisclosure, Self::Error> {
+        Ok(self
+            .instruction_client
+            .send(IssueWia { nonce, aud })
+            .await?
+            .wia_disclosure)
     }
 }
 
@@ -183,7 +201,7 @@ pub struct PinRecoveryRemoteEcdsaWscd<S, AK, GK, A> {
     pin_key: VerifyingKey,
 
     /// Stores the new wallet certificate that the WP replies with in [`StartPinRecoveryResult`].
-    certificates: Mutex<Vec<UnverifiedJwt<WalletCertificateClaims>>>,
+    certificates: Mutex<Vec<WalletCertificate>>,
 }
 
 impl<S, AK, GK, A> PinRecoveryRemoteEcdsaWscd<S, AK, GK, A> {
@@ -196,8 +214,8 @@ impl<S, AK, GK, A> PinRecoveryRemoteEcdsaWscd<S, AK, GK, A> {
     }
 }
 
-pub trait PinRecoveryWscd: IssuanceWscd<Poa = Poa> {
-    fn certificates(self) -> Vec<UnverifiedJwt<WalletCertificateClaims>>;
+pub trait PinRecoveryWscd: IssuanceWscd {
+    fn certificates(self) -> Vec<WalletCertificate>;
 }
 
 impl<S, AK, GK, A> IssuanceWscd for PinRecoveryRemoteEcdsaWscd<S, AK, GK, A>
@@ -208,38 +226,25 @@ where
     A: AccountProviderClient,
 {
     type Error = RemoteEcdsaKeyError;
-    type Poa = Poa;
 
     async fn perform_issuance(
         &self,
-        key_count: std::num::NonZeroUsize,
-        aud: String,
-        nonce: Option<String>,
-        include_wua: bool,
-    ) -> Result<IssuanceResult<Self::Poa>, Self::Error> {
-        if !include_wua {
-            panic!("include_wua must always be true for PinRecoveryRemoteEcdsaWscd")
-        }
-
+        key_counts_and_nonces: VecNonEmpty<(NonZeroU8, Option<Nonce>)>,
+    ) -> Result<VecNonEmpty<IssuanceKeyResult>, Self::Error> {
         let result = self
             .instruction_client
             .send(StartPinRecovery {
-                issuance_with_wua_instruction: PerformIssuanceWithWua {
-                    issuance_instruction: PerformIssuance { key_count, aud, nonce },
-                },
+                issuance_instruction: build_perform_issuance_instruction(key_counts_and_nonces),
                 pin_pubkey: self.pin_key.into(),
             })
             .await?;
 
         self.certificates.lock().push(result.certificate);
 
-        let issuance_result = result.issuance_with_wua_result.issuance_result;
-        Ok(IssuanceResult::new(
-            issuance_result.key_identifiers,
-            issuance_result.pops,
-            issuance_result.poa,
-            Some(result.issuance_with_wua_result.wua_disclosure),
-        ))
+        let issuance_result = result.issuance_result;
+        let key_results = key_results_from_issuance_result(issuance_result);
+
+        Ok(key_results)
     }
 }
 
@@ -250,7 +255,7 @@ where
     GK: GoogleAttestedKey,
     A: AccountProviderClient,
 {
-    fn certificates(self) -> Vec<UnverifiedJwt<WalletCertificateClaims>> {
+    fn certificates(self) -> Vec<WalletCertificate> {
         self.certificates.into_inner()
     }
 }

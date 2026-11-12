@@ -2,10 +2,9 @@ use itertools::Itertools;
 
 use super::attestation::AttestationPresentation;
 use super::disclosure::DisclosureType;
-use super::disclosure::Organization;
-use super::disclosure::RPLocalizedStrings;
-use super::disclosure::RequestPolicy;
+use super::disclosure::request_purpose;
 use super::localize::LocalizedString;
+use super::organization::Organization;
 
 pub enum WalletEvent {
     Disclosure {
@@ -15,7 +14,6 @@ pub enum WalletEvent {
         relying_party: Organization,
         purpose: Vec<LocalizedString>,
         shared_attestations: Option<Vec<AttestationPresentation>>,
-        request_policy: RequestPolicy,
         status: DisclosureStatus,
         typ: DisclosureType,
     },
@@ -25,6 +23,12 @@ pub enum WalletEvent {
         date_time: String,
         attestation: AttestationPresentation,
         renewed: bool,
+    },
+    Deletion {
+        id: String,
+        // ISO8601
+        date_time: String,
+        attestation: AttestationPresentation,
     },
 }
 
@@ -53,13 +57,11 @@ impl From<wallet::WalletEvent> for WalletEvent {
                 id,
                 attestations,
                 timestamp,
-                reader_registration,
+                organization,
                 status,
                 r#type,
                 ..
             } => {
-                let reader_registration = *reader_registration;
-                let request_policy = RequestPolicy::from(&reader_registration);
                 let attestations = attestations
                     .into_iter()
                     .map(AttestationPresentation::from)
@@ -68,14 +70,22 @@ impl From<wallet::WalletEvent> for WalletEvent {
                 WalletEvent::Disclosure {
                     id: id.to_string(),
                     date_time: timestamp.to_rfc3339(),
-                    relying_party: Organization::from(reader_registration.organization),
-                    purpose: RPLocalizedStrings(reader_registration.purpose_statement).into(),
-                    request_policy,
+                    purpose: request_purpose(&organization),
+                    relying_party: (*organization).into(),
                     shared_attestations: (!attestations.is_empty()).then_some(attestations),
                     status: status.into(),
                     typ: r#type.into(),
                 }
             }
+            wallet::WalletEvent::Deletion {
+                id,
+                timestamp,
+                attestation,
+            } => WalletEvent::Deletion {
+                id: id.to_string(),
+                date_time: timestamp.to_rfc3339(),
+                attestation: (*attestation).into(),
+            },
         }
     }
 }
@@ -87,5 +97,54 @@ impl From<wallet::DisclosureStatus> for DisclosureStatus {
             wallet::DisclosureStatus::Cancelled => DisclosureStatus::Cancelled,
             wallet::DisclosureStatus::Error => DisclosureStatus::Error,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use serde_json::Value;
+    use serde_json::json;
+
+    use super::WalletEvent;
+
+    #[rstest]
+    #[case::registered(
+        Some(json!([
+            { "lang": "en", "value": "Verify your identity" },
+            { "lang": "nl", "value": "Uw identiteit controleren" }
+        ])),
+        vec![("en", "Verify your identity"), ("nl", "Uw identiteit controleren")]
+    )]
+    #[case::without_purpose(None, vec![])]
+    fn disclosure_history_purpose(#[case] registered_purpose: Option<Value>, #[case] expected: Vec<(&str, &str)>) {
+        let stored = json!({
+            "displayName": "Example",
+            "legalName": "Example B.V.",
+            "description": [],
+            "identifier": "example",
+            "countryCode": "NL",
+            "supportUri": "https://example.com/support",
+            "personType": "legalPerson",
+            "purpose": registered_purpose,
+        });
+        let event = WalletEvent::from(wallet::WalletEvent::Disclosure {
+            id: Default::default(),
+            timestamp: Default::default(),
+            organization: Box::new(serde_json::from_value(stored).unwrap()),
+            attestations: vec![],
+            status: wallet::DisclosureStatus::Success,
+            r#type: wallet::attestation_data::DisclosureType::Regular,
+        });
+        let WalletEvent::Disclosure { purpose, .. } = event else {
+            panic!("expected disclosure event");
+        };
+        assert_eq!(
+            purpose
+                .iter()
+                .map(|translation| (translation.language.as_str(), translation.value.as_str()))
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }

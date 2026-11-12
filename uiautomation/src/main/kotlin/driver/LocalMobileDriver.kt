@@ -1,69 +1,78 @@
 package driver
 
-import com.codeborne.selenide.WebDriverProvider
 import data.TestConfigRepository.Companion.testConfig
+import domain.DeviceCapabilities
+import domain.Platform
+import io.appium.java_client.AppiumDriver
 import io.appium.java_client.android.AndroidDriver
-import io.appium.java_client.android.options.UiAutomator2Options
 import io.appium.java_client.ios.IOSDriver
-import io.appium.java_client.ios.options.XCUITestOptions
-import org.openqa.selenium.Capabilities
-import org.openqa.selenium.WebDriver
 import service.AppiumServiceProvider
-import util.TestInfoHandler
 
-class LocalMobileDriver : WebDriverProvider {
+object LocalMobileDriver {
 
-    private val apkPath = "../nl.ictu.edi.wallet.latest-0.4.0-release.apk"
-    private val ipaPath = "../nl.ictu.edi.wallet.latest-0.4.0.ipa"
+    fun createDriver(): AppiumDriver = createDriver(
+        platform = testConfig.platform,
+        deviceName = testConfig.deviceName,
+        platformVersion = testConfig.platformVersion,
+        automationName = testConfig.automationName,
+        udid = testConfig.udid,
+        appPath = testConfig.appPath,
+        index = null,
+    )
 
-    override fun createDriver(capabilities: Capabilities): WebDriver {
-        // Set Android or iOS specific capabilities
-        val options = when (testConfig.platformName) {
-            "android" -> UiAutomator2Options().apply {
-                setApp(apkPath)
-                setAppPackage(testConfig.appIdentifier)
-                setIgnoreHiddenApiPolicyError(true)
+    fun createDriver(device: DeviceCapabilities, index: Int): AppiumDriver = createDriver(
+        platform = device.platform,
+        deviceName = device.deviceName,
+        platformVersion = device.platformVersion,
+        automationName = when (device.platform) {
+            Platform.ANDROID -> "UiAutomator2"
+            Platform.IOS -> "XCUITest"
+        },
+        udid = device.udid,
+        appPath = device.appPath,
+        index = index,
+    )
+
+    private fun createDriver(
+        platform: Platform,
+        deviceName: String,
+        platformVersion: String,
+        automationName: String,
+        udid: String,
+        appPath: String,
+        index: Int?,
+    ): AppiumDriver {
+        val serviceUrl = AppiumServiceProvider.service?.url
+            ?: throw IllegalStateException("Appium service not started — call AppiumServiceProvider.startService() first")
+
+        return when (platform) {
+            Platform.ANDROID -> AndroidDriver(serviceUrl, buildAndroidOptions(appPath).apply {
+                if (deviceName.isNotBlank()) setDeviceName(deviceName)
+                setPlatformName("Android")
+                if (platformVersion.isNotBlank()) setPlatformVersion(platformVersion)
+                setAutomationName(automationName)
+                if (udid.isNotBlank()) setCapability("appium:udid", udid)
+            }).also { driver ->
+                // Suppress Chrome's first-run screen so deepLink navigation lands on the target URL.
+                // Chrome reads '/data/local/tmp/chrome-command-line' at startup, on user builds only as debug app
+                // For details see https://www.chromium.org/developers/how-tos/run-chromium-with-flags/
+                val chromeSetup = listOf(
+                    "echo chrome --disable-fre --no-default-browser-check --no-first-run --disable-notifications > /data/local/tmp/chrome-command-line",
+                    "am set-debug-app --persistent com.android.chrome",
+                    "pm grant com.android.chrome android.permission.POST_NOTIFICATIONS",
+                    "am force-stop com.android.chrome",
+                ).joinToString("; ")
+                driver.executeScript("mobile: shell", mapOf("command" to "sh -c '$chromeSetup'"))
             }
-
-            "ios" -> XCUITestOptions().apply {
-                setApp(ipaPath)
-                setBundleId(testConfig.appIdentifier)
-            }
-
-            else -> throw IllegalArgumentException("Invalid platform name: ${testConfig.platformName}")
-        }
-        options.merge(capabilities)
-
-        // Set other capabilities
-        options.setDeviceName(testConfig.deviceName)
-        options.setPlatformName(testConfig.platformName)
-        options.setPlatformVersion(testConfig.platformVersion)
-        options.setLanguage(TestInfoHandler.language)
-        options.setLocale(TestInfoHandler.locale)
-        options.setAutomationName(testConfig.automationName)
-        options.setCapability("appium:newCommandTimeout", 350)
-
-        // Initialise the local WebDriver with desired capabilities defined above
-        return when (testConfig.platformName) {
-            "android" -> {
-                options.setCapability("appium:autoGrantPermissions", true)
-                AndroidDriver(AppiumServiceProvider.service?.url, options)
-            }
-            "ios" -> {
-                options.setCapability("appium:autoAcceptAlerts", true)
-                options.setCapability("includeSafariInWebviews", true)
-                options.setCapability("udid", "00008140-001A0D1A0A38801C");
-                options.setCapability("xcodeOrgId", "XGL6UKBPLP");
-                options.setCapability("xcodeSigningId", "iPhone Developer");
-                options.setCapability("updatedWDABundleId", "nl.ictu.edi.wallet.web-driver-agent-runner.xctrunner");
-                options.setCapability("wdaLaunchTimeout", 60000);
-                options.setCapability("wdaConnectionTimeout", 60000);
-                options.setCapability("nativeWebTap", true)
-                IOSDriver(AppiumServiceProvider.service?.url, options)
-            }
-            else -> {
-                throw IllegalArgumentException("Invalid platform name: ${testConfig.platformName}")
-            }
+            Platform.IOS -> IOSDriver(serviceUrl, buildIOSOptions(
+                appPath = appPath,
+                updatedWDABundleId = "nl.ictu.edi.wallet.web-driver-agent-runner",
+                wdaLocalPort = if (index != null) 8099 + index else null,
+            ).apply {
+                if (deviceName.isNotBlank()) setDeviceName(deviceName)
+                if (platformVersion.isNotBlank()) setPlatformVersion(platformVersion)
+                if (udid.isNotBlank()) setCapability("appium:udid", udid)
+            })
         }
     }
 }

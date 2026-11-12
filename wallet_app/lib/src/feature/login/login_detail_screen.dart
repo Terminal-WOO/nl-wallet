@@ -1,23 +1,18 @@
 import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../../domain/model/attribute/attribute.dart';
 import '../../domain/model/disclosure/disclose_card_request.dart';
 import '../../domain/model/organization.dart';
-import '../../domain/model/policy/organization_policy.dart';
-import '../../domain/model/policy/policy.dart';
 import '../../navigation/secured_page_route.dart';
 import '../../util/extension/build_context_extension.dart';
-import '../../util/extension/string_extension.dart';
-import '../../util/mapper/context_mapper.dart';
+import '../../util/formatter/country_code_formatter.dart';
 import '../../wallet_constants.dart';
 import '../check_attributes/check_attributes_screen.dart';
+import '../common/builder/request_detail_common_builders.dart';
 import '../common/widget/button/bottom_back_button.dart';
-import '../common/widget/button/icon/help_icon_button.dart';
-import '../common/widget/button/link_button.dart';
 import '../common/widget/card/shared_attributes_card.dart';
-import '../common/widget/organization/organization_logo.dart';
+import '../common/widget/divider_side.dart';
+import '../common/widget/menu_item.dart';
 import '../common/widget/spacer/sliver_divider.dart';
 import '../common/widget/spacer/sliver_sized_box.dart';
 import '../common/widget/text/body_text.dart';
@@ -26,12 +21,10 @@ import '../common/widget/wallet_app_bar.dart';
 import '../common/widget/wallet_scrollbar.dart';
 import '../info/info_screen.dart';
 import '../organization/detail/organization_detail_screen.dart';
-import '../policy/policy_screen.dart';
 import 'argument/login_detail_screen_argument.dart';
 
 class LoginDetailScreen extends StatelessWidget {
   final Organization organization;
-  final Policy policy;
   final List<DiscloseCardRequest> cardRequests;
   final bool sharedDataWithOrganizationBefore;
   final VoidCallback? onReportIssuePressed;
@@ -48,7 +41,6 @@ class LoginDetailScreen extends StatelessWidget {
 
   const LoginDetailScreen({
     required this.organization,
-    required this.policy,
     required this.cardRequests,
     required this.sharedDataWithOrganizationBefore,
     this.onReportIssuePressed,
@@ -59,8 +51,7 @@ class LoginDetailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: WalletAppBar(
-        title: TitleText(context.l10n.loginDetailScreenTitle(organization.displayName.l10nValue(context))),
-        actions: const [HelpIconButton()],
+        title: TitleText(context.l10n.loginDetailScreenTitle(organization.displayName)),
       ),
       body: SafeArea(
         child: Column(
@@ -82,7 +73,7 @@ class LoginDetailScreen extends StatelessWidget {
           SliverToBoxAdapter(
             child: Padding(
               padding: kDefaultTitlePadding,
-              child: TitleText(context.l10n.loginDetailScreenTitle(organization.displayName.l10nValue(context))),
+              child: TitleText(context.l10n.loginDetailScreenTitle(organization.displayName)),
             ),
           ),
           const SliverSizedBox(height: 12),
@@ -90,53 +81,33 @@ class LoginDetailScreen extends StatelessWidget {
           _buildOrganizationSection(context),
           const SliverDivider(),
           _buildAttributesSection(context),
+          SliverToBoxAdapter(
+            child: RequestDetailCommonBuilders.buildPolicy(
+              context,
+              organization: organization,
+              side: DividerSide.top,
+            ),
+          ),
           const SliverDivider(),
-          _buildAgreementSection(context),
+          const SliverSizedBox(height: 24),
         ],
       ),
     );
   }
 
   Widget _buildOrganizationSection(BuildContext context) {
+    final countryLabel = CountryCodeFormatter.format(organization.countryCode);
     return SliverToBoxAdapter(
-      child: Semantics(
-        button: true,
-        child: InkWell(
-          onTap: () => OrganizationDetailScreen.showPreloaded(
-            context,
-            organization,
-            sharedDataWithOrganizationBefore: sharedDataWithOrganizationBefore,
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                ExcludeSemantics(
-                  child: OrganizationLogo(image: organization.logo, size: 32, fixedRadius: 8),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text.rich(
-                        organization.displayName.l10nSpan(context),
-                        textAlign: TextAlign.start,
-                        style: context.textTheme.labelLarge,
-                      ),
-                      Text.rich(
-                        organization.category?.l10nSpan(context) ?? ''.toTextSpan(context),
-                        textAlign: TextAlign.start,
-                        style: context.textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.chevron_right_rounded),
-              ],
-            ),
-          ),
+      child: MenuItem(
+        dividerSide: .none,
+        label: Text(
+          context.l10n.requestDetailScreenAboutOrganizationCta(organization.displayName),
+        ),
+        subtitle: countryLabel == null ? null : Text(countryLabel),
+        onPressed: () => OrganizationDetailScreen.showPreloaded(
+          context,
+          organization,
+          sharedDataWithOrganizationBefore: sharedDataWithOrganizationBefore,
         ),
       ),
     );
@@ -186,41 +157,9 @@ class LoginDetailScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildAgreementSection(BuildContext context) {
-    return SliverPadding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-      sliver: SliverList.list(
-        children: [
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Icon(Icons.handshake_outlined),
-          ),
-          const SizedBox(height: 16),
-          TitleText(
-            context.l10n.loginDetailScreenAgreementTitle,
-            style: context.textTheme.titleLarge,
-          ),
-          const SizedBox(height: 8),
-          BodyText(
-            context.read<ContextMapper<OrganizationPolicy, String>>().map(
-              context,
-              OrganizationPolicy(organization: organization, policy: policy),
-            ),
-          ),
-          const SizedBox(height: 6),
-          LinkButton(
-            text: Text.rich(context.l10n.loginDetailScreenAgreementCta.toTextSpan(context)),
-            onPressed: () => PolicyScreen.show(context, organization, policy),
-          ),
-        ],
-      ),
-    );
-  }
-
   static Future<void> show(
     BuildContext context,
     Organization organization,
-    Policy policy,
     List<DiscloseCardRequest> cardRequests, {
     required bool sharedDataWithOrganizationBefore,
     VoidCallback? onReportIssuePressed,
@@ -231,7 +170,6 @@ class LoginDetailScreen extends StatelessWidget {
         builder: (context) {
           return LoginDetailScreen(
             organization: organization,
-            policy: policy,
             cardRequests: cardRequests,
             sharedDataWithOrganizationBefore: sharedDataWithOrganizationBefore,
             onReportIssuePressed: onReportIssuePressed,

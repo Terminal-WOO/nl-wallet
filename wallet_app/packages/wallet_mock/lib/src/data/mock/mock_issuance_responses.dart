@@ -14,7 +14,6 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kRvigId]!,
     requestedAttributes: [],
     requestPurpose: [const LocalizedString(language: 'nl', value: '')],
-    policy: _kMockIssuancePolicy,
     attestations: kPidAttestations,
   ),
   IssuanceResponse(
@@ -22,7 +21,6 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kDuoId]!,
     requestedAttributes: _kMockRequestBsnAttributes,
     requestPurpose: [const LocalizedString(language: 'nl', value: _kMockRequestPurpose)],
-    policy: _kMockIssuancePolicy,
     attestations: [kDiplomaAttestation],
   ),
   IssuanceResponse(
@@ -30,7 +28,6 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kDuoId]!,
     requestedAttributes: _kMockRequestBsnAttributes,
     requestPurpose: [const LocalizedString(language: 'nl', value: _kMockRequestPurpose)],
-    policy: _kMockIssuancePolicy,
     attestations: [kDiplomaAttestation, kMockMasterDiplomaWalletCard],
   ),
   IssuanceResponse(
@@ -38,7 +35,6 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kRdwId]!,
     requestedAttributes: _kMockRequestBsnAttributes,
     requestPurpose: [const LocalizedString(language: 'nl', value: _kMockRequestPurpose)],
-    policy: _kMockIssuancePolicy,
     attestations: [kMockDrivingLicenseWalletCard],
   ),
   IssuanceResponse(
@@ -46,7 +42,6 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kRdwId]!,
     requestedAttributes: _kMockRequestBsnAttributes,
     requestPurpose: [const LocalizedString(language: 'nl', value: _kMockRequestPurpose)],
-    policy: _kMockIssuancePolicy,
     attestations: [kMockDrivingLicenseRenewedWalletCard],
   ),
   IssuanceResponse(
@@ -54,7 +49,6 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kHealthInsuranceId]!,
     requestedAttributes: _kMockRequestNameDobAttributes,
     requestPurpose: [const LocalizedString(language: 'nl', value: _kMockRequestPurpose)],
-    policy: _kMockIssuancePolicy,
     attestations: [kMockHealthInsuranceWalletCard],
   ),
   IssuanceResponse(
@@ -62,8 +56,21 @@ final kIssuanceResponses = [
     relyingParty: kOrganizations[kJusticeId]!,
     requestedAttributes: _kMockRequestBsnAttributes,
     requestPurpose: [const LocalizedString(language: 'nl', value: _kMockRequestPurpose)],
-    policy: _kMockIssuancePolicy,
     attestations: [kMockVOGWalletCard],
+  ),
+  IssuanceResponse(
+    id: 'PRE-AUTH-FLOW',
+    relyingParty: kOrganizations[kSupermarketId]!,
+    requestedAttributes: [],
+    requestPurpose: [const LocalizedString(language: 'nl', value: '')],
+    attestations: [kMockLoyaltyCard],
+  ),
+  IssuanceResponse(
+    id: 'AUTH-FLOW',
+    relyingParty: kOrganizations[kSupermarketId]!,
+    requestedAttributes: [],
+    requestPurpose: [const LocalizedString(language: 'nl', value: 'Authenticatie')],
+    attestations: [kMockLoyaltyCard],
   ),
 ];
 
@@ -75,15 +82,4 @@ final _kMockRequestNameDobAttributes = [
   RequestedAttribute(label: 'Achternaam', key: kMockLastNameKey),
   RequestedAttribute(label: 'Geboortedatum', key: kMockBirthDateKey),
 ];
-// endregion
-
-// region Policies
-
-final _kMockIssuancePolicy = RequestPolicy(
-  dataStorageDurationInMinutes: BigInt.from(60 * 24 * 90),
-  dataSharedWithThirdParties: false,
-  dataDeletionPossible: true,
-  policyUrl: 'https://www.example.org',
-);
-
 // endregion

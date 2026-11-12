@@ -1,15 +1,18 @@
-use futures::FutureExt;
-use indexmap::IndexMap;
+use std::sync::Arc;
 
 use attestation_types::claim_path::ClaimPath;
+use crypto::examples::EXAMPLE_KEY_IDENTIFIER;
 use crypto::examples::Examples;
-use crypto::mock_remote::MockRemoteWscd;
+use crypto::mock_remote::DisclosureMockRemoteWscd;
 use crypto::server_keys::generate::Ca;
+use futures::FutureExt;
+use indexmap::IndexMap;
 use token_status_list::verification::client::mock::StatusListClientStub;
 use token_status_list::verification::verifier::RevocationVerifier;
 use utils::vec_at_least::VecNonEmpty;
 use utils::vec_nonempty;
 
+use super::mdoc::PartialMdoc;
 use crate::examples::EXAMPLE_ATTR_NAME;
 use crate::examples::EXAMPLE_ATTR_VALUE;
 use crate::examples::EXAMPLE_DOC_TYPE;
@@ -27,8 +30,6 @@ use crate::test;
 use crate::test::DebugCollapseBts;
 use crate::utils::serialization::CborSeq;
 use crate::utils::serialization::TaggedBytes;
-
-use super::mdoc::PartialMdoc;
 
 fn create_example_device_response(
     device_request: DeviceRequest,
@@ -48,11 +49,10 @@ fn create_example_device_response(
     let claim_paths = Vec::<VecNonEmpty<ClaimPath>>::from(first_request);
     let partial_mdoc = PartialMdoc::try_new(mdoc, &claim_paths).unwrap();
 
-    let (device_responses, _) = DeviceResponse::sign_multiple_from_partial_mdocs(
-        vec_nonempty![partial_mdoc],
+    let device_responses = DeviceResponse::sign_multiple_from_partial_mdocs(
+        vec_nonempty![(partial_mdoc, EXAMPLE_KEY_IDENTIFIER.to_string())],
         session_transcript,
-        &MockRemoteWscd::new_example(),
-        (),
+        &DisclosureMockRemoteWscd::new_example(),
     )
     .now_or_never()
     .unwrap()
@@ -68,10 +68,10 @@ async fn do_and_verify_iso_example_disclosure() {
     let device_request = DeviceRequest::example();
 
     // Examine some fields in the device request
-    let items_request = device_request.doc_requests.first().unwrap().items_request.0.clone();
+    let items_request = device_request.doc_requests.first().items_request.0.clone();
     assert_eq!(items_request.doc_type, EXAMPLE_DOC_TYPE);
-    let requested_attrs = items_request.name_spaces.get(EXAMPLE_NAMESPACE).unwrap();
-    let intent_to_retain = requested_attrs.get(EXAMPLE_ATTR_NAME).unwrap();
+    let requested_attrs = items_request.name_spaces.as_ref().get(EXAMPLE_NAMESPACE).unwrap();
+    let intent_to_retain = requested_attrs.as_ref().get(EXAMPLE_ATTR_NAME).unwrap();
     assert!(intent_to_retain);
     println!("DeviceRequest: {:#?}", DebugCollapseBts::from(&device_request));
 
@@ -82,8 +82,7 @@ async fn do_and_verify_iso_example_disclosure() {
     let certificate = device_request
         .doc_requests
         .first()
-        .unwrap()
-        .verify(&session_transcript, &IsoCertTimeGenerator, reader_trust_anchors)
+        .verify(&session_transcript, &IsoCertTimeGenerator, &reader_trust_anchors)
         .unwrap()
         .unwrap();
     let reader_x509_subject = certificate.subject();
@@ -106,8 +105,10 @@ async fn do_and_verify_iso_example_disclosure() {
             None,
             &session_transcript,
             &IsoCertTimeGenerator,
-            &[ca.to_trust_anchor()],
-            &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+            &ca.to_trust_anchors(),
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                ca.generate_issuer_status_list_mock().unwrap(),
+            ))),
         )
         .await
         .unwrap();
@@ -126,12 +127,16 @@ async fn do_and_verify_iso_example_disclosure() {
 /// Disclose some of the attributes of the example mdoc from the spec.
 #[tokio::test]
 async fn iso_examples_custom_disclosure() {
-    let request = DeviceRequest::from_items_requests(vec![ItemsRequest {
+    let request = DeviceRequest::from_items_requests(vec_nonempty![ItemsRequest {
         doc_type: EXAMPLE_DOC_TYPE.to_string(),
         name_spaces: IndexMap::from([(
             EXAMPLE_NAMESPACE.to_string(),
-            IndexMap::from([(EXAMPLE_ATTR_NAME.to_string(), false)]),
-        )]),
+            IndexMap::from([(EXAMPLE_ATTR_NAME.to_string(), false)])
+                .try_into()
+                .unwrap(),
+        )])
+        .try_into()
+        .unwrap(),
         request_info: None,
     }]);
     println!("My Request: {:#?}", DebugCollapseBts::from(&request));
@@ -146,8 +151,10 @@ async fn iso_examples_custom_disclosure() {
             None,
             &session_transcript,
             &IsoCertTimeGenerator,
-            &[ca.to_trust_anchor()],
-            &RevocationVerifier::new(StatusListClientStub::new(ca.generate_status_list_mock().unwrap())),
+            &ca.to_trust_anchors(),
+            &RevocationVerifier::new_without_caching(Arc::new(StatusListClientStub::new(
+                ca.generate_issuer_status_list_mock().unwrap(),
+            ))),
         )
         .await
         .unwrap();

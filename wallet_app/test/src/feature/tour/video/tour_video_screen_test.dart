@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mockito/mockito.dart';
 import 'package:video_player/video_player.dart';
+import 'package:wallet/src/domain/model/result/application_error.dart';
 import 'package:wallet/src/feature/error/error_screen.dart';
 import 'package:wallet/src/feature/tour/video/tour_video_screen.dart';
 
@@ -118,7 +119,7 @@ void main() {
   });
 
   group('goldens', () {
-    testGoldens('no internet error', (tester) async {
+    testGoldens('ltc14 no internet error', (tester) async {
       when(mockInternetChecker.hasConnection).thenAnswer((_) async => false);
       await tester.pumpWidgetWithAppWrapper(
         TourVideoScreen(
@@ -135,7 +136,7 @@ void main() {
   });
 
   group('TourVideoScreenArgument', () {
-    test('getArgument parses valid arguments correctly', () {
+    test('ltc14 getArgument parses valid arguments correctly', () {
       final routeSettings = const RouteSettings(
         arguments: {
           'videoTitle': 'video_title',
@@ -152,7 +153,7 @@ void main() {
       expect(argument.subtitleUrl, equals('https://example.com/subtitles.srt'));
     });
 
-    test('getArgument throws UnsupportedError for invalid arguments', () {
+    test('ltc14 getArgument throws UnsupportedError for invalid arguments', () {
       final routeSettings = const RouteSettings(arguments: 'invalid arguments');
 
       expect(
@@ -161,7 +162,7 @@ void main() {
       );
     });
 
-    test('getArgument throws UnsupportedError for null arguments', () {
+    test('ltc14 getArgument throws UnsupportedError for null arguments', () {
       final routeSettings = const RouteSettings(arguments: null);
 
       expect(
@@ -171,12 +172,18 @@ void main() {
     });
   });
 
-  group('VideoPlayerInitState enum', () {
-    test('has expected values', () {
-      expect(VideoPlayerInitState.values, hasLength(3));
-      expect(VideoPlayerInitState.values, contains(VideoPlayerInitState.initializing));
-      expect(VideoPlayerInitState.values, contains(VideoPlayerInitState.ok));
-      expect(VideoPlayerInitState.values, contains(VideoPlayerInitState.error));
+  group('VideoPlayerInitState', () {
+    test('ltc14 equals behaves as expected', () {
+      expect(const VideoPlayerInitializing(), equals(const VideoPlayerInitializing()));
+      expect(const VideoPlayerOk(), equals(const VideoPlayerOk()));
+      expect(
+        const VideoPlayerError(GenericError('', sourceError: 'test')),
+        equals(const VideoPlayerError(GenericError('', sourceError: 'test'))),
+      );
+      expect(
+        const VideoPlayerError(GenericError('', sourceError: 'test')),
+        isNot(equals(const VideoPlayerError(GenericError('alt', sourceError: 'test')))),
+      );
     });
   });
 }

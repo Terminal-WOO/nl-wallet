@@ -1,17 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../environment.dart';
 import '../domain/model/attribute/attribute.dart';
 import '../domain/model/consumable.dart';
+import '../domain/model/disclosure/start_disclosure_request.dart';
+import '../domain/model/help/help_category.dart';
+import '../domain/model/help/help_subcategory.dart';
 import '../domain/model/result/application_error.dart';
 import '../domain/usecase/pin/unlock_wallet_with_pin_usecase.dart';
 import '../domain/usecase/transfer/confirm_wallet_transfer_usecase.dart';
 import '../feature/about/about_screen.dart';
 import '../feature/biometric_settings/biometric_settings_screen.dart';
 import '../feature/biometric_settings/bloc/biometric_settings_bloc.dart';
+import '../feature/blocked/app_blocked_screen.dart';
+import '../feature/blocked/bloc/app_blocked_bloc.dart';
 import '../feature/card/data/argument/card_data_screen_argument.dart';
 import '../feature/card/data/bloc/card_data_bloc.dart';
 import '../feature/card/data/card_data_screen.dart';
+import '../feature/card/delete/argument/delete_card_screen_argument.dart';
+import '../feature/card/delete/bloc/delete_card_bloc.dart';
+import '../feature/card/delete/delete_card_screen.dart';
 import '../feature/card/detail/argument/card_detail_screen_argument.dart';
 import '../feature/card/detail/bloc/card_detail_bloc.dart';
 import '../feature/card/detail/card_detail_screen.dart';
@@ -25,9 +34,20 @@ import '../feature/dashboard/argument/dashboard_screen_argument.dart';
 import '../feature/dashboard/bloc/dashboard_bloc.dart';
 import '../feature/dashboard/dashboard_screen.dart';
 import '../feature/demo/demo_screen.dart';
+import '../feature/developer_settings/bloc/developer_settings_bloc.dart';
+import '../feature/developer_settings/developer_settings_screen.dart';
+import '../feature/disclosure/argument/disclosure_screen_argument.dart';
 import '../feature/disclosure/bloc/disclosure_bloc.dart';
 import '../feature/disclosure/disclosure_screen.dart';
+import '../feature/error/invariant/invariant_error_screen.dart';
 import '../feature/forgot_pin/forgot_pin_screen.dart';
+import '../feature/help/argument/help_topic_screen_argument.dart';
+import '../feature/help/bloc/help_overview_bloc.dart';
+import '../feature/help/bloc/help_topic_bloc.dart';
+import '../feature/help/help_category_screen.dart';
+import '../feature/help/help_overview_screen.dart';
+import '../feature/help/help_subcategory_screen.dart';
+import '../feature/help/help_topic_screen.dart';
 import '../feature/history/detail/argument/history_detail_screen_argument.dart';
 import '../feature/history/detail/bloc/history_detail_bloc.dart';
 import '../feature/history/detail/history_detail_screen.dart';
@@ -42,8 +62,9 @@ import '../feature/login/login_detail_screen.dart';
 import '../feature/menu/bloc/menu_bloc.dart';
 import '../feature/menu/menu_screen.dart';
 import '../feature/menu/sub_menu/contact/contact_screen.dart';
-import '../feature/menu/sub_menu/need_help/need_help_screen.dart';
 import '../feature/menu/sub_menu/settings/settings_screen.dart';
+import '../feature/notification/bloc/manage_notifications_bloc.dart';
+import '../feature/notification/manage_notifications_screen.dart';
 import '../feature/organization/detail/argument/organization_detail_screen_argument.dart';
 import '../feature/organization/detail/bloc/organization_detail_bloc.dart';
 import '../feature/organization/detail/organization_detail_screen.dart';
@@ -51,15 +72,20 @@ import '../feature/pin/bloc/pin_bloc.dart';
 import '../feature/pin/pin_screen.dart';
 import '../feature/pin_blocked/pin_blocked_screen.dart';
 import '../feature/pin_timeout/pin_timeout_screen.dart';
-import '../feature/policy/policy_screen.dart';
-import '../feature/policy/policy_screen_arguments.dart';
 import '../feature/privacy_policy/privacy_policy_screen.dart';
-import '../feature/qr/bloc/qr_bloc.dart';
-import '../feature/qr/qr_screen.dart';
+import '../feature/qr/present/bloc/qr_present_bloc.dart';
+import '../feature/qr/present/qr_present_screen.dart';
+import '../feature/qr/scan/bloc/qr_scan_bloc.dart';
+import '../feature/qr/scan/qr_scan_screen.dart';
 import '../feature/recover_pin/bloc/recover_pin_bloc.dart';
 import '../feature/recover_pin/recover_pin_screen.dart';
+import '../feature/recover_session/recover_session_screen.dart';
 import '../feature/renew_pid/bloc/renew_pid_bloc.dart';
 import '../feature/renew_pid/renew_pid_screen.dart';
+import '../feature/review_revocation_code_screen/bloc/review_revocation_code_bloc.dart';
+import '../feature/review_revocation_code_screen/review_revocation_code_screen.dart';
+import '../feature/revocation/bloc/revocation_code_bloc.dart';
+import '../feature/revocation/revocation_code_screen.dart';
 import '../feature/setup_security/bloc/setup_security_bloc.dart';
 import '../feature/setup_security/setup_security_screen.dart';
 import '../feature/sign/bloc/sign_bloc.dart';
@@ -78,9 +104,10 @@ import '../feature/wallet_transfer_faq/wallet_transfer_faq_screen.dart';
 import '../feature/wallet_transfer_source/bloc/wallet_transfer_source_bloc.dart';
 import '../feature/wallet_transfer_source/wallet_transfer_source_screen.dart';
 import '../feature/wallet_transfer_target/bloc/wallet_transfer_target_bloc.dart'
-    hide WalletTransferGenericError, WalletTransferUpdateStateEvent;
+    hide WalletTransferError, WalletTransferUpdateStateEvent;
 import '../feature/wallet_transfer_target/wallet_transfer_target_screen.dart';
 import '../util/cast_util.dart';
+import '../util/extension/build_context_extension.dart';
 import 'secured_page_route.dart';
 
 /// Class responsible for defining route names and for mapping these names to the actual
@@ -96,43 +123,61 @@ class WalletRoutes {
     introductionPrivacyRoute,
     privacyPolicyRoute,
     aboutRoute,
+    contactRoute,
     pinRoute,
     pinTimeoutRoute,
     pinRecoveryRoute,
     pinBlockedRoute,
     forgotPinRoute,
     updateInfoRoute,
+    appBlockedRoute,
+    invariantErrorRoute,
   ];
+
+  @visibleForTesting
+  static List<String> get allRoutes => _routeBuilders.keys.toList();
+
+  static bool isKnownRoute(String? routeName) => routeName != null && _routeBuilders.containsKey(routeName);
 
   static const aboutRoute = '/about';
   static const biometricsSettingsRoute = '/settings/biometrics';
   static const cardDataRoute = '/card/data';
+  static const cardDeleteRoute = '/card/delete';
   static const cardDetailRoute = '/card/detail';
   static const cardHistoryRoute = '/card/history';
   static const changeLanguageRoute = '/language';
   static const changePinRoute = '/change_pin';
   static const contactRoute = '/menu/contact';
   static const dashboardRoute = '/dashboard';
+  static const appBlockedRoute = '/blocked';
   static const demoRoute = '/demo';
   static const disclosureRoute = '/disclosure';
   static const forgotPinRoute = '/forgot_pin';
+  static const helpOverviewRoute = '/menu/help';
+  static const helpCategoryRoute = '/menu/help/category';
+  static const helpSubcategoryRoute = '/menu/help/subcategory';
+  static const helpTopicRoute = '/menu/help/topic';
   static const historyDetailRoute = '/history';
   static const introductionPrivacyRoute = '/introduction/privacy';
   static const introductionRoute = '/introduction';
+  static const invariantErrorRoute = '/invariant_error';
   static const issuanceRoute = '/issuance';
   static const loginDetailRoute = '/login_detail';
   static const menuRoute = '/menu';
-  static const needHelpRoute = '/menu/need_help';
   static const organizationDetailRoute = '/organization';
   static const pinBlockedRoute = '/pin/blocked';
   static const pinRoute = '/pin';
   static const pinRecoveryRoute = '/pin/recovery';
   static const pinTimeoutRoute = '/pin/timeout';
-  static const policyRoute = '/policy';
   static const privacyPolicyRoute = '/privacy_policy';
-  static const qrRoute = '/qr';
+  static const qrPresentRoute = '/qr/present';
+  static const qrScanRoute = '/qr/scan';
+  static const recoverSessionRoute = '/recover_session';
   static const renewPidRoute = '/pid/renew';
+  static const revocationCodeRoute = '/revocation_code';
+  static const reviewRevocationCodeRoute = '/review_revocation_code';
   static const settingsRoute = '/menu/settings';
+  static const developerSettingsRoute = '/settings/developer';
   static const setupSecurityRoute = '/security/setup';
   static const signRoute = '/sign';
   static const splashRoute = '/';
@@ -145,10 +190,11 @@ class WalletRoutes {
   static const walletTransferSourceRoute = '/wallet_transfer/source';
   static const walletTransferTargetRoute = '/wallet_transfer/target';
   static const walletTransferFaqRoute = '/settings/wallet_transfer_faq';
+  static const manageNotificationsRoute = '/settings/manage_notifications';
 
   static final Map<String, WidgetBuilder Function(RouteSettings)> _routeBuilders = {
     WalletRoutes.splashRoute: (_) => _createSplashScreenBuilder,
-    WalletRoutes.qrRoute: (_) => _createQrScreenBuilder,
+    WalletRoutes.qrScanRoute: (_) => _createQrScanScreenBuilder,
     WalletRoutes.introductionRoute: (_) => _createIntroductionScreenBuilder,
     WalletRoutes.introductionPrivacyRoute: (_) => _createIntroductionPrivacyScreenBuilder,
     WalletRoutes.aboutRoute: (_) => _createAboutScreenBuilder,
@@ -158,13 +204,13 @@ class WalletRoutes {
     WalletRoutes.dashboardRoute: _createDashboardScreenBuilder,
     WalletRoutes.cardDetailRoute: _createCardDetailScreenBuilder,
     WalletRoutes.cardDataRoute: _createCardDataScreenBuilder,
+    WalletRoutes.cardDeleteRoute: _createDeleteCardScreenBuilder,
     WalletRoutes.cardHistoryRoute: _createCardHistoryScreenBuilder,
     WalletRoutes.demoRoute: (_) => _createDemoScreenBuilder,
     WalletRoutes.contactRoute: (_) => _createContactScreenBuilder,
     WalletRoutes.themeRoute: (_) => _createThemeScreenBuilder,
     WalletRoutes.disclosureRoute: _createDisclosureScreenBuilder,
     WalletRoutes.forgotPinRoute: _createForgotPinScreenBuilder,
-    WalletRoutes.policyRoute: _createPolicyScreenBuilder,
     WalletRoutes.issuanceRoute: _createIssuanceScreenBuilder,
     WalletRoutes.signRoute: _createSignScreenBuilder,
     WalletRoutes.walletPersonalizeRoute: _createWalletPersonalizeScreenBuilder,
@@ -178,28 +224,37 @@ class WalletRoutes {
     WalletRoutes.pinBlockedRoute: _createPinBlockedScreenBuilder,
     WalletRoutes.loginDetailRoute: _createLoginDetailScreenBuilder,
     WalletRoutes.settingsRoute: (_) => _createSettingsScreenBuilder,
-    WalletRoutes.needHelpRoute: (_) => _createNeedHelpScreenBuilder,
+    if (Environment.enableWrprcStrictModeToggle)
+      WalletRoutes.developerSettingsRoute: (_) => _createDeveloperSettingsScreenBuilder,
+    WalletRoutes.helpOverviewRoute: (_) => _createHelpOverviewScreenBuilder,
+    WalletRoutes.helpCategoryRoute: _createHelpCategoryScreenBuilder,
+    WalletRoutes.helpSubcategoryRoute: _createHelpSubcategoryScreenBuilder,
+    WalletRoutes.helpTopicRoute: _createHelpTopicScreenBuilder,
     WalletRoutes.biometricsSettingsRoute: (_) => _createBiometricsSettingsScreenBuilder,
     WalletRoutes.privacyPolicyRoute: (_) => _createPrivacyPolicyScreenBuilder,
     WalletRoutes.updateInfoRoute: (_) => _createUpdateInfoScreenBuilder,
     WalletRoutes.tourOverviewRoute: (_) => _createTourOverviewScreenBuilder,
     WalletRoutes.tourVideoRoute: _createTourVideoScreenBuilder,
+    WalletRoutes.recoverSessionRoute: (_) => _createRecoverSessionScreenBuilder,
     WalletRoutes.renewPidRoute: _createRenewPidScreenBuilder,
+    WalletRoutes.revocationCodeRoute: (_) => _createRevocationCodeScreenBuilder,
+    WalletRoutes.reviewRevocationCodeRoute: (_) => _createReviewRevocationCodeScreenBuilder,
     WalletRoutes.walletTransferSourceRoute: _createWalletTransferSourceRoute,
     WalletRoutes.walletTransferTargetRoute: _createWalletTransferTargetRoute,
     WalletRoutes.walletTransferFaqRoute: (_) => _createWalletTransferFaqScreenBuilder,
+    WalletRoutes.manageNotificationsRoute: (_) => _createManageNotificationsScreenBuilder,
+    WalletRoutes.appBlockedRoute: _createAppBlockedScreenBuilder,
+    WalletRoutes.invariantErrorRoute: _createInvariantErrorScreenBuilder,
+    WalletRoutes.qrPresentRoute: _createQrPresentScreenBuilder,
   };
 
   static Route<dynamic> routeFactory(RouteSettings settings) {
     final builderFactory = _routeBuilders[settings.name];
-    if (builderFactory == null) {
-      throw UnsupportedError('Unknown route: ${settings.name}');
-    }
+    if (builderFactory == null) throw UnsupportedError('Unknown route: ${settings.name}');
 
     final builder = builderFactory(settings);
-    if (publicRoutes.contains(settings.name)) {
-      return MaterialPageRoute(builder: builder, settings: settings);
-    }
+    if (publicRoutes.contains(settings.name)) return MaterialPageRoute(builder: builder, settings: settings);
+
     return SecuredPageRoute(builder: builder, settings: settings, transition: _resolvePageTransition(settings));
   }
 
@@ -214,7 +269,12 @@ class WalletRoutes {
     }
   }
 
-  static List<Route<dynamic>> initialRoutes(String route) => [MaterialPageRoute(builder: _createSplashScreenBuilder)];
+  static List<Route<dynamic>> initialRoutes(String route) => [
+    MaterialPageRoute(
+      settings: const RouteSettings(name: splashRoute),
+      builder: _createSplashScreenBuilder,
+    ),
+  ];
 }
 
 Widget _createSplashScreenBuilder(BuildContext context) => BlocProvider<SplashBloc>(
@@ -222,19 +282,24 @@ Widget _createSplashScreenBuilder(BuildContext context) => BlocProvider<SplashBl
   child: const SplashScreen(),
 );
 
-Widget _createQrScreenBuilder(BuildContext context) => BlocProvider<QrBloc>(
-  create: (BuildContext context) => QrBloc(context.read(), context.read())..add(const QrScanCheckPermission()),
-  child: const QrScreen(),
+Widget _createQrScanScreenBuilder(BuildContext context) => BlocProvider<QrScanBloc>(
+  create: (BuildContext context) =>
+      QrScanBloc(context.read(), context.read(), context.read())..add(const QrScanCheckPermission()),
+  child: const QrScanScreen(),
 );
 
 Widget _createIntroductionScreenBuilder(BuildContext context) => const IntroductionScreen();
 
 Widget _createIntroductionPrivacyScreenBuilder(BuildContext context) => const IntroductionPrivacyScreen();
 
-WidgetBuilder _createForgotPinScreenBuilder(RouteSettings settings) =>
-    (context) => const ForgotPinScreen();
+WidgetBuilder _createForgotPinScreenBuilder(RouteSettings settings) => (context) {
+  final argument = ForgotPinScreen.getArgument(settings);
+  return ForgotPinScreen(useCloseButton: argument.useCloseButton);
+};
 
 Widget _createAboutScreenBuilder(BuildContext context) => const AboutScreen();
+
+Widget _createRecoverSessionScreenBuilder(BuildContext context) => const RecoverSessionScreen();
 
 Widget _createPinScreenBuilder(BuildContext context) => BlocProvider<PinBloc>(
   create: (BuildContext context) => PinBloc(context.read<UnlockWalletWithPinUseCase>()),
@@ -252,15 +317,17 @@ Widget _createSetupSecurityScreenBuilder(BuildContext context) => BlocProvider<S
 );
 
 WidgetBuilder _createDashboardScreenBuilder(RouteSettings settings) {
-  final DashboardScreenArgument? argument = DashboardScreen.getArgument(settings);
-  return (context) => BlocProvider(
-    create: (context) => DashboardBloc(
-      context.read(),
-      context.read(),
-      argument?.cards,
-    )..add(const DashboardLoadTriggered()),
-    child: const DashboardScreen(),
-  );
+  return (context) {
+    final DashboardScreenArgument? argument = DashboardScreen.getArgument(settings);
+    return BlocProvider(
+      create: (context) => DashboardBloc(
+        context.read(),
+        context.read(),
+        argument?.cards,
+      )..add(const DashboardLoadTriggered()),
+      child: const DashboardScreen(),
+    );
+  };
 }
 
 Widget _createMenuScreenBuilder(BuildContext context) {
@@ -274,8 +341,9 @@ WidgetBuilder _createCardDetailScreenBuilder(RouteSettings settings) {
   return (context) {
     final CardDetailScreenArgument argument = CardDetailScreen.getArgument(settings);
     return BlocProvider<CardDetailBloc>(
-      create: (context) => CardDetailBloc(context.read(), argument.card)..add(CardDetailLoadTriggered(argument.cardId)),
-      child: CardDetailScreen(cardTitle: argument.cardTitle.l10nValue(context)),
+      create: (context) =>
+          CardDetailBloc(context.read(), context.read(), argument.card)..add(CardDetailLoadTriggered(argument.cardId)),
+      child: CardDetailScreen(cardTitle: argument.cardTitle?.l10nValue(context)),
     );
   };
 }
@@ -290,12 +358,25 @@ WidgetBuilder _createCardDataScreenBuilder(RouteSettings settings) {
   };
 }
 
+WidgetBuilder _createDeleteCardScreenBuilder(RouteSettings settings) {
+  return (context) {
+    final DeleteCardScreenArgument argument = DeleteCardScreen.getArgument(settings);
+    return BlocProvider<DeleteCardBloc>(
+      create: (context) =>
+          DeleteCardBloc()
+            ..add(DeleteCardLoadTriggered(attestationId: argument.attestationId, cardTitle: argument.cardTitle)),
+      child: const DeleteCardScreen(),
+    );
+  };
+}
+
 WidgetBuilder _createCardHistoryScreenBuilder(RouteSettings settings) {
   return (context) {
     final String attestationId = CardHistoryScreen.getArguments(settings);
     return BlocProvider<CardHistoryBloc>(
       create: (context) =>
-          CardHistoryBloc(context.read(), context.read())..add(CardHistoryLoadTriggered(attestationId)),
+          CardHistoryBloc(context.read(), context.read(), context.read(), context.read())
+            ..add(CardHistoryLoadTriggered(attestationId)),
       child: const CardHistoryScreen(),
     );
   };
@@ -304,32 +385,27 @@ WidgetBuilder _createCardHistoryScreenBuilder(RouteSettings settings) {
 Widget _createThemeScreenBuilder(BuildContext context) => const ThemeScreen();
 
 WidgetBuilder _createDisclosureScreenBuilder(RouteSettings settings) {
-  final args = DisclosureScreen.getArgument(settings);
   return (context) {
+    final args = DisclosureScreen.getArgument(settings);
     return BlocProvider<DisclosureBloc>(
-      create: (BuildContext context) =>
-          DisclosureBloc(
-            context.read(),
-            context.read(),
-            context.read(),
-          )..add(
-            DisclosureSessionStarted(
-              args.uri,
-              isQrCode: args.isQrCode,
-            ),
-          ),
+      create: (BuildContext context) {
+        final bloc = DisclosureBloc(
+          context.read(),
+          context.read(),
+          context.read(),
+          context.read(),
+        );
+        switch (args.type) {
+          case RemoteDisclosure(:final uri, isQrCode: false):
+            bloc.add(DisclosureSessionStarted(StartDisclosureRequest.deeplink(uri)));
+          case RemoteDisclosure(:final uri, isQrCode: true):
+            bloc.add(DisclosureSessionStarted(StartDisclosureRequest.qrScan(uri)));
+          case CloseProximityDisclosure():
+            bloc.add(const DisclosureSessionStarted(StartDisclosureRequest.closeProximity()));
+        }
+        return bloc;
+      },
       child: const DisclosureScreen(),
-    );
-  };
-}
-
-WidgetBuilder _createPolicyScreenBuilder(RouteSettings settings) {
-  return (context) {
-    final PolicyScreenArguments args = PolicyScreen.getArguments(settings);
-    return PolicyScreen(
-      relyingParty: args.relyingParty,
-      policy: args.policy,
-      showSignatureRow: args.showSignatureRow,
     );
   };
 }
@@ -339,10 +415,20 @@ WidgetBuilder _createIssuanceScreenBuilder(RouteSettings settings) {
     final IssuanceScreenArgument argument = IssuanceScreen.getArgument(settings);
     return BlocProvider<IssuanceBloc>(
       create: (BuildContext context) {
-        return IssuanceBloc(
-          context.read(),
-          context.read(),
-        )..add(IssuanceSessionStarted(argument.uri!, isQrCode: argument.isQrCode));
+        final event = switch (argument.issuanceType) {
+          IssuanceType.disclosureBasedIssuance => IssuanceSessionStarted(
+            argument.uri!,
+            isQrCode: argument.isQrCode,
+            type: argument.issuanceType,
+          ),
+          IssuanceType.credentialOffer => IssuanceSessionStarted(
+            argument.uri!,
+            isQrCode: argument.isQrCode,
+            type: argument.issuanceType,
+          ),
+          IssuanceType.authorizationCallback => IssuanceSessionContinued(argument.uri!),
+        };
+        return IssuanceBloc(context.read(), context.read(), context.read())..add(event);
       },
       child: const IssuanceScreen(),
     );
@@ -355,7 +441,7 @@ WidgetBuilder _createSignScreenBuilder(RouteSettings settings) {
     return BlocProvider<SignBloc>(
       create: (BuildContext context) {
         return SignBloc(
-          arguments.uri!,
+          arguments.uri,
           context.read(),
           context.read(),
         );
@@ -366,8 +452,8 @@ WidgetBuilder _createSignScreenBuilder(RouteSettings settings) {
 }
 
 WidgetBuilder _createWalletPersonalizeScreenBuilder(RouteSettings settings) {
-  final argument = Consumable(tryCast<String>(settings.arguments));
   return (context) {
+    final argument = Consumable(tryCast<String>(settings.arguments));
     return BlocProvider<WalletPersonalizeBloc>(
       create: (BuildContext context) {
         final bloc = WalletPersonalizeBloc(
@@ -397,7 +483,7 @@ WidgetBuilder _createHistoryDetailScreenBuilder(RouteSettings settings) {
   return (context) {
     final HistoryDetailScreenArgument argument = HistoryDetailScreen.getArgument(settings);
     return BlocProvider<HistoryDetailBloc>(
-      create: (BuildContext context) => HistoryDetailBloc(context.read())
+      create: (BuildContext context) => HistoryDetailBloc()
         ..add(
           HistoryDetailLoadTriggered(event: argument.walletEvent),
         ),
@@ -437,7 +523,6 @@ WidgetBuilder _createLoginDetailScreenBuilder(RouteSettings settings) {
     final argument = LoginDetailScreen.getArgument(settings);
     return LoginDetailScreen(
       organization: argument.organization,
-      policy: argument.policy,
       cardRequests: argument.cardRequests,
       sharedDataWithOrganizationBefore: argument.sharedDataWithOrganizationBefore,
     );
@@ -462,7 +547,38 @@ WidgetBuilder _createOrganizationDetailScreenBuilder(RouteSettings settings) {
 
 Widget _createSettingsScreenBuilder(BuildContext context) => const SettingsScreen();
 
-Widget _createNeedHelpScreenBuilder(BuildContext context) => const NeedHelpScreen();
+Widget _createDeveloperSettingsScreenBuilder(BuildContext context) => BlocProvider<DeveloperSettingsBloc>(
+  create: (BuildContext context) => DeveloperSettingsBloc(context.read())..add(const DeveloperSettingsLoadTriggered()),
+  child: const DeveloperSettingsScreen(),
+);
+
+Widget _createHelpOverviewScreenBuilder(BuildContext context) {
+  return BlocProvider<HelpOverviewBloc>(
+    create: (BuildContext context) =>
+        HelpOverviewBloc(context.read(), context.activeLocale)..add(const HelpOverviewLoadTriggered()),
+    child: const HelpOverviewScreen(),
+  );
+}
+
+WidgetBuilder _createHelpCategoryScreenBuilder(RouteSettings settings) {
+  return (context) => HelpCategoryScreen(category: tryCast<HelpCategory>(settings.arguments)!);
+}
+
+WidgetBuilder _createHelpSubcategoryScreenBuilder(RouteSettings settings) {
+  return (context) => HelpSubcategoryScreen(subcategory: tryCast<HelpSubcategory>(settings.arguments)!);
+}
+
+WidgetBuilder _createHelpTopicScreenBuilder(RouteSettings settings) {
+  return (context) {
+    final argument = tryCast<HelpTopicScreenArgument>(settings.arguments)!;
+    return BlocProvider<HelpTopicBloc>(
+      create: (BuildContext context) =>
+          HelpTopicBloc(context.read(), context.read(), context.activeLocale)
+            ..add(HelpTopicLoadTriggered(argument.topicId, visitedTopicIds: argument.visitedTopicIds)),
+      child: HelpTopicScreen(argument: argument),
+    );
+  };
+}
 
 Widget _createContactScreenBuilder(BuildContext context) => const ContactScreen();
 
@@ -506,8 +622,8 @@ WidgetBuilder _createTourVideoScreenBuilder(RouteSettings settings) {
 }
 
 WidgetBuilder _createRenewPidScreenBuilder(RouteSettings settings) {
-  final argument = Consumable(tryCast<String>(settings.arguments));
   return (context) {
+    final argument = Consumable(tryCast<String>(settings.arguments));
     return BlocProvider<RenewPidBloc>(
       create: (BuildContext context) {
         final bloc = RenewPidBloc(
@@ -526,8 +642,9 @@ WidgetBuilder _createRenewPidScreenBuilder(RouteSettings settings) {
 }
 
 WidgetBuilder _createPinRecoveryScreenBuilder(RouteSettings settings) {
-  final argument = Consumable(tryCast<String>(settings.arguments));
   return (context) {
+    final argument = Consumable(RecoverPinScreen.getArgument(settings));
+    final continueFromDigiD = argument.peek()?.uri != null || (argument.peek()?.isRecoveryFlow ?? false);
     return BlocProvider<RecoverPinBloc>(
       create: (BuildContext context) {
         final bloc = RecoverPinBloc(
@@ -536,9 +653,10 @@ WidgetBuilder _createPinRecoveryScreenBuilder(RouteSettings settings) {
           context.read(),
           context.read(),
           context.read(),
-          continueFromDigiD: argument.peek() != null,
+          context.read(),
+          continueFromDigiD: continueFromDigiD,
         );
-        if (argument.peek() != null) bloc.add(RecoverPinContinuePinRecovery(argument.value!));
+        if (argument.peek()?.uri != null) bloc.add(RecoverPinContinuePinRecovery(argument.value!.uri!));
         return bloc;
       },
       child: const RecoverPinScreen(),
@@ -547,8 +665,8 @@ WidgetBuilder _createPinRecoveryScreenBuilder(RouteSettings settings) {
 }
 
 WidgetBuilder _createWalletTransferSourceRoute(RouteSettings settings) {
-  final argument = Consumable(tryCast<String>(settings.arguments));
   return (context) {
+    final argument = Consumable(tryCast<String>(settings.arguments));
     return MultiBlocProvider(
       providers: [
         BlocProvider<WalletTransferSourceBloc>(
@@ -563,7 +681,7 @@ WidgetBuilder _createWalletTransferSourceRoute(RouteSettings settings) {
             if (argument.peek() != null) {
               bloc.add(WalletTransferAcknowledgeTransferEvent(argument.value!));
             } else {
-              final state = WalletTransferGenericError(GenericError('No valid uri', sourceError: argument));
+              final state = WalletTransferError(GenericError('No valid uri', sourceError: argument));
               bloc.add(WalletTransferUpdateStateEvent(state));
             }
             return bloc;
@@ -595,3 +713,59 @@ WidgetBuilder _createWalletTransferTargetRoute(RouteSettings settings) {
 }
 
 Widget _createWalletTransferFaqScreenBuilder(BuildContext context) => const WalletTransferFaqScreen();
+
+Widget _createRevocationCodeScreenBuilder(BuildContext context) => BlocProvider<RevocationCodeBloc>(
+  create: (BuildContext context) => RevocationCodeBloc(
+    context.read(),
+    context.read(),
+  )..add(const RevocationCodeLoadTriggered()),
+  child: const RevocationCodeScreen(),
+);
+
+Widget _createReviewRevocationCodeScreenBuilder(BuildContext context) => BlocProvider<ReviewRevocationCodeBloc>(
+  create: (BuildContext context) => ReviewRevocationCodeBloc(),
+  child: const ReviewRevocationCodeScreen(),
+);
+
+Widget _createManageNotificationsScreenBuilder(BuildContext context) => BlocProvider<ManageNotificationsBloc>(
+  create: (BuildContext context) => ManageNotificationsBloc(
+    context.read(),
+    context.read(),
+    context.read(),
+    context.read(),
+    context.read(),
+  )..add(const ManageNotificationsLoadTriggered()),
+  child: const ManageNotificationsScreen(),
+);
+
+WidgetBuilder _createAppBlockedScreenBuilder(RouteSettings settings) {
+  return (context) {
+    final reason = AppBlockedScreen.getArgument(settings)?.reason ?? .unknown;
+    return BlocProvider<AppBlockedBloc>(
+      create: (BuildContext context) => AppBlockedBloc(context.read())..add(AppBlockedLoadTriggered(reason: reason)),
+      child: const AppBlockedScreen(),
+    );
+  };
+}
+
+WidgetBuilder _createInvariantErrorScreenBuilder(RouteSettings settings) {
+  return (context) {
+    final code = InvariantErrorScreen.getArgument(settings)?.code;
+    return InvariantErrorScreen(code: code);
+  };
+}
+
+WidgetBuilder _createQrPresentScreenBuilder(RouteSettings settings) {
+  return (context) {
+    return BlocProvider<QrPresentBloc>(
+      create: (BuildContext context) => QrPresentBloc(
+        context.read(),
+        context.read(),
+        context.read(),
+        context.read(),
+        context.read(),
+      )..add(const QrPresentStartRequested()),
+      child: const QrPresentScreen(),
+    );
+  };
+}

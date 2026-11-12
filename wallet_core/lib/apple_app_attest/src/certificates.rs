@@ -16,7 +16,8 @@ use rustls_pki_types::CertificateDer;
 use rustls_pki_types::TrustAnchor;
 use rustls_pki_types::UnixTime;
 use webpki::EndEntityCert;
-use webpki::KeyUsage;
+use webpki::ExtendedKeyUsageValidator;
+use webpki::KeyPurposeIdIter;
 use webpki::ring::ECDSA_P256_SHA256;
 use webpki::ring::ECDSA_P256_SHA384;
 use webpki::ring::ECDSA_P384_SHA256;
@@ -33,21 +34,31 @@ pub const APPLE_ANONYMOUS_ATTESTATION_OID: Oid = oid!(1.2.840.113635.100.8.2);
 #[derive(Debug, thiserror::Error)]
 pub enum CertificateError {
     #[error("parsing certificate chain failed: {0}")]
-    ChainParsing(#[source] webpki::Error),
+    ChainParsing(#[source] Box<webpki::Error>),
     #[error("provided time is earlier than the unix epoch")]
     TimeBeforeUnixEpoch,
     #[error("certificate chain verification failed: {0}")]
-    ChainVerification(#[source] webpki::Error),
+    ChainVerification(#[source] Box<webpki::Error>),
     #[error("parsing credential certificate failed: {0}")]
     CredentialParsing(#[source] X509Error),
     #[error("parsing public key failed: {0}")]
-    PublicKeyParsing(#[source] p256::pkcs8::spki::Error),
+    PublicKeyParsing(#[source] Box<p256::pkcs8::spki::Error>),
     #[error("anonymous attestation extension is not present in certificate")]
     ExtensionMissing,
     #[error("extracting anonymous attestation extension from certificate failed: {0}")]
     ExtensionExtraction(#[source] X509Error),
     #[error("parsing anonymous attestation certificate extension failed: {0}")]
     ExtensionParsing(#[source] rasn::error::DecodeError),
+}
+
+/// A type that implements [`ExtendedKeyUsageValidator`] by simply
+/// ignoring the extended key purpose values in a certificate.
+struct NoopExtendedKeyUsageValidator;
+
+impl ExtendedKeyUsageValidator for NoopExtendedKeyUsageValidator {
+    fn validate(&self, _iter: KeyPurposeIdIter<'_, '_>) -> Result<(), webpki::Error> {
+        Ok(())
+    }
 }
 
 #[nutype(
@@ -89,7 +100,7 @@ impl DerX509CertificateChain {
             .map_err(|_| CertificateError::TimeBeforeUnixEpoch)?;
 
         EndEntityCert::try_from(&CertificateDer::from(self.credential_certificate_der()))
-            .map_err(CertificateError::ChainParsing)?
+            .map_err(|error| CertificateError::ChainParsing(Box::new(error)))?
             .verify_for_usage(
                 &[
                     ECDSA_P256_SHA256,
@@ -104,11 +115,13 @@ impl DerX509CertificateChain {
                     .collect::<Vec<_>>()
                     .as_slice(),
                 UnixTime::since_unix_epoch(Duration::from_secs(timestamp)),
-                KeyUsage::client_auth(),
+                // For some reason, Apple stopped including the client_auth EKU in their certificates and
+                // replaced it with their own mystery EKU instead. For now, do no check the EKU at all.
+                NoopExtendedKeyUsageValidator,
                 None,
                 None,
             )
-            .map_err(CertificateError::ChainVerification)?;
+            .map_err(|error| CertificateError::ChainVerification(Box::new(error)))?;
 
         Ok(())
     }
@@ -127,7 +140,7 @@ pub struct CredentialCertificate<'a>(X509Certificate<'a>);
 impl CredentialCertificate<'_> {
     pub fn public_key(&self) -> Result<VerifyingKey, CertificateError> {
         let public_key = VerifyingKey::from_public_key_der(self.as_ref().public_key().raw)
-            .map_err(CertificateError::PublicKeyParsing)?;
+            .map_err(|error| CertificateError::PublicKeyParsing(Box::new(error)))?;
 
         Ok(public_key)
     }

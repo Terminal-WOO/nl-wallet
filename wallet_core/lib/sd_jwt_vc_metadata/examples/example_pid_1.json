@@ -1,0 +1,72 @@
+{
+  "vct": "urn:example:pid:1",
+  "name": "PID credential",
+  "description": "Working version of the PID credential",
+  "display": [
+    {
+      "locale": "en-US",
+      "name": "Personal data",
+      "description": "The personal data credential"
+    }
+  ],
+  "claims": [
+    {
+      "path": ["family_name"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Name",
+          "description": "Family name of the person, including any prefixes"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["given_name"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "First name",
+          "description": "First name of the person"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["birthdate"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Birth date",
+          "description": "Birth date of the person"
+        }
+      ],
+      "sd": "always",
+      "mandatory": true
+    },
+    {
+      "path": ["age_over_18"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Over 18",
+          "description": "Whether the person is over 18"
+        }
+      ],
+      "sd": "always"
+    },
+    {
+      "path": ["nationalities"],
+      "display": [
+        {
+          "locale": "en-US",
+          "label": "Nationalities",
+          "description": "List of nationalities of the person"
+        }
+      ],
+      "sd": "always"
+    }
+  ]
+}
