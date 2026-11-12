@@ -180,6 +180,14 @@ class WalletCoreMock implements WalletCoreApi {
     _eventLog.reset();
   }
 
+  /// Import a card directly from QR code (demonstration feature for mock mode)
+  Future<void> crateApiFullImportCardFromQr({required AttestationPresentation attestation}) async {
+    log('Importing card from QR: ${attestation.attestationType}');
+    _wallet.add([attestation]);
+    _eventLog.logIssuance(attestation, isRenewal: false);
+    log('Card imported successfully');
+  }
+
   @override
   Stream<List<AttestationPresentation>> crateApiFullSetAttestationsStream() => _wallet.attestationsStream;
 

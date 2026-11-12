@@ -11,7 +11,7 @@ class Environment {
   /// Indicates whether mock repositories should be used. Defaults to false.
   ///
   /// Set using: `flutter build --dart-define=MOCK_REPOSITORIES=true`
-  static bool get mockRepositories => const bool.fromEnvironment('MOCK_REPOSITORIES', defaultValue: false);
+  static bool get mockRepositories => const bool.fromEnvironment('MOCK_REPOSITORIES', defaultValue: true);
 
   /// Indicates whether the application is currently running in a test environment.
   static bool get isTest => Platform.environment.containsKey('FLUTTER_TEST');

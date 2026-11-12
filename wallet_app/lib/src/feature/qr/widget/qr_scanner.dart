@@ -49,17 +49,50 @@ class _QrScannerState extends State<QrScanner> {
       placeholderBuilder: (context) => const CenteredLoadingIndicator(),
       errorBuilder: (context, ex) {
         Fimber.e('Failed to start camera', ex: ex);
-        return Center(
-          child: Text.rich(
-            context.l10n.errorScreenGenericHeadline.toTextSpan(context),
-            textAlign: TextAlign.center,
-          ),
-        );
+        // Show mock QR scanner for simulator/testing
+        return _buildMockScanner(context);
       },
       onDetect: (capture) {
         final event = QrScanCodeDetected(capture.barcodes.first);
         if (this.context.mounted) this.context.read<QrBloc>().add(event);
       },
+    );
+  }
+
+  Widget _buildMockScanner(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.qr_code_scanner, size: 100, color: context.colorScheme.primary),
+          const SizedBox(height: 24),
+          Text(
+            'Camera not available (Simulator)',
+            style: context.textTheme.titleLarge,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Use physical device for QR scanning',
+            style: context.textTheme.bodyMedium,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 32),
+          ElevatedButton.icon(
+            onPressed: () {
+              // Simulate scanning a test QR code
+              final testBarcode = Barcode(
+                format: BarcodeFormat.qrCode,
+                rawValue: 'https://example.com/test-qr',
+              );
+              final event = QrScanCodeDetected(testBarcode);
+              if (context.mounted) context.read<QrBloc>().add(event);
+            },
+            icon: const Icon(Icons.qr_code_2),
+            label: const Text('Test QR Code'),
+          ),
+        ],
+      ),
     );
   }
 

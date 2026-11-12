@@ -128,6 +128,20 @@ class TypedWalletCore {
 
   Future<void> resetWallet() => call(core.resetWallet);
 
+  /// Import a card directly from QR code (mock mode only)
+  /// This uses dynamic dispatch to call the mock implementation
+  Future<void> importCardFromQr(core.AttestationPresentation attestation) async {
+    // Use dynamic dispatch since this method only exists in WalletCoreMock, not in the Rust core
+    try {
+      final dynamic api = core.WalletCore.instance.api;
+      // ignore: avoid_dynamic_calls
+      await api.crateApiFullImportCardFromQr(attestation: attestation);
+    } catch (e) {
+      Fimber.w('importCardFromQr failed (expected in non-mock mode): $e');
+      rethrow;
+    }
+  }
+
   Future<List<core.WalletEvent>> getHistory() => call(core.getHistory);
 
   Future<List<core.WalletEvent>> getHistoryForCard(String attestationId) =>

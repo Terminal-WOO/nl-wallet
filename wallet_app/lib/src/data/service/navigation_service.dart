@@ -2,12 +2,18 @@ import 'dart:async';
 
 import 'package:fimber/fimber.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:rxdart/subjects.dart';
 
 import '../../domain/app_event/app_event_listener.dart';
 import '../../domain/model/update/update_notification.dart';
 import '../../domain/usecase/navigation/check_navigation_prerequisites_usecase.dart';
 import '../../domain/usecase/navigation/perform_pre_navigation_actions_usecase.dart';
+import '../../../environment.dart';
+import '../../wallet_constants.dart';
+import '../../data/repository/wallet/wallet_repository.dart';
+import '../../feature/disclosure/argument/disclosure_screen_argument.dart';
+import '../../domain/model/navigation/navigation_request.dart';
 import '../../feature/common/dialog/idle_warning_dialog.dart';
 import '../../feature/common/dialog/locked_out_dialog.dart';
 import '../../feature/common/dialog/move_stopped_dialog.dart';
@@ -47,9 +53,43 @@ class NavigationService extends AppEventListener {
     if (readyToNavigate) {
       await _navigate(request);
     } else {
+      // In mock mode, try to unlock wallet and retry navigation
+      if (Environment.mockRepositories && request is DisclosureNavigationRequest) {
+        try {
+          final walletRepository = _getWalletRepository();
+          if (walletRepository != null) {
+            // Try to unlock wallet
+            final isRegistered = await walletRepository.isRegistered();
+            if (isRegistered) {
+              await walletRepository.unlockWallet(kMockPin);
+              // Retry navigation after unlock
+              final readyAfterUnlock = await _checkNavigationPrerequisitesUseCase.invoke(request.navigatePrerequisites);
+              if (readyAfterUnlock) {
+                await _navigate(request);
+                return;
+              }
+            }
+          }
+        } catch (e) {
+          Fimber.e('Failed to auto-unlock wallet for disclosure', ex: e);
+        }
+      }
       if (queueIfNotReady) _queuedRequest = request;
       Fimber.d('Not yet ready to handle $request. Request queued: $queueIfNotReady');
     }
+  }
+
+  WalletRepository? _getWalletRepository() {
+    // Try to get wallet repository from context
+    final context = _navigatorKey.currentState?.context;
+    if (context != null) {
+      try {
+        return context.read<WalletRepository>();
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
   }
 
   Future<void> _navigate(NavigationRequest request) async {

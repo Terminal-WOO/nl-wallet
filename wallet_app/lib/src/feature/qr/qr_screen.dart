@@ -17,8 +17,23 @@ import 'widget/qr_scanner.dart';
 
 final _scannerKey = Environment.isTest ? ValueKey(clock.now()) : GlobalKey();
 
-class QrScreen extends StatelessWidget {
+class QrScreen extends StatefulWidget {
   const QrScreen({super.key});
+
+  @override
+  State<QrScreen> createState() => _QrScreenState();
+}
+
+class _QrScreenState extends State<QrScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        context.read<QrBloc>().add(const QrScanCheckPermission());
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

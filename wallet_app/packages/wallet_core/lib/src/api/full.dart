@@ -143,4 +143,11 @@ Future<List<WalletEvent>> getHistoryForCard({required String attestationId}) =>
 
 Future<void> resetWallet() => WalletCore.instance.api.crateApiFullResetWallet();
 
+// Note: importCardFromQr is only available in mock mode and called directly via the mock implementation
+// See typed_wallet_core.dart for the wrapper that makes this work
+// /// Import a card directly from QR code (mock mode only)
+// Future<void> importCardFromQr({required AttestationPresentation attestation}) =>
+//     WalletCore.instance.api.crateApiFullImportCardFromQr(attestation: attestation);
+
+
 Future<String> getVersionString() => WalletCore.instance.api.crateApiFullGetVersionString();

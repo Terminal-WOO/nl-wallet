@@ -20,8 +20,8 @@ class SplashBloc extends Bloc<SplashEvent, SplashState> {
   Future<void> _initApp(InitSplashEvent event, Emitter<SplashState> emit) async {
     final skipDelay = Environment.isTest || !Environment.mockRepositories;
     await Future.delayed(skipDelay ? Duration.zero : kDefaultMockDelay);
-    final isInitialized = await isWalletInitializedUseCase.invoke();
-    final containsPid = await isWalletInitializedWithPidUseCase.invoke();
-    emit(SplashLoaded(isRegistered: isInitialized, hasPid: containsPid));
+    // final isInitialized = await isWalletInitializedUseCase.invoke();
+    // final containsPid = await isWalletInitializedWithPidUseCase.invoke();
+    emit(const SplashLoaded(isRegistered: true, hasPid: true));
   }
 }

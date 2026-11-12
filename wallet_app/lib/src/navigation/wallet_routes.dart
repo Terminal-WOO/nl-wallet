@@ -92,6 +92,8 @@ class WalletRoutes {
   @visibleForTesting
   static const publicRoutes = [
     splashRoute,
+    qrRoute,
+    dashboardRoute,
     introductionRoute,
     introductionPrivacyRoute,
     privacyPolicyRoute,

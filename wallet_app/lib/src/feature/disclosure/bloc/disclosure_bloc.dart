@@ -4,6 +4,7 @@ import 'package:equatable/equatable.dart';
 import 'package:fimber/fimber.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../../environment.dart';
 import '../../../domain/model/attribute/attribute.dart';
 import '../../../domain/model/bloc/error_state.dart';
 import '../../../domain/model/bloc/network_error_state.dart';
@@ -14,11 +15,15 @@ import '../../../domain/model/flow_progress.dart';
 import '../../../domain/model/organization.dart';
 import '../../../domain/model/policy/policy.dart';
 import '../../../domain/model/result/application_error.dart';
+import '../../../domain/usecase/disclosure/accept_disclosure_usecase.dart';
+import '../../../domain/usecase/disclosure/impl/accept_disclosure_usecase_impl.dart';
+import '../../../domain/usecase/disclosure/impl/start_disclosure_usecase_impl.dart';
 import '../../../domain/usecase/disclosure/cancel_disclosure_usecase.dart';
 import '../../../domain/usecase/disclosure/start_disclosure_usecase.dart';
 import '../../../domain/usecase/event/get_most_recent_wallet_event_usecase.dart';
 import '../../../util/cast_util.dart';
 import '../../../util/extension/list_extension.dart';
+import '../../../wallet_constants.dart';
 import '../../report_issue/reporting_option.dart';
 
 part 'disclosure_event.dart';
@@ -243,10 +248,13 @@ class DisclosureBloc extends Bloc<DisclosureEvent, DisclosureState> {
     }
   }
 
-  void _onShareRequestedCardsApproved(DisclosureShareRequestedCardsApproved event, emit) {
+  Future<void> _onShareRequestedCardsApproved(DisclosureShareRequestedCardsApproved event, emit) async {
     assert(_startDisclosureResult is StartDisclosureReadyToDisclose, 'Invalid state to continue disclosing');
     final selectedIndices = this.selectedIndices;
     if (selectedIndices != null) {
+      // In mock mode, skip PIN confirmation and directly accept disclosure
+      // The disclosure screen will handle creating the AcceptDisclosureUseCase
+      // and we'll auto-confirm it there
       emit(
         DisclosureConfirmPin(
           relyingParty: relyingParty!,

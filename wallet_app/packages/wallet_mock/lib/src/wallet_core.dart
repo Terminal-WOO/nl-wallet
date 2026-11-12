@@ -1,3 +1,4 @@
+import 'data/mock/mock_attestations.dart';
 import 'log/wallet_event_log.dart';
 import 'manager/disclosure_manager.dart';
 import 'manager/issuance_manager.dart';
@@ -8,7 +9,7 @@ import 'wallet_core_for_signing.dart';
 import 'wallet_core_mock.dart';
 
 final PinManager _pinManager = PinManager();
-final Wallet _wallet = Wallet();
+final Wallet _wallet = Wallet()..add(kPidAttestations);
 final WalletEventLog _eventLog = WalletEventLog();
 
 final _disclosureManager = DisclosureManager(_pinManager, _wallet, _eventLog);

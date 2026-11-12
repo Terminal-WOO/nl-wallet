@@ -5,6 +5,9 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../environment.dart';
+import '../../../wallet_constants.dart';
+import '../../data/repository/disclosure/disclosure_repository.dart';
 import '../../domain/usecase/disclosure/accept_disclosure_usecase.dart';
 import '../../domain/usecase/disclosure/impl/accept_disclosure_usecase_impl.dart';
 import '../../navigation/wallet_routes.dart';
@@ -223,6 +226,31 @@ class DisclosureScreen extends StatelessWidget {
     final title = state.isLoginFlow
         ? context.l10n.disclosureConfirmPinPageForLoginTitle
         : context.l10n.disclosureConfirmPinPageTitle;
+    
+    // In mock mode, automatically confirm PIN without user input
+    if (Environment.mockRepositories) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        // Create use case and invoke with mock PIN
+        final acceptUseCase = AcceptDisclosureUseCaseImpl(
+          context.read<DisclosureRepository>(),
+          state.selectedIndices,
+        );
+        final result = await acceptUseCase.invoke(kMockPin);
+        await result.process(
+          onSuccess: (returnUrl) {
+            if (context.mounted) {
+              context.bloc.add(DisclosurePinConfirmed(returnUrl: returnUrl));
+            }
+          },
+          onError: (error) {
+            if (context.mounted) {
+              context.bloc.add(DisclosureConfirmPinFailed(error: error));
+            }
+          },
+        );
+      });
+    }
+    
     return Provider<AcceptDisclosureUseCase>(
       create: (context) => AcceptDisclosureUseCaseImpl(context.read(), state.selectedIndices),
       child: DisclosureConfirmPinPage(
