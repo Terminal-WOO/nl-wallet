@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NL Wallet Document Signer</title>
+    <script
+      type="module"
+      src="https://cdn.jsdelivr.net/gh/MinBZK/nl-wallet@main/wallet_web/dist/nl-wallet-web.iife.js"
+    ></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .header {
+        text-align: center;
+        color: white;
+        margin-bottom: 40px;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        margin-bottom: 10px;
+      }
+
+      .header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
+      }
+
+      .main-content {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 30px;
+        margin-bottom: 30px;
+      }
+
+      @media (max-width: 768px) {
+        .main-content {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      .card {
+        background: white;
+        border-radius: 12px;
+        padding: 30px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      }
+
+      .card h2 {
+        color: #333;
+        margin-bottom: 20px;
+        font-size: 1.5rem;
+      }
+
+      .upload-area {
+        border: 3px dashed #667eea;
+        border-radius: 8px;
+        padding: 40px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s;
+        margin-bottom: 20px;
+      }
+
+      .upload-area:hover {
+        background: #f8f9ff;
+        border-color: #764ba2;
+      }
+
+      .upload-area.dragover {
+        background: #f0f0ff;
+        border-color: #667eea;
+        transform: scale(1.02);
+      }
+
+      .upload-icon {
+        font-size: 48px;
+        margin-bottom: 10px;
+      }
+
+      .file-info {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+        display: none;
+      }
+
+      .file-info.show {
+        display: block;
+      }
+
+      .file-name {
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 5px;
+      }
+
+      .file-size {
+        color: #666;
+        font-size: 0.9rem;
+      }
+
+      .qr-container {
+        text-align: center;
+        padding: 20px;
+      }
+
+      #qrcode {
+        display: inline-block;
+        padding: 20px;
+        background: white;
+        border-radius: 8px;
+        margin: 20px auto;
+      }
+
+      .qr-instructions {
+        color: #666;
+        margin-top: 15px;
+        line-height: 1.6;
+      }
+
+      .btn {
+        background: #667eea;
+        color: white;
+        border: none;
+        padding: 14px 28px;
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s;
+        width: 100%;
+        margin-top: 10px;
+      }
+
+      .btn:hover {
+        background: #764ba2;
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+      }
+
+      .btn:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .btn-secondary {
+        background: #6c757d;
+      }
+
+      .btn-secondary:hover {
+        background: #5a6268;
+      }
+
+      .status {
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 20px;
+        display: none;
+      }
+
+      .status.show {
+        display: block;
+      }
+
+      .status.success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+
+      .status.error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+
+      .status.info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+      }
+
+      .credentials-display {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+        margin-top: 20px;
+        display: none;
+      }
+
+      .credentials-display.show {
+        display: block;
+      }
+
+      .credential-item {
+        padding: 10px 0;
+        border-bottom: 1px solid #dee2e6;
+      }
+
+      .credential-item:last-child {
+        border-bottom: none;
+      }
+
+      .credential-label {
+        font-weight: 600;
+        color: #495057;
+        margin-bottom: 5px;
+      }
+
+      .credential-value {
+        color: #212529;
+      }
+
+      .steps {
+        background: white;
+        border-radius: 12px;
+        padding: 30px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      }
+
+      .step {
+        display: flex;
+        align-items: start;
+        margin-bottom: 25px;
+        padding-bottom: 25px;
+        border-bottom: 1px solid #e9ecef;
+      }
+
+      .step:last-child {
+        border-bottom: none;
+        margin-bottom: 0;
+        padding-bottom: 0;
+      }
+
+      .step-number {
+        background: #667eea;
+        color: white;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        margin-right: 15px;
+        flex-shrink: 0;
+      }
+
+      .step-content h3 {
+        color: #333;
+        margin-bottom: 5px;
+        font-size: 1.1rem;
+      }
+
+      .step-content p {
+        color: #666;
+        line-height: 1.5;
+      }
+
+      input[type="file"] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>📄 NL Wallet Document Signer</h1>
+        <p>Onderteken documenten met je digitale identiteit</p>
+      </div>
+
+      <div class="main-content">
+        <!-- Left: Upload & Sign -->
+        <div class="card">
+          <h2>1. Upload Document</h2>
+
+          <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">📁</div>
+            <p><strong>Sleep een PDF hierheen</strong></p>
+            <p style="color: #666; margin-top: 10px">of klik om te bladeren</p>
+          </div>
+
+          <input type="file" id="fileInput" accept="application/pdf" />
+
+          <div class="file-info" id="fileInfo">
+            <div class="file-name" id="fileName"></div>
+            <div class="file-size" id="fileSize"></div>
+          </div>
+
+          <h2 style="margin-top: 30px">2. Verifieer Identiteit</h2>
+
+          <nl-wallet-button
+            id="wallet-button"
+            text="Verifieer met NL Wallet"
+            usecase="document_signing"
+            start-url="http://localhost:3001/api/sessions/start"
+            lang="nl"
+          ></nl-wallet-button>
+
+          <div class="credentials-display" id="credentialsDisplay">
+            <h3 style="margin-bottom: 15px">✓ Geverifieerde gegevens:</h3>
+            <div id="credentialsList"></div>
+          </div>
+
+          <button class="btn" id="signButton" disabled>3. Onderteken Document</button>
+
+          <div class="status" id="status"></div>
+        </div>
+
+        <!-- Right: QR Code & Info -->
+        <div class="card">
+          <h2>QR Code voor Mobiel</h2>
+          <div class="qr-container">
+            <div id="qrcode"></div>
+            <p class="qr-instructions">Scan deze QR code met je mobiel om het document te ondertekenen</p>
+          </div>
+
+          <div style="margin-top: 40px">
+            <h2>Hoe werkt het?</h2>
+            <div class="steps" style="margin-top: 20px">
+              <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                  <h3>Upload Document</h3>
+                  <p>Upload het PDF document dat je wilt ondertekenen</p>
+                </div>
+              </div>
+              <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                  <h3>Verifieer Identiteit</h3>
+                  <p>Gebruik je NL Wallet om je identiteit te bewijzen</p>
+                </div>
+              </div>
+              <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                  <h3>Onderteken</h3>
+                  <p>Het document wordt cryptografisch ondertekend met je gegevens</p>
+                </div>
+              </div>
+              <div class="step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                  <h3>Verifieerbaar</h3>
+                  <p>Download het ondertekende document met verificatie QR code</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      let uploadedFile = null
+      let credentials = null
+      let sessionToken = null
+
+      // QR Code with logo generator
+      function generateQRWithLogo(text, containerId) {
+        const container = document.getElementById(containerId)
+        container.innerHTML = ""
+
+        const qrWrapper = document.createElement("div")
+        qrWrapper.style.position = "relative"
+        qrWrapper.style.display = "inline-block"
+
+        // Generate QR code
+        const qrDiv = document.createElement("div")
+        new QRCode(qrDiv, {
+          text: text,
+          width: 256,
+          height: 256,
+          colorDark: "#000000",
+          colorLight: "#ffffff",
+          correctLevel: QRCode.CorrectLevel.H, // High error correction for logo
+        })
+
+        qrWrapper.appendChild(qrDiv)
+
+        // Add logo overlay
+        const logo = document.createElement("div")
+        logo.style.position = "absolute"
+        logo.style.top = "50%"
+        logo.style.left = "50%"
+        logo.style.transform = "translate(-50%, -50%)"
+        logo.style.width = "64px"
+        logo.style.height = "64px"
+        logo.style.background = "white"
+        logo.style.borderRadius = "8px"
+        logo.style.display = "flex"
+        logo.style.alignItems = "center"
+        logo.style.justifyContent = "center"
+        logo.style.fontSize = "32px"
+        logo.style.boxShadow = "0 2px 8px rgba(0,0,0,0.1)"
+        logo.innerHTML = "🔐"
+
+        qrWrapper.appendChild(logo)
+        container.appendChild(qrWrapper)
+      }
+
+      // Initialize QR code with disclosure deep link
+      async function initializeQRCode() {
+        try {
+          const response = await fetch("http://localhost:3001/api/disclosure/request", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ usecase: "document_signing" }),
+          })
+
+          const data = await response.json()
+          console.log("Disclosure request created:", data)
+
+          // Store request ID for polling
+          window.disclosureRequestId = data.request_id
+
+          // Generate QR code with deep link URL
+          generateQRWithLogo(data.deep_link_url, "qrcode")
+
+          // Start polling for completion
+          pollDisclosureStatus(data.request_id)
+        } catch (error) {
+          console.error("Error creating disclosure request:", error)
+          // Fallback to current page URL
+          generateQRWithLogo(window.location.href, "qrcode")
+        }
+      }
+
+      // Poll for disclosure completion
+      async function pollDisclosureStatus(requestId) {
+        const maxAttempts = 60 // 5 minutes with 5 second intervals
+        let attempts = 0
+
+        const poll = setInterval(async () => {
+          attempts++
+          if (attempts > maxAttempts) {
+            clearInterval(poll)
+            console.log("Disclosure request timed out")
+            return
+          }
+
+          try {
+            const response = await fetch(`http://localhost:3001/api/sessions/${requestId}/credentials`)
+            const data = await response.json()
+
+            if (data.credentials) {
+              clearInterval(poll)
+              console.log("Disclosure completed via QR code!", data.credentials)
+
+              // Update UI with received credentials
+              credentials = data.credentials
+              sessionToken = requestId
+              displayCredentials(credentials)
+              showStatus("✓ Gegevens ontvangen via QR code!", "success")
+              updateSignButton()
+            }
+          } catch (error) {
+            // Session not completed yet, continue polling
+          }
+        }, 5000) // Poll every 5 seconds
+      }
+
+      initializeQRCode()
+
+      // File upload handling
+      const uploadArea = document.getElementById("uploadArea")
+      const fileInput = document.getElementById("fileInput")
+      const fileInfo = document.getElementById("fileInfo")
+      const fileName = document.getElementById("fileName")
+      const fileSize = document.getElementById("fileSize")
+
+      uploadArea.addEventListener("click", () => fileInput.click())
+
+      uploadArea.addEventListener("dragover", (e) => {
+        e.preventDefault()
+        uploadArea.classList.add("dragover")
+      })
+
+      uploadArea.addEventListener("dragleave", () => {
+        uploadArea.classList.remove("dragover")
+      })
+
+      uploadArea.addEventListener("drop", (e) => {
+        e.preventDefault()
+        uploadArea.classList.remove("dragover")
+        const files = e.dataTransfer.files
+        if (files.length > 0) handleFile(files[0])
+      })
+
+      fileInput.addEventListener("change", (e) => {
+        if (e.target.files.length > 0) handleFile(e.target.files[0])
+      })
+
+      function handleFile(file) {
+        if (file.type !== "application/pdf") {
+          showStatus("Alleen PDF bestanden zijn toegestaan", "error")
+          return
+        }
+
+        uploadedFile = file
+        fileName.textContent = file.name
+        fileSize.textContent = formatFileSize(file.size)
+        fileInfo.classList.add("show")
+
+        showStatus("PDF succesvol geüpload", "success")
+        updateSignButton()
+      }
+
+      function formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + " B"
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB"
+        return (bytes / (1024 * 1024)).toFixed(1) + " MB"
+      }
+
+      // Wallet button events
+      const walletButton = document.getElementById("wallet-button")
+      const credentialsDisplay = document.getElementById("credentialsDisplay")
+      const credentialsList = document.getElementById("credentialsList")
+
+      walletButton.addEventListener("success", async (e) => {
+        if (e.detail && e.detail.length >= 2) {
+          sessionToken = e.detail[0]
+          const sessionType = e.detail[1]
+
+          showStatus("Identiteit geverifieerd! Gegevens ophalen...", "info")
+
+          // Fetch disclosed credentials
+          try {
+            const response = await fetch(`http://localhost:3001/api/sessions/${sessionToken}/credentials`)
+            const data = await response.json()
+
+            if (data.credentials) {
+              credentials = data.credentials
+              displayCredentials(credentials)
+              showStatus("Gegevens succesvol opgehaald", "success")
+              updateSignButton()
+            }
+          } catch (error) {
+            showStatus("Fout bij ophalen gegevens: " + error.message, "error")
+          }
+        }
+      })
+
+      walletButton.addEventListener("failed", (e) => {
+        showStatus("Verificatie geannuleerd of mislukt", "error")
+      })
+
+      function displayCredentials(creds) {
+        credentialsList.innerHTML = ""
+
+        Object.entries(creds).forEach(([key, value]) => {
+          const item = document.createElement("div")
+          item.className = "credential-item"
+          item.innerHTML = `
+                    <div class="credential-label">${formatKey(key)}</div>
+                    <div class="credential-value">${value}</div>
+                `
+          credentialsList.appendChild(item)
+        })
+
+        credentialsDisplay.classList.add("show")
+      }
+
+      function formatKey(key) {
+        return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())
+      }
+
+      // Sign document
+      const signButton = document.getElementById("signButton")
+      signButton.addEventListener("click", async () => {
+        if (!uploadedFile || !credentials || !sessionToken) {
+          showStatus("Upload eerst een PDF en verifieer je identiteit", "error")
+          return
+        }
+
+        signButton.disabled = true
+        showStatus("Document wordt ondertekend...", "info")
+
+        try {
+          const formData = new FormData()
+          formData.append("document", uploadedFile)
+          formData.append("sessionToken", sessionToken)
+          formData.append("credentials", JSON.stringify(credentials))
+
+          const response = await fetch("http://localhost:3001/api/documents/sign", {
+            method: "POST",
+            body: formData,
+          })
+
+          if (!response.ok) {
+            throw new Error("Signing failed: " + response.statusText)
+          }
+
+          const blob = await response.blob()
+          const url = window.URL.createObjectURL(blob)
+          const a = document.createElement("a")
+          a.href = url
+          a.download = "signed_" + uploadedFile.name
+          a.click()
+
+          showStatus("✓ Document succesvol ondertekend en gedownload!", "success")
+
+          // Generate verification QR code
+          const verifyUrl = `${window.location.origin}/verify.html?doc=${sessionToken}`
+          generateQRWithLogo(verifyUrl, "qrcode")
+          document.querySelector(".qr-instructions").textContent = "Scan deze QR code om de handtekening te verifiëren"
+        } catch (error) {
+          showStatus("Fout bij ondertekenen: " + error.message, "error")
+        } finally {
+          signButton.disabled = false
+        }
+      })
+
+      function updateSignButton() {
+        signButton.disabled = !(uploadedFile && credentials)
+      }
+
+      function showStatus(message, type) {
+        const status = document.getElementById("status")
+        status.textContent = message
+        status.className = `status show ${type}`
+
+        if (type === "success") {
+          setTimeout(() => {
+            status.classList.remove("show")
+          }, 5000)
+        }
+      }
+
+      // nl-wallet-button styling
+      const style = document.createElement("style")
+      style.textContent = `
+            nl-wallet-button::part(button) {
+                background: #667eea;
+                border: none;
+                padding: 14px 28px;
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.3s;
+                width: 100%;
+            }
+            nl-wallet-button::part(button):hover {
+                background: #764ba2;
+                transform: translateY(-2px);
+                box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            }
+            nl-wallet-button::part(button-span) {
+                color: white;
+                font-weight: 600;
+                font-size: 16px;
+            }
+        `
+      document.head.appendChild(style)
+    </script>
+  </body>
+</html>

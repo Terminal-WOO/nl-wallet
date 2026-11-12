@@ -1,0 +1,357 @@
+const express = require("express")
+const cors = require("cors")
+const multer = require("multer")
+const { PDFDocument, rgb, StandardFonts } = require("pdf-lib")
+const forge = require("node-forge")
+const axios = require("axios")
+const { v4: uuidv4 } = require("uuid")
+const fs = require("fs").promises
+const path = require("path")
+
+const app = express()
+const PORT = 3001
+
+// Verification server configuration
+const VERIFICATION_SERVER_URL = process.env.VERIFICATION_SERVER_URL || "http://localhost:8002"
+const VERIFICATION_SERVER_PUBLIC_URL = process.env.VERIFICATION_SERVER_PUBLIC_URL || "http://localhost:8001"
+
+// Middleware
+app.use(cors())
+app.use(express.json())
+
+// Storage for sessions and signed documents
+const sessions = new Map()
+const signedDocuments = new Map()
+
+// Multer configuration for file uploads
+const storage = multer.memoryStorage()
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === "application/pdf") {
+      cb(null, true)
+    } else {
+      cb(new Error("Only PDF files are allowed"))
+    }
+  },
+})
+
+// Generate RSA key pair for signing
+const { privateKey, publicKey } = forge.pki.rsa.generateKeyPair(2048)
+const privateKeyPem = forge.pki.privateKeyToPem(privateKey)
+const publicKeyPem = forge.pki.publicKeyToPem(publicKey)
+
+console.log("🔑 Server signing key pair generated")
+console.log("Public Key:", publicKeyPem)
+
+/**
+ * Start a disclosure session with the verification server
+ */
+app.post("/api/sessions/start", async (req, res) => {
+  try {
+    const { usecase } = req.body
+    const sessionId = uuidv4()
+
+    console.log(`📝 Starting session for usecase: ${usecase}`)
+
+    // Mock session data - in production this would call the verification server
+    const mockSessionData = {
+      sessionToken: sessionId,
+      statusUrl: `http://localhost:3001/api/sessions/${sessionId}/status`,
+      usecase: usecase,
+      createdAt: new Date().toISOString(),
+      status: "created",
+      credentials: null,
+    }
+
+    sessions.set(sessionId, mockSessionData)
+
+    // Simulate wallet disclosure after 3 seconds
+    setTimeout(() => {
+      const session = sessions.get(sessionId)
+      if (session) {
+        session.status = "completed"
+        session.credentials = {
+          first_name: "Jan",
+          last_name: "Jansen",
+          birth_date: "1990-01-01",
+          bsn: "123456789",
+          nationality: "Nederlandse",
+          document_number: "NLD123456",
+          issued_at: new Date().toISOString(),
+        }
+        sessions.set(sessionId, session)
+        console.log(`✅ Session ${sessionId} completed with mock credentials`)
+      }
+    }, 3000)
+
+    res.json({
+      status_url: mockSessionData.statusUrl,
+      session_token: sessionId,
+    })
+  } catch (error) {
+    console.error("Error starting session:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * Get session status (polled by wallet_web library)
+ */
+app.get("/api/sessions/:sessionId/status", (req, res) => {
+  const { sessionId } = req.params
+  const session = sessions.get(sessionId)
+
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" })
+  }
+
+  // Return status in format expected by wallet_web
+  res.json({
+    status: session.status,
+    session_token: sessionId,
+  })
+})
+
+/**
+ * Get disclosed credentials for a session
+ */
+app.get("/api/sessions/:sessionId/credentials", (req, res) => {
+  const { sessionId } = req.params
+  const session = sessions.get(sessionId)
+
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" })
+  }
+
+  if (session.status !== "completed" || !session.credentials) {
+    return res.status(400).json({ error: "Session not completed or no credentials available" })
+  }
+
+  res.json({
+    credentials: session.credentials,
+    session_token: sessionId,
+  })
+})
+
+/**
+ * Sign a PDF document with disclosed credentials
+ */
+app.post("/api/documents/sign", upload.single("document"), async (req, res) => {
+  try {
+    const { sessionToken, credentials: credentialsJson } = req.body
+    const credentials = JSON.parse(credentialsJson)
+
+    if (!req.file) {
+      return res.status(400).json({ error: "No document uploaded" })
+    }
+
+    console.log(`📄 Signing document for session: ${sessionToken}`)
+
+    // Load the PDF
+    const pdfDoc = await PDFDocument.load(req.file.buffer)
+
+    // Get the first page
+    const pages = pdfDoc.getPages()
+    const firstPage = pages[0]
+    const { width, height } = firstPage.getSize()
+
+    // Embed font
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica)
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+
+    // Add signature block
+    const signatureY = 50
+    const lineHeight = 14
+    let currentY = signatureY
+
+    // Draw signature box
+    firstPage.drawRectangle({
+      x: 50,
+      y: signatureY - 10,
+      width: width - 100,
+      height: 140,
+      borderColor: rgb(0.4, 0.49, 0.92),
+      borderWidth: 2,
+      color: rgb(0.95, 0.96, 1),
+    })
+
+    // Title
+    firstPage.drawText("DIGITAAL ONDERTEKEND", {
+      x: 60,
+      y: signatureY + 110,
+      size: 12,
+      font: boldFont,
+      color: rgb(0.4, 0.49, 0.92),
+    })
+
+    // Credentials
+    currentY = signatureY + 85
+    const entries = [
+      ["Naam:", `${credentials.first_name} ${credentials.last_name}`],
+      ["Geboortedatum:", credentials.birth_date],
+      ["BSN:", credentials.bsn],
+      ["Document:", credentials.document_number],
+      ["Ondertekend op:", new Date().toLocaleString("nl-NL")],
+    ]
+
+    entries.forEach(([label, value]) => {
+      firstPage.drawText(label, {
+        x: 60,
+        y: currentY,
+        size: 9,
+        font: boldFont,
+        color: rgb(0.3, 0.3, 0.3),
+      })
+      firstPage.drawText(value, {
+        x: 150,
+        y: currentY,
+        size: 9,
+        font: font,
+        color: rgb(0, 0, 0),
+      })
+      currentY -= lineHeight
+    })
+
+    // Create signature data
+    const signatureData = {
+      sessionToken,
+      credentials,
+      documentHash: null, // Will be calculated
+      timestamp: new Date().toISOString(),
+      signedBy: `${credentials.first_name} ${credentials.last_name}`,
+    }
+
+    // Calculate document hash
+    const pdfBytes = await pdfDoc.save()
+    const md = forge.md.sha256.create()
+    md.update(Buffer.from(pdfBytes).toString("binary"))
+    const documentHash = md.digest().toHex()
+    signatureData.documentHash = documentHash
+
+    // Sign the signature data
+    const dataToSign = JSON.stringify({
+      documentHash,
+      sessionToken,
+      timestamp: signatureData.timestamp,
+      signer: signatureData.signedBy,
+    })
+
+    const md2 = forge.md.sha256.create()
+    md2.update(dataToSign, "utf8")
+    const signature = privateKey.sign(md2)
+    const signatureBase64 = forge.util.encode64(signature)
+
+    signatureData.signature = signatureBase64
+
+    // Store signed document metadata
+    const documentId = uuidv4()
+    signedDocuments.set(documentId, {
+      ...signatureData,
+      originalFileName: req.file.originalname,
+      signedAt: new Date().toISOString(),
+    })
+
+    // Add signature metadata to PDF
+    const signatureText = `Signature ID: ${documentId}\nVerify at: ${req.protocol}://${req.get("host")}/verify.html?id=${documentId}`
+    firstPage.drawText(signatureText, {
+      x: 60,
+      y: signatureY + 5,
+      size: 7,
+      font: font,
+      color: rgb(0.5, 0.5, 0.5),
+    })
+
+    // Save the modified PDF
+    const finalPdfBytes = await pdfDoc.save()
+
+    console.log(`✅ Document signed successfully. ID: ${documentId}`)
+
+    res.setHeader("Content-Type", "application/pdf")
+    res.setHeader("Content-Disposition", `attachment; filename="signed_${req.file.originalname}"`)
+    res.send(Buffer.from(finalPdfBytes))
+  } catch (error) {
+    console.error("Error signing document:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+/**
+ * Verify a signed document
+ */
+app.get("/api/documents/verify/:documentId", (req, res) => {
+  const { documentId } = req.params
+  const signedDoc = signedDocuments.get(documentId)
+
+  if (!signedDoc) {
+    return res.status(404).json({
+      verified: false,
+      error: "Document not found",
+    })
+  }
+
+  try {
+    // Verify signature
+    const dataToVerify = JSON.stringify({
+      documentHash: signedDoc.documentHash,
+      sessionToken: signedDoc.sessionToken,
+      timestamp: signedDoc.timestamp,
+      signer: signedDoc.signedBy,
+    })
+
+    const md = forge.md.sha256.create()
+    md.update(dataToVerify, "utf8")
+    const signature = forge.util.decode64(signedDoc.signature)
+    const verified = publicKey.verify(md.digest().bytes(), signature)
+
+    res.json({
+      verified,
+      documentId,
+      signer: {
+        name: signedDoc.signedBy,
+        credentials: signedDoc.credentials,
+      },
+      signedAt: signedDoc.signedAt,
+      documentHash: signedDoc.documentHash,
+      originalFileName: signedDoc.originalFileName,
+    })
+  } catch (error) {
+    console.error("Error verifying document:", error)
+    res.status(500).json({
+      verified: false,
+      error: error.message,
+    })
+  }
+})
+
+/**
+ * Get public key for verification
+ */
+app.get("/api/public-key", (req, res) => {
+  res.json({
+    publicKey: publicKeyPem,
+    algorithm: "RSA-SHA256",
+    keySize: 2048,
+  })
+})
+
+// Health check
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+    sessions: sessions.size,
+    signedDocuments: signedDocuments.size,
+  })
+})
+
+app.listen(PORT, () => {
+  console.log(`🚀 Document Signer Backend running on http://localhost:${PORT}`)
+  console.log(`📋 Endpoints:`)
+  console.log(`   POST /api/sessions/start - Start disclosure session`)
+  console.log(`   GET  /api/sessions/:id/status - Get session status`)
+  console.log(`   GET  /api/sessions/:id/credentials - Get disclosed credentials`)
+  console.log(`   POST /api/documents/sign - Sign PDF document`)
+  console.log(`   GET  /api/documents/verify/:id - Verify signed document`)
+  console.log(`   GET  /api/public-key - Get server public key`)
+})

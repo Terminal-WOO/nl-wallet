@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="nl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test NL Wallet Button</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+
+        #debug {
+            background: #f0f0f0;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Test NL Wallet Button</h1>
+
+    <div id="debug">
+        <h3>Debug Info:</h3>
+        <div id="debug-output">Loading...</div>
+    </div>
+
+    <h2>Wallet Button:</h2>
+    <nl-wallet-button id="wallet-button" text="Test Button" usecase="BAR"
+        start-url="http://localhost:3000/api/sessions/start" lang="nl"></nl-wallet-button>
+
+    <script type="module">
+        const debugOutput = document.getElementById('debug-output');
+
+        // Check if script loaded
+        debugOutput.innerHTML = 'Script tag executed<br>';
+
+        // Try to load the wallet_web library
+        try {
+            debugOutput.innerHTML += 'Attempting to load wallet_web library...<br>';
+
+            import('./wallet_web/dist/nl-wallet-web.iife.js')
+                .then(() => {
+                    debugOutput.innerHTML += '✅ Library loaded successfully!<br>';
+                    debugOutput.innerHTML += 'customElements: ' + (window.customElements ? 'Available' : 'Not available') + '<br>';
+
+                    // Wait a bit and check if element is defined
+                    setTimeout(() => {
+                        const button = document.getElementById('wallet-button');
+                        debugOutput.innerHTML += 'Button element: ' + (button ? 'Found' : 'Not found') + '<br>';
+                        debugOutput.innerHTML += 'Custom element defined: ' + (customElements.get('nl-wallet-button') ? 'Yes' : 'No') + '<br>';
+
+                        // Add event listeners
+                        if (button) {
+                            button.addEventListener('success', (e) => {
+                                debugOutput.innerHTML += '✅ Success event received!<br>';
+                                console.log('Success:', e.detail);
+                            });
+
+                            button.addEventListener('failed', (e) => {
+                                debugOutput.innerHTML += '❌ Failed event received<br>';
+                                console.log('Failed:', e.detail);
+                            });
+
+                            debugOutput.innerHTML += 'Event listeners attached<br>';
+                        }
+                    }, 1000);
+                })
+                .catch(err => {
+                    debugOutput.innerHTML += '❌ Error loading library: ' + err.message + '<br>';
+                    console.error('Load error:', err);
+                });
+        } catch (err) {
+            debugOutput.innerHTML += '❌ Error: ' + err.message + '<br>';
+            console.error('Error:', err);
+        }
+    </script>
+</body>
+
+</html>

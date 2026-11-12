@@ -1,0 +1,40 @@
+# Document Signer Verification Server Configuration
+
+# Logging
+log_requests = true
+structured_logging = false
+
+# Ephemeral ID secret for QR code generation (64 hex characters = 32 bytes)
+ephemeral_id_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# Trust anchors - CA certificates that sign reader (relying party) certificates
+reader_trust_anchors = ["MIIBvzCCAWWgAwIBAgIUNWIC26z2A7Ppn47zWv6xYrzX8jswCgYIKoZIzj0EAwIwNTESMBAGA1UEAwwJUmVhZGVyIENBMRIwEAYDVQQKDAlOTCBXYWxsZXQxCzAJBgNVBAYTAk5MMB4XDTI1MTEyNTEwMDMyNFoXDTM1MTEyMzEwMDMyNFowNTESMBAGA1UEAwwJUmVhZGVyIENBMRIwEAYDVQQKDAlOTCBXYWxsZXQxCzAJBgNVBAYTAk5MMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7GbpzNgwco7i/Qbw5Mh+27sg5H3/Ss8jOfaZJ6SZDmquf/4fS7NvdRiJWJ6mjE9noFIsdSH6It2mb+b9kNmKo6NTMFEwHQYDVR0OBBYEFMD51hwer3Yy0rMiIsWMXmvcct90MB8GA1UdIwQYMBaAFMD51hwer3Yy0rMiIsWMXmvcct90MA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgc9tcIoXdqIR6VFyj5JrNgOYX5QpsbF0Glr4Hdhre+HgCIQDRB5gBGw2AwIOvL+jpB7BrbZy+Hby80AWm9tSPwq5bEw=="]
+
+# Issuer trust anchors - for now we'll use the same CA
+issuer_trust_anchors = ["MIIBvzCCAWWgAwIBAgIUNWIC26z2A7Ppn47zWv6xYrzX8jswCgYIKoZIzj0EAwIwNTESMBAGA1UEAwwJUmVhZGVyIENBMRIwEAYDVQQKDAlOTCBXYWxsZXQxCzAJBgNVBAYTAk5MMB4XDTI1MTEyNTEwMDMyNFoXDTM1MTEyMzEwMDMyNFowNTESMBAGA1UEAwwJUmVhZGVyIENBMRIwEAYDVQQKDAlOTCBXYWxsZXQxCzAJBgNVBAYTAk5MMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7GbpzNgwco7i/Qbw5Mh+27sg5H3/Ss8jOfaZJ6SZDmquf/4fS7NvdRiJWJ6mjE9noFIsdSH6It2mb+b9kNmKo6NTMFEwHQYDVR0OBBYEFMD51hwer3Yy0rMiIsWMXmvcct90MB8GA1UdIwQYMBaAFMD51hwer3Yy0rMiIsWMXmvcct90MA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgc9tcIoXdqIR6VFyj5JrNgOYX5QpsbF0Glr4Hdhre+HgCIQDRB5gBGw2AwIOvL+jpB7BrbZy+Hby80AWm9tSPwq5bEw=="]
+
+# Server URLs
+public_url = "http://localhost:8001/"
+universal_link_base_url = "walletdebuginteraction://wallet.edi.rijksoverheid.nl/"
+
+# Wallet client IDs
+wallet_client_ids = ["https://wallet.edi.rijksoverheid.nl"]
+
+# CORS - allow frontend
+allow_origins = ["http://localhost:8080"]
+
+# Public endpoint for wallet app (also serves as private endpoint when requester_server is absent)
+[wallet_server]
+ip = "127.0.0.1"
+port = 8001
+
+# Storage - use in-memory for development (no database needed)
+[storage]
+url = "memory://"
+
+# Document signing use case
+[usecases.document_signing]
+private_key_type = "software"
+private_key = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg24wiB7a+f0M1QDWu2ajLAkmChisBl6EOGeIWzv75EMShRANCAAQS2+9+JENzstCcctSiLjlzUZKhBU8ti84mMt8CAstbYAbfboDe2Hio2xnrb2cMtcbqGtQFipNUqcEnDQVY5B2V"
+certificate = "MIIB7jCCAZWgAwIBAgIUfSn7iaIt0lVAnLiNiaxjejsLWqYwCgYIKoZIzj0EAwIwTTEkMCIGA1UEAwwbZG9jdW1lbnQtc2lnbmVyLmV4YW1wbGUuY29tMRgwFgYDVQQKDA9Eb2N1bWVudCBTaWduZXIxCzAJBgNVBAYTAk5MMB4XDTI1MTEyNTEwMDI0N1oXDTM1MTEyMzEwMDI0N1owTTEkMCIGA1UEAwwbZG9jdW1lbnQtc2lnbmVyLmV4YW1wbGUuY29tMRgwFgYDVQQKDA9Eb2N1bWVudCBTaWduZXIxCzAJBgNVBAYTAk5MMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEEtvvfiRDc7LQnHLUoi45c1GSoQVPLYvOJjLfAgLLW2AG326A3th4qNsZ629nDLXG6hrUBYqTVKnBJw0FWOQdlaNTMFEwHQYDVR0OBBYEFFEUBGnXqZh3kpoRiPxVefZdEGOTMB8GA1UdIwQYMBaAFFEUBGnXqZh3kpoRiPxVefZdEGOTMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDRwAwRAIgHWEI1Rdf2tBRS+seU05FcN3jfT6dlZGqCP5YzzG9IXACIAgLFsoztI8XIFq3b3mxDc1qzHC1n+1ezW6Aqj90DoUE"
+session_type_return_url = "both"

@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="nl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL Wallet - QR Kaart Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #0066cc 0%, #0052a3 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .form-section {
+            margin-bottom: 30px;
+        }
+
+        .form-section h2 {
+            color: #333;
+            font-size: 20px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #0066cc;
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .button-primary {
+            background: linear-gradient(135deg, #0066cc 0%, #0052a3 100%);
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        .button-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 102, 204, 0.4);
+        }
+
+        .button-primary:active {
+            transform: translateY(0);
+        }
+
+        .qr-result {
+            display: none;
+            margin-top: 30px;
+            text-align: center;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .qr-result.show {
+            display: block;
+        }
+
+        .qr-result h3 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        #qrcode {
+            display: inline-block;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .qr-actions {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .button-secondary {
+            background: white;
+            color: #0066cc;
+            border: 2px solid #0066cc;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .button-secondary:hover {
+            background: #0066cc;
+            color: white;
+        }
+
+        .json-preview {
+            margin-top: 20px;
+            text-align: left;
+        }
+
+        .json-preview pre {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 12px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #0066cc;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+        }
+
+        .info-box p {
+            color: #555;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        @media (max-width: 600px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎫 NL Wallet QR Kaart Generator</h1>
+            <p>Genereer test QR-codes met kaartdata voor de NL Wallet app</p>
+        </div>
+
+        <div class="content">
+            <div class="info-box">
+                <p><strong>Let op:</strong> Deze tool genereert QR-codes voor test doeleinden. De gegenereerde QR-codes
+                    bevatten kaartdata in JSON formaat die door de NL Wallet app kan worden gescand om een kaart toe te
+                    voegen.</p>
+            </div>
+
+            <form id="cardForm">
+                <div class="form-section">
+                    <h2>📋 Kaart Informatie</h2>
+
+                    <div class="form-group">
+                        <label for="cardType">Kaart Type</label>
+                        <select id="cardType" required>
+                            <option value="id_card">ID Kaart</option>
+                            <option value="drivers_license">Rijbewijs</option>
+                            <option value="diploma">Diploma</option>
+                            <option value="membership">Lidmaatschap</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="issuerName">Uitgever Naam</label>
+                        <input type="text" id="issuerName" value="Test Organisatie" required>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h2>👤 Persoonlijke Gegevens</h2>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="firstName">Voornaam</label>
+                            <input type="text" id="firstName" value="Jan" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="lastName">Achternaam</label>
+                            <input type="text" id="lastName" value="de Vries" required>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="birthDate">Geboortedatum</label>
+                            <input type="date" id="birthDate" value="1990-01-01" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="birthPlace">Geboorteplaats</label>
+                            <input type="text" id="birthPlace" value="Amsterdam">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="documentNumber">Document Nummer</label>
+                        <input type="text" id="documentNumber" value="AB123456">
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h2>🏠 Adres Gegevens</h2>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="streetName">Straatnaam</label>
+                            <input type="text" id="streetName" value="Dorpsstraat" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="houseNumber">Huisnummer</label>
+                            <input type="text" id="houseNumber" value="1" required>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="postalCode">Postcode</label>
+                            <input type="text" id="postalCode" value="1234 AB" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="city">Woonplaats</label>
+                            <input type="text" id="city" value="Amsterdam" required>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <h2>📅 Geldigheid</h2>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="validFrom">Geldig vanaf</label>
+                            <input type="date" id="validFrom" required>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="validUntil">Geldig tot</label>
+                            <input type="date" id="validUntil" required>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="button-primary">🔲 Genereer QR Code</button>
+            </form>
+
+            <div id="qrResult" class="qr-result">
+                <h3>✅ QR Code Gegenereerd</h3>
+                <div id="qrcode"></div>
+
+                <div class="qr-actions">
+                    <button type="button" class="button-secondary" onclick="downloadQR()">⬇️ Download PNG</button>
+                    <button type="button" class="button-secondary" onclick="copyJSON()">📋 Kopieer JSON</button>
+                    <button type="button" class="button-secondary" onclick="resetForm()">🔄 Nieuwe Kaart</button>
+                </div>
+
+                <div class="json-preview">
+                    <strong>QR Data (JSON):</strong>
+                    <pre id="jsonData"></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let qrCodeInstance = null;
+        let generatedJSON = '';
+
+        // Set default dates
+        document.addEventListener('DOMContentLoaded', () => {
+            const today = new Date();
+            const validFrom = document.getElementById('validFrom');
+            const validUntil = document.getElementById('validUntil');
+
+            validFrom.value = today.toISOString().split('T')[0];
+
+            const oneYearLater = new Date(today);
+            oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
+            validUntil.value = oneYearLater.toISOString().split('T')[0];
+        });
+
+        document.getElementById('cardForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            generateQRCode();
+        });
+
+        function generateQRCode() {
+            // Gather form data
+            const cardData = {
+                type: 'nl_wallet_card_import',
+                version: '1.0',
+                card: {
+                    attestationType: document.getElementById('cardType').value,
+                    issuer: {
+                        name: {
+                            'nl-NL': document.getElementById('issuerName').value,
+                            'en-US': document.getElementById('issuerName').value
+                        },
+                        id: 'test_issuer_' + Date.now()
+                    },
+                    status: 'valid',
+                    validFrom: new Date(document.getElementById('validFrom').value).toISOString(),
+                    validUntil: new Date(document.getElementById('validUntil').value).toISOString(),
+                    attributes: [
+                        {
+                            type: 'mock_firstNames',
+                            label: { 'nl-NL': 'Voornamen', 'en-US': 'First Names' },
+                            value: { 'nl-NL': document.getElementById('firstName').value }
+                        },
+                        {
+                            type: 'mock_lastName',
+                            label: { 'nl-NL': 'Achternaam', 'en-US': 'Last Name' },
+                            value: { 'nl-NL': document.getElementById('lastName').value }
+                        },
+                        {
+                            type: 'mock_birthDate',
+                            label: { 'nl-NL': 'Geboortedatum', 'en-US': 'Birth Date' },
+                            value: { 'nl-NL': document.getElementById('birthDate').value }
+                        },
+                        {
+                            type: 'mock_streetName',
+                            label: { 'nl-NL': 'Straatnaam', 'en-US': 'Street Name' },
+                            value: { 'nl-NL': document.getElementById('streetName').value }
+                        },
+                        {
+                            type: 'mock_houseNumber',
+                            label: { 'nl-NL': 'Huisnummer', 'en-US': 'House Number' },
+                            value: { 'nl-NL': document.getElementById('houseNumber').value }
+                        },
+                        {
+                            type: 'mock_postalCode',
+                            label: { 'nl-NL': 'Postcode', 'en-US': 'Postal Code' },
+                            value: { 'nl-NL': document.getElementById('postalCode').value }
+                        },
+                        {
+                            type: 'mock_city',
+                            label: { 'nl-NL': 'Woonplaats', 'en-US': 'City' },
+                            value: { 'nl-NL': document.getElementById('city').value }
+                        }
+                    ],
+                    metadata: [
+                        {
+                            type: 'name',
+                            text: {
+                                'nl-NL': document.getElementById('cardType').options[document.getElementById('cardType').selectedIndex].text,
+                                'en-US': document.getElementById('cardType').value
+                            }
+                        }
+                    ]
+                }
+            };
+
+            // Add optional fields if filled
+            if (document.getElementById('birthPlace').value) {
+                cardData.card.attributes.push({
+                    type: 'birth_place',
+                    label: { 'nl-NL': 'Geboorteplaats', 'en-US': 'Birth Place' },
+                    value: { 'nl-NL': document.getElementById('birthPlace').value }
+                });
+            }
+
+            if (document.getElementById('documentNumber').value) {
+                cardData.card.attributes.push({
+                    type: 'document_number',
+                    label: { 'nl-NL': 'Document Nummer', 'en-US': 'Document Number' },
+                    value: { 'nl-NL': document.getElementById('documentNumber').value }
+                });
+            }
+
+            generatedJSON = JSON.stringify(cardData);
+
+            // Clear previous QR code
+            const qrcodeDiv = document.getElementById('qrcode');
+            qrcodeDiv.innerHTML = '';
+
+            // Generate new QR code
+            qrCodeInstance = new QRCode(qrcodeDiv, {
+                text: generatedJSON,
+                width: 256,
+                height: 256,
+                colorDark: '#000000',
+                colorLight: '#ffffff',
+                correctLevel: QRCode.CorrectLevel.M
+            });
+
+            // Show QR result section
+            document.getElementById('qrResult').classList.add('show');
+            document.getElementById('jsonData').textContent = JSON.stringify(cardData, null, 2);
+
+            // Scroll to QR code
+            qrcodeDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        function downloadQR() {
+            const canvas = document.querySelector('#qrcode canvas');
+            if (canvas) {
+                const url = canvas.toDataURL('image/png');
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'nl-wallet-card-qr.png';
+                a.click();
+            }
+        }
+
+        function copyJSON() {
+            navigator.clipboard.writeText(generatedJSON).then(() => {
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = '✅ Gekopieerd!';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                }, 2000);
+            });
+        }
+
+        function resetForm() {
+            document.getElementById('qrResult').classList.remove('show');
+            document.getElementById('cardForm').scrollIntoView({ behavior: 'smooth' });
+        }
+    </script>
+</body>
+
+</html>

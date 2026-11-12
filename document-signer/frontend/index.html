@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NL Wallet Test Flow</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { text-align: center; color: white; margin-bottom: 40px; }
+        .header h1 { font-size: 2.5rem; margin-bottom: 10px; }
+        .steps { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px; }
+        @media (max-width: 768px) { .steps { grid-template-columns: 1fr; } }
+        .card { background: white; border-radius: 12px; padding: 30px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1); }
+        .card h2 { color: #333; margin-bottom: 20px; font-size: 1.5rem; }
+        .step-number {
+            display: inline-block; background: #667eea; color: white; width: 32px; height: 32px;
+            border-radius: 50%; text-align: center; line-height: 32px; margin-right: 10px; font-weight: bold;
+        }
+        .qr-container { text-align: center; padding: 20px; }
+        .qr-code { display: inline-block; padding: 20px; background: white; border-radius: 8px; margin: 20px auto; }
+        .instructions { color: #666; margin-top: 15px; line-height: 1.6; font-size: 0.9rem; }
+        .status { padding: 15px; border-radius: 8px; margin-top: 20px; display: none; }
+        .status.show { display: block; }
+        .status.success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .credentials-display { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-top: 20px; display: none; }
+        .credentials-display.show { display: block; }
+        .credential-item { padding: 10px 0; border-bottom: 1px solid #dee2e6; }
+        .credential-item:last-child { border-bottom: none; }
+        .credential-label { font-weight: 600; color: #495057; margin-bottom: 5px; }
+        .credential-value { color: #212529; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 NL Wallet Test Flow</h1>
+            <p>Test de complete data uitwisseling flow</p>
+        </div>
+        <div class="steps">
+            <div class="card">
+                <h2><span class="step-number">1</span>Laad Test Kaart</h2>
+                <div class="qr-container">
+                    <div id="qr-import" class="qr-code"></div>
+                    <p class="instructions">
+                        Scan deze QR-code met de NL Wallet app om een PID kaart te laden.
+                    </p>
+                </div>
+            </div>
+            <div class="card">
+                <h2><span class="step-number">2</span>Deel Gegevens</h2>
+                <div class="qr-container">
+                    <div id="qr-disclosure" class="qr-code"></div>
+                    <p class="instructions">
+                        Scan deze QR-code om je gegevens te delen voor een job application.
+                    </p>
+                </div>
+                <div class="credentials-display" id="credentialsDisplay">
+                    <h3 style="margin-bottom: 15px">✓ Ontvangen gegevens:</h3>
+                    <div id="credentialsList"></div>
+                </div>
+                <div class="status" id="status"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Step 1: PID Issuance QR
+        const pidIssuanceUrl = 'walletdebuginteraction://deeplink#' + encodeURIComponent(JSON.stringify({
+            type: "issue",
+            id: "PID"
+        }));
+        
+        new QRCode(document.getElementById("qr-import"), {
+            text: pidIssuanceUrl,
+            width: 256,
+            height: 256,
+            correctLevel: QRCode.CorrectLevel.H
+        });
+
+        // Step 2: Disclosure QR
+        let disclosureRequestId = null;
+
+        async function createDisclosureQR() {
+            try {
+                const response = await fetch("http://localhost:3001/api/disclosure/request", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ usecase: "document_signing" })
+                });
+                const data = await response.json();
+                disclosureRequestId = data.request_id;
+
+                new QRCode(document.getElementById("qr-disclosure"), {
+                    text: data.deep_link_url,
+                    width: 256,
+                    height: 256,
+                    correctLevel: QRCode.CorrectLevel.H
+                });
+
+                pollForCredentials(disclosureRequestId);
+            } catch (error) {
+                console.error("Error:", error);
+            }
+        }
+
+        async function pollForCredentials(requestId) {
+            const poll = setInterval(async () => {
+                try {
+                    const response = await fetch(`http://localhost:3001/api/sessions/${requestId}/credentials`);
+                    const data = await response.json();
+                    if (data.credentials) {
+                        clearInterval(poll);
+                        displayCredentials(data.credentials);
+                        document.getElementById("status").className = "status show success";
+                        document.getElementById("status").textContent = "✓ Gegevens succesvol ontvangen!";
+                    }
+                } catch (error) {}
+            }, 5000);
+        }
+
+        function displayCredentials(creds) {
+            const list = document.getElementById("credentialsList");
+            list.innerHTML = "";
+            Object.entries(creds).forEach(([key, value]) => {
+                const item = document.createElement("div");
+                item.className = "credential-item";
+                item.innerHTML = `
+                    <div class="credential-label">${key.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}</div>
+                    <div class="credential-value">${value}</div>
+                `;
+                list.appendChild(item);
+            });
+            document.getElementById("credentialsDisplay").classList.add("show");
+        }
+
+        createDisclosureQR();
+    </script>
+</body>
+</html>

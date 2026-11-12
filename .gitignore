@@ -67,3 +67,6 @@ _floatsignTemp/
 # Node modules
 node_modules/
 **/node_modules/
+
+# UI automation build artifacts
+uiautomation/bin/
